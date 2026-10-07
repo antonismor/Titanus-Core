@@ -26,6 +26,10 @@ func TestAPIRolesAndNodeIdentityScoping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+ fleet:=realm.Fleet{Name:"web",Instances:1,MinimumAvailable:1,Template:realm.UnitTemplate{Source:"app",Command:[]string{"v1"},Environment:[]string{"SECRET=history-secret"}}}
+ if err:=store.PutFleet(fleet);err!=nil{t.Fatal(err)}
+ fleet.Template.Command=[]string{"v2"};fleet.Template.Environment=[]string{"SECRET=current-secret"}
+ if err:=store.PutFleet(fleet);err!=nil{t.Fatal(err)}
 	mux := http.NewServeMux()
 	New(store, nil, nil, nil).Register(mux)
 	handler := identity.Authenticate(mux, auth.CertPath)
@@ -50,6 +54,7 @@ func TestAPIRolesAndNodeIdentityScoping(t *testing.T) {
 			{"GET", "/v1/realm/state", "", true},
 			{"GET", "/v1/realm/fleets", "", role != identity.RoleNode},
 			{"POST", "/v1/realm/fleets", "{}", role == identity.RoleAdmin},
+ {"POST", "/v1/realm/fleets/web/rollback", "{}", role == identity.RoleAdmin},
 			{"POST", "/v1/realm/pulse", `{"node_id":"other"}`, role == identity.RoleAdmin},
 			{"POST", "/v1/realm/nodes", `{"id":"worker","capabilities":["CONTROL"],"address":"127.0.0.1"}`, role != identity.RoleNode},
 		} {
@@ -57,6 +62,8 @@ func TestAPIRolesAndNodeIdentityScoping(t *testing.T) {
 			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, req)
+ if role==identity.RoleNode && tc.path=="/v1/realm/state" && (strings.Contains(response.Body.String(),"history-secret") || strings.Contains(response.Body.String(),"current-secret")) {t.Fatal("node state leaked current or historical environment")}
+
 			if (response.Code != http.StatusForbidden) != tc.allowed {
 				t.Fatalf("role=%s %s %s: code=%d body=%s", role, tc.method, tc.path, response.Code, response.Body.String())
 			}

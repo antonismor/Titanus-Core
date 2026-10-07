@@ -17,6 +17,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/model"
+ "github.com/antonismor/Titanus-Core/internal/durable"
 )
 
 type NodeState string
@@ -75,6 +76,8 @@ type UnitTemplate struct {
 }
 
 type Fleet struct {
+ MaxSurge int `json:"max_surge"`
+ History []FleetRevision `json:"history,omitempty"`
 	Name             string            `json:"name"`
 	Instances        int               `json:"instances"`
 	MinimumAvailable int               `json:"minimum_available"`
@@ -159,6 +162,8 @@ type State struct {
 }
 
 type Store struct {
+ // Serializes desired changes and physical rollout operations.
+ Orchestration sync.Mutex
 	path string
 	mu   sync.Mutex
 	data State
@@ -435,6 +440,10 @@ func (s *Store) EvaluateHealth(now time.Time, suspectAfter, unreachableAfter tim
 }
 
 func (s *Store) PutFleet(fleet Fleet) error {
+ s.Orchestration.Lock();defer s.Orchestration.Unlock()
+ return s.putFleet(fleet)
+}
+func (s *Store) putFleet(fleet Fleet) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if strings.TrimSpace(fleet.Name) == "" {
@@ -446,7 +455,9 @@ func (s *Store) PutFleet(fleet Fleet) error {
 	if fleet.MinimumAvailable < 0 || fleet.MinimumAvailable > fleet.Instances {
 		return fmt.Errorf("Fleet minimum_available must be between 0 and instances")
 	}
-	if len(fleet.Template.Command) == 0 || strings.TrimSpace(fleet.Template.Source) == "" {
+	if fleet.MaxSurge == 0 {fleet.MaxSurge=1}
+ if fleet.MaxSurge < 1 || fleet.MaxSurge > 100 {return fmt.Errorf("max_surge must be between 1 and 100")}
+ if len(fleet.Template.Command) == 0 || strings.TrimSpace(fleet.Template.Source) == "" {
 		return fmt.Errorf("Fleet requires Source and command")
 	}
 	fleet.Template.Health.Normalize("always")
@@ -465,8 +476,19 @@ func (s *Store) PutFleet(fleet Fleet) error {
 	}
 	if existing, ok := s.data.Fleets[fleet.Name]; ok {
 		fleet.Generation = existing.Generation + 1
+ fleet.History=append(append([]FleetRevision(nil),existing.History...),revisionOf(existing))
+ if len(fleet.History)>10 {
+  kept:=fleet.History[:0]
+  for i,r:=range fleet.History {
+   used:=i>=len(fleet.History)-10
+   for _,a:=range s.data.Assignments {if a.Fleet==fleet.Name && a.Generation==r.Generation {used=true}}
+   if used {kept=append(kept,r)}
+  }
+  fleet.History=kept
+ }
 	} else {
 		fleet.Generation = 1
+ fleet.History=nil
 	}
 	fleet.UpdatedAt = time.Now().UTC()
 	s.data.Fleets[fleet.Name] = fleet
@@ -706,6 +728,7 @@ func (s *Store) GetFleet(name string) (Fleet, bool) {
 }
 
 func (s *Store) ScaleFleet(name string, instances int) (Fleet, error) {
+ s.Orchestration.Lock();defer s.Orchestration.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fleet, ok := s.data.Fleets[name]
@@ -728,6 +751,7 @@ func (s *Store) ScaleFleet(name string, instances int) (Fleet, error) {
 }
 
 func (s *Store) DeleteFleet(name string) error {
+ s.Orchestration.Lock();defer s.Orchestration.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.data.Fleets[name]; !ok {
@@ -863,15 +887,7 @@ func (s *Store) load(realmName string) error {
 func (s *Store) commitLocked() error {
 	s.data.Revision++
 	s.data.UpdatedAt = time.Now().UTC()
-	data, err := json.MarshalIndent(s.data, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+ return durable.WriteJSON(s.path,s.data,0600)
 }
 
 func cloneState(in State) State {
