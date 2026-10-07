@@ -84,7 +84,7 @@ jobs:
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 --fabric \
             --mount smoke-data:/data -- \
-            /bin/sh -c 'echo TITANUS_RUNTIME_OK; echo PERSISTENT_OK > /data/proof; sleep 30'
+            /bin/sh -c 'echo TITANUS_RUNTIME_OK; echo PERSISTENT_OK > /data/proof; /bin/busybox grep -E "^(NoNewPrivs|Seccomp|CapEff):" /proc/self/status; sleep 30'
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit start smoke
@@ -101,7 +101,29 @@ jobs:
           sudo grep -q 'nameserver 10.249.0.1' "$STATE/units/smoke/rootfs/etc/resolv.conf"
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
-            ./bin/titanus unit logs smoke | grep -q TITANUS_RUNTIME_OK
+            ./bin/titanus unit logs smoke | tee /tmp/titanus-smoke.log
+          grep -q TITANUS_RUNTIME_OK /tmp/titanus-smoke.log
+          grep -Eq 'NoNewPrivs:[[:space:]]+1' /tmp/titanus-smoke.log
+          grep -Eq 'Seccomp:[[:space:]]+2' /tmp/titanus-smoke.log
+          grep -Eq 'CapEff:[[:space:]]+0+' /tmp/titanus-smoke.log
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit create strict-smoke --source busybox --memory 64M --cpu 25 --pids 32 \
+            --uid 65534 --gid 65534 --read-only-rootfs -- \
+            /bin/sh -c 'echo UID=$(/bin/busybox id -u) GID=$(/bin/busybox id -g); if echo DENIED > /rootfs-write-test; then exit 91; else echo ROOTFS_RO_OK; fi; echo TMP_OK > /tmp/proof; sleep 30'
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit start strict-smoke
+          sleep 1
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit logs strict-smoke | tee /tmp/titanus-strict.log
+          grep -q 'UID=65534 GID=65534' /tmp/titanus-strict.log
+          grep -q ROOTFS_RO_OK /tmp/titanus-strict.log
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit stop strict-smoke
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit delete strict-smoke
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit stop smoke
