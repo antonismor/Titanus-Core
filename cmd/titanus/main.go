@@ -76,10 +76,16 @@ func dispatch(args []string) error {
 		}
 		return runPreflightFile(args[1])
 	case "deploy":
-		if len(args) != 3 || args[1] != "bootstrap" {
-			return fmt.Errorf("usage: titanus deploy bootstrap <plan.json>")
+		if len(args) >= 2 && args[1] == "bootstrap" {
+			if len(args) != 3 {
+				return fmt.Errorf("usage: titanus deploy bootstrap <plan.json>")
+			}
+			return runBootstrapFile(args[2])
 		}
-		return runBootstrapFile(args[2])
+		if len(args) >= 2 && args[1] == "realm" {
+			return runRealmDeploy(args[2:])
+		}
+		return fmt.Errorf("usage: titanus deploy <bootstrap|realm> ...")
 	case "help", "--help", "-h":
 		printHelp()
 		return nil
@@ -1411,6 +1417,75 @@ func stateRoot() string {
 	return "/var/lib/titanus"
 }
 
+func runRealmDeploy(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: titanus deploy realm PLAN [--bin-dir DIR] [--pki-dir DIR] [--no-start]")
+	}
+	planPath := args[0]
+	fs := flag.NewFlagSet("deploy realm", flag.ContinueOnError)
+	binDir := fs.String("bin-dir", "", "directory containing Titanus binaries")
+	pkiDir := fs.String("pki-dir", "", "local persistent Realm PKI directory")
+	nodePrefix := fs.Int("node-prefix", 24, "per-Node Unit subnet prefix")
+	vxlanID := fs.Int("vxlan-id", 4242, "Titanus Realm VXLAN ID")
+	clusterPort := fs.Int("cluster-port", 9443, "mTLS Realm API port")
+	noStart := fs.Bool("no-start", false, "install but do not start services")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	plan, err := model.LoadPlan(planPath)
+	if err != nil {
+		return err
+	}
+	if *binDir == "" {
+		*binDir, err = discoverBinDir()
+		if err != nil {
+			return err
+		}
+	}
+	return deployRealm(plan, deploy.RealmDeployOptions{
+		BinDir: *binDir, PKIDir: *pkiDir,
+		NodePrefix: *nodePrefix, VXLANID: *vxlanID,
+		ClusterPort: *clusterPort, StartServices: !*noStart,
+	})
+}
+
+func deployRealm(plan model.RealmPlan, options deploy.RealmDeployOptions) error {
+	ansi.Info("Deploying Titanus Realm " + plan.RealmName)
+	results, err := deploy.NewRealmDeployer().Deploy(plan, options)
+	for _, result := range results {
+		if result.Message == "installed" {
+			ansi.OK(fmt.Sprintf("%s (%s) %s", result.Node, result.Address, result.Role))
+		}
+	}
+	if err != nil {
+		return err
+	}
+	ansi.OK("Titanus Realm deployment completed")
+	return nil
+}
+
+func discoverBinDir() (string, error) {
+	candidates := []string{"./bin"}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Dir(executable))
+	}
+	for _, candidate := range candidates {
+		required := []string{"titanus", "titanusd", "titanus-agent", "titanus-init"}
+		ok := true
+		for _, name := range required {
+			info, err := os.Stat(filepath.Join(candidate, name))
+			if err != nil || !info.Mode().IsRegular() {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("cannot locate all Titanus binaries; build with 'make build' or use 'titanus deploy realm PLAN --bin-dir DIR'")
+}
+
 func runSetup() error {
 	result, err := setup.RunDefault()
 	if err != nil {
@@ -1428,11 +1503,18 @@ func runSetup() error {
 
 	if result.Plan.AutoDeploy {
 		fmt.Println()
-		ansi.Info("Auto-deploy requested: running pre-flight before bootstrap.")
+		ansi.Info("Auto-deploy requested: validating Realm before full deployment.")
 		if err := runPreflight(result.Plan); err != nil {
 			return err
 		}
-		return runBootstrap(result.Plan)
+		binDir, err := discoverBinDir()
+		if err != nil {
+			return err
+		}
+		return deployRealm(result.Plan, deploy.RealmDeployOptions{
+			BinDir: binDir, NodePrefix: 24, VXLANID: 4242,
+			ClusterPort: 9443, StartServices: true,
+		})
 	}
 	return nil
 }
@@ -1592,6 +1674,7 @@ Usage:
   titanus plan show FILE                       Display a Titanus Plan
   titanus preflight FILE                       Test all configured nodes
   titanus deploy bootstrap FILE                Bootstrap validated nodes
+  titanus deploy realm FILE [options]          Install and start a complete Realm
   titanus version                              Show version
 
 Unit create options:
