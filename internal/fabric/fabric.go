@@ -16,10 +16,22 @@ import (
 	"syscall"
 )
 
+type Peer struct {
+	NodeID string `json:"node_id"`
+	VTEP   string `json:"vtep"`
+	CIDR   string `json:"cidr"`
+}
+
 type Config struct {
-	Bridge  string `json:"bridge"`
-	CIDR    string `json:"cidr"`
-	Gateway string `json:"gateway"`
+	Bridge         string `json:"bridge"`
+	CIDR           string `json:"cidr"`
+	Gateway        string `json:"gateway"`
+	Mode           string `json:"mode,omitempty"`
+	MTU            int    `json:"mtu,omitempty"`
+	VXLANInterface string `json:"vxlan_interface,omitempty"`
+	VXLANID        int    `json:"vxlan_id,omitempty"`
+	VTEP           string `json:"vtep,omitempty"`
+	Peers          []Peer `json:"peers,omitempty"`
 }
 
 type Port struct {
@@ -74,6 +86,8 @@ func (m *Manager) Init(cidr, bridge string) (Config, error) {
 		Bridge:  bridge,
 		CIDR:    network.String(),
 		Gateway: fmt.Sprintf("%s/%d", gatewayIP.String(), ones),
+		Mode:    "local",
+		MTU:     1450,
 	}
 	if err := os.MkdirAll(m.fabricDir(), 0750); err != nil {
 		return Config{}, err
@@ -90,6 +104,76 @@ func (m *Manager) Init(cidr, bridge string) (Config, error) {
 		if err := m.ensureHostFabric(cfg); err != nil {
 			return Config{}, err
 		}
+	}
+	return cfg, nil
+}
+
+func (m *Manager) ConfigureMesh(localVTEP string, vxlanID int, peers []Peer) (Config, error) {
+	if os.Geteuid() != 0 {
+		return Config{}, fmt.Errorf("Realm Fabric mesh configuration requires root")
+	}
+	if net.ParseIP(localVTEP) == nil {
+		return Config{}, fmt.Errorf("invalid local VTEP address %q", localVTEP)
+	}
+	if vxlanID < 1 || vxlanID > 16777215 {
+		return Config{}, fmt.Errorf("invalid VXLAN ID %d", vxlanID)
+	}
+	cfg, err := m.Config()
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.MTU == 0 {
+		cfg.MTU = 1450
+	}
+	cfg.Mode = "realm"
+	cfg.VXLANInterface = "titanusvx"
+	cfg.VXLANID = vxlanID
+	cfg.VTEP = localVTEP
+	cfg.Peers = append([]Peer(nil), peers...)
+
+	if err := m.ensureHostFabric(cfg); err != nil {
+		return Config{}, err
+	}
+	_, _ = runOutput("ip", "link", "del", cfg.VXLANInterface)
+	args := []string{
+		"link", "add", cfg.VXLANInterface, "type", "vxlan",
+		"id", strconv.Itoa(vxlanID),
+		"local", localVTEP,
+		"dstport", "4789",
+		"nolearning",
+	}
+	if out, err := runOutput("ip", args...); err != nil {
+		return Config{}, fmt.Errorf("create Titanus VXLAN: %w: %s", err, out)
+	}
+	if out, err := runOutput("ip", "link", "set", cfg.VXLANInterface, "mtu", strconv.Itoa(cfg.MTU)); err != nil {
+		return Config{}, fmt.Errorf("set VXLAN MTU: %w: %s", err, out)
+	}
+	if out, err := runOutput("ip", "link", "set", cfg.VXLANInterface, "master", cfg.Bridge); err != nil {
+		return Config{}, fmt.Errorf("attach VXLAN to Fabric bridge: %w: %s", err, out)
+	}
+	if out, err := runOutput("ip", "link", "set", cfg.VXLANInterface, "up"); err != nil {
+		return Config{}, fmt.Errorf("raise VXLAN interface: %w: %s", err, out)
+	}
+
+	for _, peer := range peers {
+		if peer.VTEP == "" || peer.VTEP == localVTEP {
+			continue
+		}
+		if net.ParseIP(peer.VTEP) == nil {
+			return Config{}, fmt.Errorf("invalid peer VTEP %q", peer.VTEP)
+		}
+		if _, _, err := net.ParseCIDR(peer.CIDR); err != nil {
+			return Config{}, fmt.Errorf("invalid peer CIDR %q: %w", peer.CIDR, err)
+		}
+		if out, err := runOutput("bridge", "fdb", "append", "00:00:00:00:00:00", "dev", cfg.VXLANInterface, "dst", peer.VTEP); err != nil {
+			return Config{}, fmt.Errorf("add VXLAN peer %s: %w: %s", peer.NodeID, err, out)
+		}
+		if out, err := runOutput("ip", "route", "replace", peer.CIDR, "dev", cfg.Bridge); err != nil {
+			return Config{}, fmt.Errorf("add Fabric route to %s: %w: %s", peer.CIDR, err, out)
+		}
+	}
+	if err := writeJSON(m.configPath(), cfg, 0600); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
@@ -201,6 +285,10 @@ func (m *Manager) Attach(unitID string, pid int, ports []Port) (Allocation, erro
 		cleanup()
 		return Allocation{}, fmt.Errorf("attach host veth to bridge: %w: %s", err, out)
 	}
+	if out, err := runOutput("ip", "link", "set", allocation.HostIf, "mtu", strconv.Itoa(cfg.MTU)); err != nil {
+		cleanup()
+		return Allocation{}, fmt.Errorf("set host veth MTU: %w: %s", err, out)
+	}
 	if out, err := runOutput("ip", "link", "set", allocation.HostIf, "up"); err != nil {
 		cleanup()
 		return Allocation{}, fmt.Errorf("raise host veth: %w: %s", err, out)
@@ -217,6 +305,7 @@ func (m *Manager) Attach(unitID string, pid int, ports []Port) (Allocation, erro
 	commands := [][]string{
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "link", "set", peer, "name", "eth0"},
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "addr", "add", fmt.Sprintf("%s/%d", allocation.Address, ones), "dev", "eth0"},
+		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "link", "set", "eth0", "mtu", strconv.Itoa(cfg.MTU)},
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "link", "set", "eth0", "up"},
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "route", "replace", "default", "via", gatewayIP.String()},
 	}
@@ -334,7 +423,7 @@ func (m *Manager) Allocations() ([]Allocation, error) {
 }
 
 func (m *Manager) ensureHostFabric(cfg Config) error {
-	for _, binary := range []string{"ip", "nft", "nsenter"} {
+	for _, binary := range []string{"ip", "bridge", "nft", "nsenter"} {
 		if _, err := exec.LookPath(binary); err != nil {
 			return fmt.Errorf("%s is required for Titanus Fabric v1: %w", binary, err)
 		}
@@ -343,6 +432,12 @@ func (m *Manager) ensureHostFabric(cfg Config) error {
 		if out, createErr := runOutput("ip", "link", "add", cfg.Bridge, "type", "bridge"); createErr != nil {
 			return fmt.Errorf("create Fabric bridge: %w: %s", createErr, out)
 		}
+	}
+	if cfg.MTU == 0 {
+		cfg.MTU = 1450
+	}
+	if out, err := runOutput("ip", "link", "set", cfg.Bridge, "mtu", strconv.Itoa(cfg.MTU)); err != nil {
+		return fmt.Errorf("configure Fabric bridge MTU: %w: %s", err, out)
 	}
 	if out, err := runOutput("ip", "addr", "replace", cfg.Gateway, "dev", cfg.Bridge); err != nil {
 		return fmt.Errorf("configure Fabric gateway: %w: %s", err, out)
