@@ -53,7 +53,8 @@ func (r *Runner) checkNode(node model.NodeSpec) NodeReport {
 		{"64-bit architecture", "uname -m"},
 		{"cgroups v2", "test -r /sys/fs/cgroup/cgroup.controllers && cat /sys/fs/cgroup/cgroup.controllers"},
 		{"iproute2", "command -v ip"},
-		{"nftables", "command -v nft || true"},
+		{"nftables", "command -v nft"},
+		{"nsenter", "command -v nsenter"},
 		{"OverlayFS", "grep -qw overlay /proc/filesystems"},
 		{"passwordless sudo/root", "if [ \"$(id -u)\" = 0 ]; then echo root; else sudo -n true && echo sudo; fi"},
 	}
