@@ -159,10 +159,15 @@ func runUnitChild(args []string) (result error) {
 			_ = syscall.Close(fd)
 		}
 	}()
+	// A user-namespace proc mount must be created while the inherited full
+	// proc is still visible; mounting it after detaching the old root is denied.
+	if err := mountProc(rootfs); err != nil {
+		return err
+	}
 	if err := pivotInto(rootfs); err != nil {
 		return err
 	}
-	if err := mountProc(); err != nil {
+	if err := protectProc(); err != nil {
 		return err
 	}
 	if err := mountDevices(devices); err != nil {
@@ -233,14 +238,23 @@ func pivotInto(rootfs string) error {
 	return nil
 }
 
-func mountProc() error {
-	if err := os.MkdirAll("/proc", 0555); err != nil {
-		return err
+func mountProc(rootfs string) error {
+	target := filepath.Join(rootfs, "proc")
+	if info, e := os.Lstat(target); e == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("Source proc path must be a directory")
+		}
+	} else if os.IsNotExist(e) {
+		if e := os.Mkdir(target, 0555); e != nil {
+			return e
+		}
+	} else {
+		return e
 	}
-	if err := syscall.Mount("proc", "/proc", "proc", uintptr(syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC), ""); err != nil {
+	if err := syscall.Mount("proc", target, "proc", uintptr(syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC), ""); err != nil {
 		return fmt.Errorf("mount /proc: %w", err)
 	}
-	return protectProc()
+	return nil
 }
 
 func openDevices() (map[string]int, error) {

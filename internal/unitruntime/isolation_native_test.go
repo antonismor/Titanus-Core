@@ -81,6 +81,9 @@ func TestNativeIsolation(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
+			if _, err := os.Stat(filepath.Join("/run/titanus-roots", state.RunID)); !os.IsNotExist(err) {
+				t.Fatal("startup leaked root access gate")
+			}
 			if state.Status != StatusActive {
 				t.Fatal(state)
 			}
@@ -118,11 +121,24 @@ func TestNativeIsolation(t *testing.T) {
 			if st.Sys().(*syscall.Stat_t).Uid != uint32(mapping.Base) {
 				t.Fatal("persisted writer uses host root")
 			}
+			before, _ := os.ReadFile(filepath.Join(m.unitDir(id), "logs", "unit.log"))
+			count := strings.Count(string(before), "TITANUS_ISOLATION_OK")
 			// Stable map and enforcement after a fresh manager adoption/restart.
 			m = NewManager(m.cfg)
 			again, e := m.Start(id)
 			if e != nil || again.UserMapping != mapping {
 				t.Fatalf("restart: %+v %v", again, e)
+			}
+			deadline = time.Now().Add(10 * time.Second)
+			for {
+				logs, _ := os.ReadFile(filepath.Join(m.unitDir(id), "logs", "unit.log"))
+				if strings.Count(string(logs), "TITANUS_ISOLATION_OK") > count {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("restart probe failed: %s", logs)
+				}
+				time.Sleep(50 * time.Millisecond)
 			}
 			_, _ = m.Stop(id, time.Second)
 		})
@@ -140,6 +156,9 @@ func TestNativeIsolation(t *testing.T) {
 		logs, _ := os.ReadFile(filepath.Join(m.unitDir(spec.ID), "logs", "unit.log"))
 		if strings.Contains(string(logs), "BAD_EXEC") {
 			t.Fatal("workload exec before LSM enforcement")
+		}
+		if _, err := os.Stat(filepath.Join("/run/titanus-roots", state.RunID)); !os.IsNotExist(err) {
+			t.Fatal("failed startup leaked root access gate")
 		}
 		if _, e := os.Stat(m.cgroupDir(spec.ID)); !os.IsNotExist(e) {
 			t.Fatal("failed Unit leaked cgroup")

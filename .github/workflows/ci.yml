@@ -66,12 +66,6 @@ jobs:
       - name: Build Titanus
         run: make build
 
-      - name: Verify replicated Control-plane HA on native architecture
-        run: go test -race ./internal/consensus ./internal/controllerclient -count=1 -timeout 180s
-
-      - name: Kill and recover real HA daemons
-        run: sudo env "PATH=$PATH" TITANUS_HA_DAEMON_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" go test ./cmd/titanusd -run TestNativeHADaemonCrash -count=1 -v -timeout 180s
-
       - name: Install static BusyBox
         run: |
           sudo apt-get update -qq
@@ -96,6 +90,12 @@ jobs:
 
       - name: Verify mapped namespaces, device and LSM kernel enforcement
         run: sudo env "PATH=$PATH" TITANUS_ISOLATION_KERNEL_TEST=1 TITANUS_INIT_BINARY="$PWD/bin/titanus-init" go test ./internal/unitruntime -run TestNativeIsolation -count=1 -v -timeout 180s
+
+      - name: Verify replicated Control-plane HA on native architecture
+        run: go test -race ./internal/consensus ./internal/controllerclient -count=1 -timeout 180s
+
+      - name: Kill and recover real HA daemons
+        run: sudo env "PATH=$PATH" TITANUS_HA_DAEMON_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" go test ./cmd/titanusd -run TestNativeHADaemonCrash -count=1 -v -timeout 180s
 
       - name: Exercise native Unit runtime
         run: |

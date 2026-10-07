@@ -135,10 +135,7 @@ func prepareRootAccess(rootfs string, mapping IDMapping, run string) (string, fu
 	if e := os.Mkdir(directory, 0700); e != nil {
 		return "", nil, e
 	}
-	cleanup := func() {
-		_ = syscall.Unmount(filepath.Join(directory, "rootfs"), syscall.MNT_DETACH)
-		_ = os.RemoveAll(directory)
-	}
+	cleanup := func() { cleanupRootAccess(run) }
 	if e := os.Chown(directory, mapping.Base, mapping.Base); e != nil {
 		cleanup()
 		return "", nil, e
@@ -153,4 +150,18 @@ func prepareRootAccess(rootfs string, mapping IDMapping, run string) (string, fu
 		return "", nil, e
 	}
 	return target, cleanup, nil
+}
+
+func cleanupRootAccess(run string) {
+	if len(run) != 48 {
+		return
+	}
+	for _, r := range run {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return
+		}
+	}
+	directory := filepath.Join("/run/titanus-roots", run)
+	_ = syscall.Unmount(filepath.Join(directory, "rootfs"), syscall.MNT_DETACH)
+	_ = os.RemoveAll(directory)
 }

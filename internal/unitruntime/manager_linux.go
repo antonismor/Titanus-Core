@@ -810,8 +810,9 @@ func enableControllers(cgroupRoot string, required []string) error {
 }
 
 func (m *Manager) cleanupAfterStop(id string) {
-	if spec, _, err := m.load(id); err == nil {
+	if spec, state, err := m.load(id); err == nil {
 		m.cleanupDiskMounts(spec)
+		cleanupRootAccess(state.RunID)
 	}
 	_ = os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.kill"), []byte("1"), 0644)
 	_ = m.unmountRootfs(id)
