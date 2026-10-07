@@ -97,7 +97,10 @@ type Assignment struct {
 	State      AssignmentState `json:"state"`
 	Generation uint64          `json:"generation"`
 	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	LeaseToken     string          `json:"lease_token,omitempty"`
+	LeaseExpiresAt time.Time       `json:"lease_expires_at,omitempty"`
+	StartAfter     time.Time       `json:"start_after,omitempty"`
 }
 
 type State struct {
@@ -343,6 +346,23 @@ func (s *Store) SetAssignments(fleetName string, assignments []Assignment) error
 	for _, assignment := range assignments {
 		s.data.Assignments[assignment.ID] = assignment
 	}
+	return s.commitLocked()
+}
+
+func (s *Store) RenewAssignmentLease(id, token string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	assignment, ok := s.data.Assignments[id]
+	if !ok {
+		return fmt.Errorf("unknown assignment %s", id)
+	}
+	if assignment.LeaseToken != "" && assignment.LeaseToken != token && time.Now().UTC().Before(assignment.LeaseExpiresAt) {
+		return fmt.Errorf("assignment %s has a different live lease", id)
+	}
+	assignment.LeaseToken = token
+	assignment.LeaseExpiresAt = expiresAt.UTC()
+	assignment.UpdatedAt = time.Now().UTC()
+	s.data.Assignments[id] = assignment
 	return s.commitLocked()
 }
 
