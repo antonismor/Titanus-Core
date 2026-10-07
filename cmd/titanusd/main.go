@@ -17,6 +17,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/identity"
+	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/realmclient"
 	"github.com/antonismor/Titanus-Core/internal/reconcile"
@@ -64,7 +65,10 @@ func main() {
 		runtimeConfig.InitBinary = initBinary
 	}
 	sourceManager := source.NewManager(stateRoot)
-	controlapi.New(store, unitruntime.NewManager(runtimeConfig), sourceManager).Register(mux)
+	runtimeManager := unitruntime.NewManager(runtimeConfig)
+	leaseManager := lease.NewManager(runtimeManager)
+	defer leaseManager.Close()
+	controlapi.New(store, runtimeManager, sourceManager, leaseManager).Register(mux)
 
 	unixListener, err := unixSocket()
 	if err != nil {
