@@ -561,7 +561,7 @@ func realmMenu(reader *bufio.Reader) error {
 
 func runRealm(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: titanus realm <init|status|issue-node>")
+		return fmt.Errorf("usage: titanus realm <init|seed|status|issue-node>")
 	}
 	switch args[0] {
 	case "init":
@@ -627,6 +627,32 @@ func runRealm(args []string) error {
 			return err
 		}
 		ansi.OK(fmt.Sprintf("Realm %s initialized. Node=%s CA=%s", *name, *nodeID, auth.CertPath))
+		return nil
+
+	case "seed":
+		fs := flag.NewFlagSet("realm seed", flag.ContinueOnError)
+		name := fs.String("name", "TITANUS-REALM", "Realm name")
+		fabricCIDR := fs.String("fabric-cidr", "10.240.0.0/16", "Realm Unit Fabric CIDR")
+		serviceCIDR := fs.String("service-cidr", "10.250.0.0/16", "Realm service CIDR")
+		nodePrefix := fs.Int("node-prefix", 24, "per-Node Fabric prefix")
+		vxlanID := fs.Int("vxlan-id", 4242, "Titanus VXLAN ID")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("Realm seed requires root")
+		}
+		store, err := realm.Open(stateRoot(), *name)
+		if err != nil {
+			return err
+		}
+		if err := store.ConfigureNetwork(realm.RealmNetwork{
+			FabricCIDR: *fabricCIDR, ServiceCIDR: *serviceCIDR,
+			NodePrefix: *nodePrefix, VXLANID: *vxlanID,
+		}); err != nil {
+			return err
+		}
+		ansi.OK(fmt.Sprintf("Realm %s network seeded: Fabric=%s Services=%s", *name, *fabricCIDR, *serviceCIDR))
 		return nil
 
 	case "status":
