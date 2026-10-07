@@ -145,8 +145,40 @@ func syncFabric(client *http.Client, cfg config, registered realm.Node) error {
 		}
 		peers = append(peers, fabric.Peer{NodeID: node.ID, VTEP: vtep, CIDR: node.FabricCIDR})
 	}
-	_, err := manager.ConfigureMesh(cfg.FabricAddress, state.Network.VXLANID, peers)
-	return err
+	if _, err := manager.ConfigureMesh(cfg.FabricAddress, state.Network.VXLANID, peers); err != nil {
+		return err
+	}
+	return manager.ConfigureServices(state.Network.ServiceCIDR, servicesFromState(state))
+}
+
+func servicesFromState(state realm.State) []fabric.Service {
+	services := make([]fabric.Service, 0, len(state.Routes))
+	for _, route := range state.Routes {
+		if strings.TrimSpace(route.ServiceIP) == "" {
+			continue
+		}
+		service := fabric.Service{
+			Name: route.Name, Address: route.ServiceIP,
+			Protocol: route.Protocol, Port: route.ListenPort,
+		}
+		for _, assignment := range state.Assignments {
+			if assignment.Fleet != route.Fleet ||
+				assignment.State != realm.AssignmentActive ||
+				strings.TrimSpace(assignment.NetworkAddress) == "" {
+				continue
+			}
+			node, ok := state.Nodes[assignment.NodeID]
+			if !ok || node.State != realm.NodeReady {
+				continue
+			}
+			service.Backends = append(service.Backends, fabric.ServiceBackend{
+				Address: assignment.NetworkAddress,
+				Port:    route.TargetPort,
+			})
+		}
+		services = append(services, service)
+	}
+	return services
 }
 
 func requestJSON(client *http.Client, method, url string, payload any, response any) error {
