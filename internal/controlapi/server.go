@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -17,6 +18,7 @@ type Server struct {
 	Store   *realm.Store
 	Runtime *unitruntime.Manager
 	Sources *source.Manager
+	Leases  *lease.Manager
 }
 
 type PulseRequest struct {
@@ -24,8 +26,8 @@ type PulseRequest struct {
 	Resources realm.Resources `json:"resources"`
 }
 
-func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manager) *Server {
-	return &Server{Store: store, Runtime: runtime, Sources: sources}
+func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manager, leases *lease.Manager) *Server {
+	return &Server{Store: store, Runtime: runtime, Sources: sources, Leases: leases}
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -37,6 +39,54 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/node/units/", s.unitAction)
 	mux.HandleFunc("/v1/node/sources", s.sources)
 	mux.HandleFunc("/v1/node/sources/", s.sourceObject)
+	mux.HandleFunc("/v1/node/leases/", s.leaseObject)
+}
+
+type LeaseRequest struct {
+	Token      string `json:"token"`
+	TTLSeconds int    `json:"ttl_seconds"`
+}
+
+func (s *Server) leaseObject(w http.ResponseWriter, r *http.Request) {
+	if s.Leases == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("lease watchdog unavailable"))
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/node/leases/"), "/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid Unit lease ID"))
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		var req LeaseRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		record, err := s.Leases.Renew(id, req.Token, time.Duration(req.TTLSeconds)*time.Second)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, record)
+	case http.MethodGet:
+		record, ok := s.Leases.Inspect(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("no live lease for Unit %s", id))
+			return
+		}
+		writeJSON(w, http.StatusOK, record)
+	case http.MethodDelete:
+		token := r.URL.Query().Get("token")
+		if err := s.Leases.Revoke(id, token); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
