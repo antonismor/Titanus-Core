@@ -13,6 +13,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/ansi"
 	"github.com/antonismor/Titanus-Core/internal/deploy"
+	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/planner"
@@ -47,6 +48,8 @@ func dispatch(args []string) error {
 		return runSource(args[1:])
 	case "fabric":
 		return runFabric(args[1:])
+	case "disk":
+		return runDisk(args[1:])
 	case "unit":
 		return runUnit(args[1:])
 	case "version", "--version", "-v":
@@ -140,11 +143,16 @@ func menu() error {
 				pause(reader)
 			}
 		case "7":
-			if err := unitMenu(reader); err != nil {
+			if err := diskMenu(reader); err != nil {
 				ansi.Error(err.Error())
 				pause(reader)
 			}
 		case "8":
+			if err := unitMenu(reader); err != nil {
+				ansi.Error(err.Error())
+				pause(reader)
+			}
+		case "9":
 			fmt.Println("Titanus Core", version)
 			pause(reader)
 		case "0":
@@ -290,6 +298,179 @@ func runFabric(args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown Fabric action %q", args[0])
+	}
+}
+
+func diskMenu(reader *bufio.Reader) error {
+	for {
+		ansi.Clear()
+		ansi.Banner()
+		fmt.Println(ansi.Paint(ansi.Bold+ansi.White, "Titanus Disks"))
+		fmt.Println()
+		fmt.Println("  1) List Disks")
+		fmt.Println("  2) Create local Disk")
+		fmt.Println("  3) Configure Ceph adapter")
+		fmt.Println("  4) Create Ceph RBD Disk")
+		fmt.Println("  5) Create CephFS Disk")
+		fmt.Println("  6) Inspect Disk")
+		fmt.Println("  0) Back")
+		fmt.Print("\nSelect: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "1":
+			if err := runDisk([]string{"list"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "2", "4", "5":
+			name, err := prompt(reader, "Disk name")
+			if err != nil {
+				return err
+			}
+			size, err := promptDefault(reader, "Capacity", "10G")
+			if err != nil {
+				return err
+			}
+			provider := "local"
+			if strings.TrimSpace(line) == "4" {
+				provider = "ceph-rbd"
+			} else if strings.TrimSpace(line) == "5" {
+				provider = "cephfs"
+			}
+			if err := runDisk([]string{"create", name, "--provider", provider, "--size", size}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "3":
+			pool, err := promptDefault(reader, "RBD pool", "titanus")
+			if err != nil {
+				return err
+			}
+			fsName, err := promptDefault(reader, "CephFS name", "cephfs")
+			if err != nil {
+				return err
+			}
+			client, err := promptDefault(reader, "Ceph client", "client.titanus")
+			if err != nil {
+				return err
+			}
+			conf, err := promptDefault(reader, "Ceph config", "/etc/ceph/ceph.conf")
+			if err != nil {
+				return err
+			}
+			if err := runDisk([]string{"ceph-config", "--pool", pool, "--fs", fsName, "--client", client, "--conf", conf}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "6":
+			name, err := prompt(reader, "Disk name")
+			if err != nil {
+				return err
+			}
+			if err := runDisk([]string{"inspect", name}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "0":
+			return nil
+		default:
+			ansi.Warn("Unknown selection")
+			pause(reader)
+		}
+	}
+}
+
+func runDisk(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: titanus disk <create|list|inspect|delete|ceph-config>")
+	}
+	manager := disk.NewManager(stateRoot())
+	switch args[0] {
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: titanus disk create NAME --provider local|ceph-rbd|cephfs --size SIZE")
+		}
+		name := args[1]
+		fs := flag.NewFlagSet("disk create", flag.ContinueOnError)
+		provider := fs.String("provider", "local", "Disk provider")
+		sizeText := fs.String("size", "10G", "Disk capacity")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		size, err := disk.ParseBytes(*sizeText)
+		if err != nil {
+			return err
+		}
+		spec, err := manager.Create(disk.Spec{Name: name, Provider: disk.Provider(*provider), SizeBytes: size})
+		if err != nil {
+			return err
+		}
+		ansi.OK(fmt.Sprintf("Disk %s created: provider=%s size=%d bytes", spec.Name, spec.Provider, spec.SizeBytes))
+		return nil
+	case "list":
+		items, err := manager.List()
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			fmt.Println("No Titanus Disks.")
+			return nil
+		}
+		fmt.Printf("%-24s %-12s %-14s %-12s\n", "DISK", "PROVIDER", "SIZE-BYTES", "INITIALIZED")
+		for _, item := range items {
+			fmt.Printf("%-24s %-12s %-14d %-12t\n", item.Name, item.Provider, item.SizeBytes, item.Initialized)
+		}
+		return nil
+	case "inspect":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus disk inspect NAME")
+		}
+		spec, err := manager.Inspect(args[1])
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(spec, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case "delete":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: titanus disk delete NAME [--destroy-data]")
+		}
+		fs := flag.NewFlagSet("disk delete", flag.ContinueOnError)
+		destroy := fs.Bool("destroy-data", false, "destroy remote Ceph data")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if err := manager.Delete(args[1], *destroy); err != nil {
+			return err
+		}
+		ansi.OK("Disk deleted: " + args[1])
+		return nil
+	case "ceph-config":
+		fs := flag.NewFlagSet("disk ceph-config", flag.ContinueOnError)
+		cluster := fs.String("cluster", "ceph", "Ceph cluster name")
+		pool := fs.String("pool", "titanus", "RBD pool")
+		fsName := fs.String("fs", "cephfs", "CephFS filesystem name")
+		client := fs.String("client", "client.titanus", "Ceph client identity")
+		conf := fs.String("conf", "/etc/ceph/ceph.conf", "Ceph configuration file")
+		keyring := fs.String("keyring", "", "optional Ceph keyring")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg := disk.CephConfig{
+			Cluster: *cluster, Pool: *pool, FSName: *fsName,
+			Client: *client, Conf: *conf, Keyring: *keyring,
+		}
+		if err := manager.ConfigureCeph(cfg); err != nil {
+			return err
+		}
+		ansi.OK("Titanus Ceph adapter configured")
+		return nil
+	default:
+		return fmt.Errorf("unknown Disk action %q", args[0])
 	}
 }
 
@@ -445,6 +626,7 @@ func runUnit(args []string) error {
 		pids := fs.Int("pids", 256, "maximum process count")
 		fabricEnabled := fs.Bool("fabric", false, "attach Unit to Titanus Fabric")
 		publish := fs.String("publish", "", "comma-separated HOST:UNIT[/tcp|udp] mappings")
+		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro] mounts")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -469,6 +651,16 @@ func runUnit(args []string) error {
 				ports = append(ports, port)
 			}
 		}
+		var mounts []disk.Mount
+		if strings.TrimSpace(*mountText) != "" {
+			for _, raw := range strings.Split(*mountText, ",") {
+				mount, err := disk.ParseMount(strings.TrimSpace(raw))
+				if err != nil {
+					return err
+				}
+				mounts = append(mounts, mount)
+			}
+		}
 		spec := unitruntime.Spec{
 			ID:          id,
 			Source:      *sourceName,
@@ -481,6 +673,7 @@ func runUnit(args []string) error {
 				Fabric: *fabricEnabled || len(ports) > 0,
 				Ports:  ports,
 			},
+			Mounts: mounts,
 		}
 		state, err := manager.Create(spec)
 		if err != nil {
@@ -748,6 +941,12 @@ Usage:
   titanus fabric status
   titanus fabric allocations
 
+  titanus disk create NAME --provider local|ceph-rbd|cephfs --size SIZE
+  titanus disk list
+  titanus disk inspect NAME
+  titanus disk delete NAME [--destroy-data]
+  titanus disk ceph-config [options]
+
   titanus unit create ID --source SOURCE [options] -- COMMAND [ARGS...]
   titanus unit start ID
   titanus unit stop ID
@@ -769,6 +968,7 @@ Unit create options:
   --pids COUNT         Maximum process count (default: 256)
   --fabric             Attach Unit to Titanus Fabric
   --publish MAPS       Comma-separated HOST:UNIT[/tcp|udp] mappings
+  --mount MOUNTS       Comma-separated DISK:/path[:ro] mounts
 
 Development overrides:
   TITANUS_STATE_ROOT
