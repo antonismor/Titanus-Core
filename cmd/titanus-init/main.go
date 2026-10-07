@@ -100,6 +100,8 @@ func runUnitChild(args []string) (result error) {
 	runtime.LockOSThread()
 	// Do not unlock after security changes: this thread must execute workload.
 	rootfs := filepath.Clean(args[0])
+	syscall.CloseOnExec(5)
+	syscall.CloseOnExec(6)
 	hostname := args[1]
 	readyFD, err := strconv.Atoi(args[2])
 	if err != nil || readyFD < 3 {
@@ -119,16 +121,35 @@ func runUnitChild(args []string) (result error) {
 	if err := syscall.Mount("", "/", "", uintptr(syscall.MS_REC|syscall.MS_PRIVATE), ""); err != nil {
 		return fmt.Errorf("make mount namespace private: %w", err)
 	}
+	// The monitor passes only an executable and rootfs handle, avoiding world
+	// traversal permissions on the host's private state directory.
+	if err := syscall.Fchdir(6); err != nil {
+		return fmt.Errorf("enter mapped rootfs: %w", err)
+	}
+	rootfs = "."
+	if err := syscall.Mount(rootfs, rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("bind mapped root: %w", err)
+	}
+	_ = syscall.Close(6)
 	if err := syscall.Sethostname([]byte(hostname)); err != nil {
 		return fmt.Errorf("set hostname: %w", err)
 	}
+	devices, err := openDevices()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, fd := range devices {
+			_ = syscall.Close(fd)
+		}
+	}()
 	if err := pivotInto(rootfs); err != nil {
 		return err
 	}
 	if err := mountProc(); err != nil {
 		return err
 	}
-	if err := mountDevices(); err != nil {
+	if err := mountDevices(devices); err != nil {
 		return err
 	}
 	if err := mountTmp(); err != nil {
@@ -138,6 +159,9 @@ func runUnitChild(args []string) (result error) {
 		return fmt.Errorf("bring loopback up: %w", err)
 	}
 
+	if err := security.ApplyLandlock(policy, int(executable.Fd())); err != nil {
+		return fmt.Errorf("workload LSM: %w", err)
+	}
 	if err := security.Apply(policy); err != nil {
 		return fmt.Errorf("workload security: %w", err)
 	}
@@ -197,10 +221,25 @@ func mountProc() error {
 	if err := syscall.Mount("proc", "/proc", "proc", uintptr(syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC), ""); err != nil {
 		return fmt.Errorf("mount /proc: %w", err)
 	}
-	return nil
+	return protectProc()
 }
 
-func mountDevices() error {
+func openDevices() (map[string]int, error) {
+	devices := map[string]int{}
+	for _, name := range []string{"null", "zero", "full", "random", "urandom", "tty"} {
+		fd, err := syscall.Open("/dev/"+name, 0x200000|syscall.O_CLOEXEC, 0)
+		if err != nil {
+			for _, f := range devices {
+				_ = syscall.Close(f)
+			}
+			return nil, err
+		}
+		devices[name] = fd
+	}
+	return devices, nil
+}
+
+func mountDevices(devices map[string]int) error {
 	if err := os.MkdirAll("/dev", 0755); err != nil {
 		return err
 	}
@@ -208,31 +247,29 @@ func mountDevices() error {
 		return fmt.Errorf("mount /dev tmpfs: %w", err)
 	}
 
-	devices := []struct {
-		path  string
-		major int
-		minor int
-		mode  uint32
-	}{
-		{"/dev/null", 1, 3, 0666},
-		{"/dev/zero", 1, 5, 0666},
-		{"/dev/random", 1, 8, 0666},
-		{"/dev/urandom", 1, 9, 0666},
-		{"/dev/tty", 5, 0, 0666},
-	}
-	for _, device := range devices {
-		mode := uint32(syscall.S_IFCHR) | device.mode
-		if err := syscall.Mknod(device.path, mode, makeDevice(device.major, device.minor)); err != nil {
-			return fmt.Errorf("create %s: %w", device.path, err)
+	for name, fd := range devices {
+		target := "/dev/" + name
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+		if err != nil {
+			return err
+		}
+		_ = f.Close()
+		if err := syscall.Mount(fmt.Sprintf("/proc/self/fd/%d", fd), target, "", syscall.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind safe device %s: %w", name, err)
+		}
+		if err := syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_NOSUID|syscall.MS_NOEXEC, ""); err != nil {
+			return err
 		}
 	}
 
 	if err := os.MkdirAll("/dev/pts", 0755); err != nil {
 		return err
 	}
-	if err := syscall.Mount("devpts", "/dev/pts", "devpts", uintptr(syscall.MS_NOSUID|syscall.MS_NOEXEC), "newinstance,ptmxmode=0666,mode=0620"); err == nil {
-		_ = os.Remove("/dev/ptmx")
-		_ = os.Symlink("pts/ptmx", "/dev/ptmx")
+	if err := syscall.Mount("devpts", "/dev/pts", "devpts", uintptr(syscall.MS_NOSUID|syscall.MS_NOEXEC), "newinstance,ptmxmode=0666,mode=0620,max=256"); err != nil {
+		return fmt.Errorf("mount private devpts: %w", err)
+	}
+	if err := os.Symlink("pts/ptmx", "/dev/ptmx"); err != nil {
+		return err
 	}
 
 	for name, target := range map[string]string{

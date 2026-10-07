@@ -90,8 +90,12 @@ jobs:
           ln -s busybox /tmp/titanus-rootfs/bin/sh
           ln -s busybox /tmp/titanus-rootfs/bin/sleep
           CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/security-probe ./internal/security/testprobe
+          CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/isolation-probe ./internal/security/isolationprobe
           CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/health-app ./internal/unitruntime/testapp
           CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/rollout-app ./internal/unitruntime/rolloutapp
+
+      - name: Verify mapped namespaces, device and LSM kernel enforcement
+        run: sudo env "PATH=$PATH" TITANUS_ISOLATION_KERNEL_TEST=1 TITANUS_INIT_BINARY="$PWD/bin/titanus-init" go test ./internal/unitruntime -run TestNativeIsolation -count=1 -v -timeout 180s
 
       - name: Exercise native Unit runtime
         run: |
@@ -107,6 +111,8 @@ jobs:
             ./bin/titanus fabric init --cidr 10.249.0.0/24 --bridge titanus-ci0
 
           sudo env TITANUS_STATE_ROOT="$STATE" ./bin/titanus disk create smoke-data --provider local --size 64M
+          # Test fixture only: production Disks need explicit mapped ownership.
+          sudo chmod 0777 "$STATE/disks/smoke-data/data"
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 --fabric \

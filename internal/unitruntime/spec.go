@@ -58,6 +58,7 @@ type State struct {
 	RestartCount   int         `json:"restart_count"`
 	NextStartAt    time.Time   `json:"next_start_at,omitempty"`
 
+	UserMapping    IDMapping       `json:"user_mapping"`
 	ID             string          `json:"id"`
 	Status         Status          `json:"status"`
 	Process        ProcessIdentity `json:"process"`

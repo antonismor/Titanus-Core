@@ -393,6 +393,14 @@ func ValidateMounts(mounts []Mount) error {
 			return fmt.Errorf("Disk %s requires an absolute non-root target", mount.Disk)
 		}
 		target := filepath.Clean(mount.Target)
+		for _, protected := range []string{"/proc", "/sys", "/dev", "/.titanus-oldroot"} {
+			if target == protected || strings.HasPrefix(target, protected+"/") {
+				return fmt.Errorf("protected Disk target %s", target)
+			}
+		}
+		if target != mount.Target {
+			return fmt.Errorf("Disk target must be canonical")
+		}
 		if seen[target] {
 			return fmt.Errorf("duplicate Disk target %s", target)
 		}
@@ -495,14 +503,14 @@ func readJSON(path string, value any) error {
 	return json.Unmarshal(data, value)
 }
 
-func (m *Manager) storageDir() string { return filepath.Join(m.StateRoot, "storage") }
-func (m *Manager) disksDir() string { return filepath.Join(m.StateRoot, "disks") }
-func (m *Manager) diskDir(name string) string { return filepath.Join(m.disksDir(), name) }
-func (m *Manager) specPath(name string) string { return filepath.Join(m.diskDir(name), "disk.json") }
-func (m *Manager) dataPath(name string) string { return filepath.Join(m.diskDir(name), "data") }
-func (m *Manager) mountPath(name string) string { return filepath.Join(m.diskDir(name), "mount") }
+func (m *Manager) storageDir() string            { return filepath.Join(m.StateRoot, "storage") }
+func (m *Manager) disksDir() string              { return filepath.Join(m.StateRoot, "disks") }
+func (m *Manager) diskDir(name string) string    { return filepath.Join(m.disksDir(), name) }
+func (m *Manager) specPath(name string) string   { return filepath.Join(m.diskDir(name), "disk.json") }
+func (m *Manager) dataPath(name string) string   { return filepath.Join(m.diskDir(name), "data") }
+func (m *Manager) mountPath(name string) string  { return filepath.Join(m.diskDir(name), "mount") }
 func (m *Manager) devicePath(name string) string { return filepath.Join(m.diskDir(name), "device") }
-func (m *Manager) cephConfigPath() string { return filepath.Join(m.storageDir(), "ceph.json") }
+func (m *Manager) cephConfigPath() string        { return filepath.Join(m.storageDir(), "ceph.json") }
 
 func Bind(source, target string, readOnly bool) error {
 	if err := os.MkdirAll(target, 0750); err != nil {

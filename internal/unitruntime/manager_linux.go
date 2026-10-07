@@ -19,6 +19,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 type Config struct {
@@ -190,7 +191,25 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 	if err := spec.Validate(); err != nil {
 		return m.fail(state, err)
 	}
-	policyJSON, err := json.Marshal(spec.Security)
+	mapping, err := m.allocateMapping(id)
+	if err != nil {
+		return m.fail(state, err)
+	}
+	state.UserMapping = mapping
+	effectivePolicy := spec.Security
+	effectivePolicy.LSMWritePaths = append([]string{}, spec.Security.LSMWritePaths...)
+	for _, mount := range spec.Mounts {
+		duplicate := false
+		for _, p := range effectivePolicy.LSMWritePaths {
+			if p == mount.Target {
+				duplicate = true
+			}
+		}
+		if !mount.ReadOnly && !duplicate {
+			effectivePolicy.LSMWritePaths = append(effectivePolicy.LSMWritePaths, mount.Target)
+		}
+	}
+	policyJSON, err := json.Marshal(effectivePolicy)
 	if err != nil {
 		return m.fail(state, err)
 	}
@@ -223,6 +242,9 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return State{}, err
 	}
 
+	if _, err := security.LandlockABI(); err != nil {
+		return m.fail(state, err)
+	}
 	if err := m.mountOverlay(spec); err != nil {
 		return m.fail(state, fmt.Errorf("OverlayFS: %w", err))
 	}
@@ -231,8 +253,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return m.fail(state, fmt.Errorf("Disk mounts: %w", err))
 	}
 	if err := m.prepareCgroup(spec); err != nil {
-		m.cleanupDiskMounts(spec)
-		_ = m.unmountRootfs(spec.ID)
+		m.cleanupAfterStop(spec.ID)
 		return m.fail(state, fmt.Errorf("cgroup: %w", err))
 	}
 
@@ -272,7 +293,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return m.fail(state, err)
 	}
 	defer controlRead.Close()
-	monitorJSON, err := json.Marshal(MonitorConfig{Args: args, ExitPath: filepath.Join(m.unitDir(id), "exit.json"), RunID: state.RunID})
+	monitorJSON, err := json.Marshal(MonitorConfig{Mapping: mapping, Args: args, ExitPath: filepath.Join(m.unitDir(id), "exit.json"), RunID: state.RunID})
 	if err != nil {
 		_ = controlWrite.Close()
 		return m.fail(state, err)
@@ -343,6 +364,14 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		}
 		if err := prepareFabricResolver(rootfs, fabricConfig.Gateway); err != nil {
 			return failStarted(fmt.Errorf("Fabric resolver: %w", err))
+		}
+	}
+
+	if spec.Network.Fabric {
+		for _, path := range []string{"etc", "etc/resolv.conf"} {
+			if err := os.Chown(filepath.Join(rootfs, path), mapping.Base, mapping.Base); err != nil {
+				return failStarted(err)
+			}
 		}
 	}
 
@@ -585,8 +614,8 @@ func prepareFabricResolver(rootfs, gatewayCIDR string) error {
 	if err != nil || gatewayIP.To4() == nil {
 		return fmt.Errorf("invalid IPv4 Fabric gateway %q", gatewayCIDR)
 	}
-	etcDir := filepath.Join(rootfs, "etc")
-	if err := os.MkdirAll(etcDir, 0755); err != nil {
+	etcDir, err := unitMountTarget(rootfs, "/etc")
+	if err != nil {
 		return err
 	}
 	path := filepath.Join(etcDir, "resolv.conf")
@@ -658,6 +687,23 @@ func unitMountTarget(rootfs, target string) (string, error) {
 	if full == cleanRoot || !strings.HasPrefix(full, cleanRoot+string(os.PathSeparator)) {
 		return "", fmt.Errorf("mount target %q escapes Unit rootfs", target)
 	}
+	current := cleanRoot
+	for _, part := range strings.Split(relative, string(os.PathSeparator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if e := os.Mkdir(current, 0755); e != nil {
+				return "", e
+			}
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("mount target traverses non-directory or symlink: %s", current)
+		}
+	}
 	return full, nil
 }
 
@@ -667,8 +713,16 @@ func (m *Manager) mountOverlay(spec Spec) error {
 	if mounted(merged) {
 		return nil
 	}
+	mapping, err := m.allocateMapping(spec.ID)
+	if err != nil {
+		return err
+	}
+	lower, err := m.prepareMappedSource(spec, mapping)
+	if err != nil {
+		return err
+	}
 	data := strings.Join([]string{
-		"lowerdir=" + m.sourceRoot(spec.Source),
+		"lowerdir=" + lower,
 		"upperdir=" + filepath.Join(unitDir, "upper"),
 		"workdir=" + filepath.Join(unitDir, "work"),
 	}, ",")
@@ -718,7 +772,7 @@ func (m *Manager) prepareCgroup(spec Spec) error {
 			return fmt.Errorf("%s=%s: %w", name, value, err)
 		}
 	}
-	return nil
+	return security.EnforceDevices(dir)
 }
 
 func enableControllers(cgroupRoot string, required []string) error {

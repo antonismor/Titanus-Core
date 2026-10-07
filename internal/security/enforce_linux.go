@@ -23,7 +23,7 @@ func Apply(p Policy) error {
 		return err
 	}
 	if p.ReadOnlyRootFS {
-		if err := syscall.Mount("", "/", "", uintptr(syscall.MS_REMOUNT|syscall.MS_RDONLY), ""); err != nil {
+		if err := syscall.Mount("", "/", "", uintptr(syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NODEV), ""); err != nil {
 			return fmt.Errorf("remount Unit rootfs read-only: %w", err)
 		}
 	}
