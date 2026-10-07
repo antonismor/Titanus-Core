@@ -3,6 +3,7 @@ package fabric
 import (
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -134,5 +135,32 @@ func TestNormalizeServicesRejectsMixedBackendPorts(t *testing.T) {
 	}})
 	if err == nil {
 		t.Fatal("expected mixed backend ports to be rejected")
+	}
+}
+
+
+func TestRenderedNATRulesPassNftCheck(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("nft syntax validation requires root")
+	}
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Skip("nft is not installed")
+	}
+	rules := renderNATRules(
+		Config{CIDR: "10.240.1.0/24", Bridge: "titanus-ci0"},
+		state{Allocations: map[string]Allocation{}},
+		[]Service{{
+			Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 8080,
+			Backends: []ServiceBackend{
+				{Address: "10.240.1.10", Port: 80},
+				{Address: "10.240.2.10", Port: 80},
+			},
+		}},
+	)
+	cmd := exec.Command(nft, "-c", "-f", "-")
+	cmd.Stdin = strings.NewReader(rules)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("nft rejected Titanus rules: %v\n%s\nRules:\n%s", err, string(output), rules)
 	}
 }
