@@ -8,6 +8,12 @@ The audit baseline for this milestone is main `eae966f01afad1ca7a5c25dc99566a54b
 native runtime, Fabric, DNS, Service Fabric and ingress/egress Network Policies
 already existed. None of those components are replaced by this milestone.
 
+This consolidated implementation includes the work from PR #6: the `restricted`
+profile API, numeric UID/GID configuration, read-only rootfs and non-root rootfs
+traversal. Its earlier unconfined proposal is rejected by the hardened policy.
+The seccomp denylist is strengthened to an allowlist and applied with TSYNC;
+the helper must stay on its locked OS thread through exec.
+
 ## Application capabilities
 
 An application needing a low-numbered listening port can request:
@@ -37,6 +43,18 @@ are reduced to the requested set. Locked securebits disable UID 0's implicit
 capability restoration and setuid fixups. Explicit ambient capabilities survive
 ordinary exec. `no_new_privs` prevents privilege gains from setuid binaries and
 file capabilities and cannot be unset.
+
+For a non-root workload with an immutable root filesystem:
+
+```sh
+titanus unit create web --source web --fabric --uid 65534 --gid 65534 --read-only-rootfs -- /bin/web
+```
+
+Fleet creation supports the same flags. JSON fields are `profile: "restricted"`,
+`run_as_uid`, `run_as_gid`, and `read_only_rootfs`. Supplementary groups are
+cleared. UID/GID changes affect the locked exec thread before its capability
+sets are narrowed. Read-only rootfs keeps separate tmpfs and Disk mounts usable;
+applications must arrange ownership of their writable Disks themselves.
 
 ## Enforcement boundary
 
@@ -72,8 +90,9 @@ inspect its pointer-based flags; libc may fall back to checked `clone`.
 
 The profile is an initial general workload policy, not a complete sandbox.
 Allowed ioctl/prctl operations still depend on kernel privilege checks. Units
-still run as UID 0 without user namespaces. Device cgroup filtering, LSM policy,
-non-root identity configuration and proc masking remain separate milestones.
+default to UID 0 and can explicitly select a non-root identity, without user
+namespaces. Device cgroup filtering, LSM policy and proc masking remain separate
+milestones.
 ARM64 is cross-built and its filter logic tested; privileged runtime smoke
 currently runs on AMD64. Workloads needing additional syscalls require a reviewed
 profile update, rather than disabling enforcement.

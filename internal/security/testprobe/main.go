@@ -44,8 +44,9 @@ func run() error {
 			return err
 		}
 		if os.Args[1] == "nonroot" {
-			if err := syscall.Setresuid(1000, 1000, 1000); err != nil {
-				return err
+			_, _, errno := syscall.RawSyscall(syscall.SYS_SETRESUID, 1000, 1000, 1000)
+			if errno != 0 {
+				return errno
 			}
 			return syscall.Exec(os.Args[3], []string{os.Args[3]}, os.Environ())
 		}

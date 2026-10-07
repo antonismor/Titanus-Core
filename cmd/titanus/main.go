@@ -888,6 +888,10 @@ func runFleet(args []string) error {
 		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro]")
 		capabilities := fs.String("capabilities", "", "comma-separated application capabilities (default: none)")
 		spread := fs.String("spread", "", "label key used to spread replicas")
+		profile := fs.String("security", security.ProfileRestricted, "Unit Security Profile (restricted)")
+		uid := fs.Int("uid", 0, "Unit process UID")
+		gid := fs.Int("gid", 0, "Unit process GID")
+		readOnly := fs.Bool("read-only-rootfs", false, "remount Unit root filesystem read-only")
 		require := fs.String("require", "", "comma-separated label=value placement requirements")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
@@ -939,8 +943,9 @@ func runFleet(args []string) error {
 				Ports:  ports, Mounts: mounts,
 			},
 		}
+		fleet.Template.Security = security.Policy{Profile: *profile, RunAsUID: *uid, RunAsGID: *gid, ReadOnlyRootFS: *readOnly}
 		if strings.TrimSpace(*capabilities) != "" {
-			fleet.Template.Security = security.Policy{Capabilities: strings.Split(*capabilities, ",")}
+			fleet.Template.Security.Capabilities = strings.Split(*capabilities, ",")
 		}
 		fleet.Template.Security.Normalize()
 		if err := fleet.Template.Security.Validate(); err != nil {
@@ -1561,6 +1566,10 @@ func runUnit(args []string) error {
 		publish := fs.String("publish", "", "comma-separated HOST:UNIT[/tcp|udp] mappings")
 		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro] mounts")
 		capabilities := fs.String("capabilities", "", "comma-separated application capabilities (default: none)")
+		profile := fs.String("security", security.ProfileRestricted, "Security Profile (restricted)")
+		uid := fs.Int("uid", 0, "process UID inside the Unit")
+		gid := fs.Int("gid", 0, "process GID inside the Unit")
+		readOnly := fs.Bool("read-only-rootfs", false, "remount Unit root filesystem read-only")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -1609,8 +1618,9 @@ func runUnit(args []string) error {
 			},
 			Mounts: mounts,
 		}
+		spec.Security = security.Policy{Profile: *profile, RunAsUID: *uid, RunAsGID: *gid, ReadOnlyRootFS: *readOnly}
 		if strings.TrimSpace(*capabilities) != "" {
-			spec.Security = security.Policy{Capabilities: strings.Split(*capabilities, ",")}
+			spec.Security.Capabilities = strings.Split(*capabilities, ",")
 		}
 		state, err := manager.Create(spec)
 		if err != nil {
@@ -2003,6 +2013,11 @@ Unit create options:
   --fabric             Attach Unit to Titanus Fabric
   --publish MAPS       Comma-separated HOST:UNIT[/tcp|udp] mappings
   --mount MOUNTS       Comma-separated DISK:/path[:ro] mounts
+  --security PROFILE   restricted (default)
+  --capabilities CAPS  Explicit application capabilities (default: none)
+  --uid UID            Numeric workload UID (default: 0)
+  --gid GID            Numeric workload GID (default: 0)
+  --read-only-rootfs   Remount Unit root filesystem read-only
 
 Development overrides:
   TITANUS_STATE_ROOT

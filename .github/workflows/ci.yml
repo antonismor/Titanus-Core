@@ -126,6 +126,23 @@ jobs:
             ./bin/titanus unit logs smoke | grep -q TITANUS_RUNTIME_OK
           sudo env TITANUS_STATE_ROOT="$STATE" ./bin/titanus unit logs smoke | grep -q TITANUS_SECURITY_OK
 
+          # Preserve PR #6's non-root/read-only workload support and check the
+          # mount flag itself so ordinary permission denial cannot mask a bug.
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit create strict-smoke --source busybox --memory 64M --pids 64 \
+            --uid 65534 --gid 65534 --read-only-rootfs -- \
+            /bin/sh -ec '/bin/security-probe verify 0; echo UID=$(/bin/busybox id -u) GID=$(/bin/busybox id -g); /bin/busybox grep -E " / overlay ro[, ]" /proc/mounts; echo TMP_OK > /tmp/proof; sleep 30'
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit start strict-smoke
+          sleep 1
+          sudo env TITANUS_STATE_ROOT="$STATE" ./bin/titanus unit logs strict-smoke | tee /tmp/titanus-strict.log
+          grep -q 'UID=65534 GID=65534' /tmp/titanus-strict.log
+          grep -q TITANUS_SECURITY_OK /tmp/titanus-strict.log
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit stop strict-smoke
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit delete strict-smoke
+
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit stop smoke
 

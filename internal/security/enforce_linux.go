@@ -22,10 +22,15 @@ func Apply(p Policy) error {
 	if err != nil {
 		return err
 	}
+	if p.ReadOnlyRootFS {
+		if err := syscall.Mount("", "/", "", uintptr(syscall.MS_REMOUNT|syscall.MS_RDONLY), ""); err != nil {
+			return fmt.Errorf("remount Unit rootfs read-only: %w", err)
+		}
+	}
 	if err := prctl(38, 1, 0); err != nil {
 		return fmt.Errorf("set no_new_privs: %w", err)
 	}
-	if err := dropCapabilities(p.capabilityMask()); err != nil {
+	if err := dropCapabilities(p.capabilityMask(), p.RunAsUID, p.RunAsGID); err != nil {
 		return err
 	}
 	program := syscall.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}
@@ -53,7 +58,7 @@ func prctl(option, arg2, arg3 uintptr) error {
 	return nil
 }
 
-func dropCapabilities(mask uint64) error {
+func dropCapabilities(mask uint64, uid, gid int) error {
 	// Clear inherited ambient privileges before applying an explicit set.
 	if err := prctl(47, 4, 0); err != nil {
 		return fmt.Errorf("clear ambient capabilities: %w", err)
@@ -78,6 +83,19 @@ func dropCapabilities(mask uint64) error {
 			if err := prctl(24, uintptr(cap), 0); err != nil {
 				return fmt.Errorf("drop bounding capability %d: %w", cap, err)
 			}
+		}
+	}
+	// Change only the locked exec thread's credentials. Runtime helper threads
+	// are discarded by exec; using Go's all-thread setters here would mutate
+	// threads whose capability/securebits state has not been changed.
+	for _, call := range []struct{ nr, a, b, c uintptr }{
+		{syscall.SYS_SETGROUPS, 0, 0, 0},
+		{syscall.SYS_SETRESGID, uintptr(gid), uintptr(gid), uintptr(gid)},
+		{syscall.SYS_SETRESUID, uintptr(uid), uintptr(uid), uintptr(uid)},
+	} {
+		_, _, errno := syscall.RawSyscall(call.nr, call.a, call.b, call.c)
+		if errno != 0 {
+			return fmt.Errorf("set workload credentials: %w", errno)
 		}
 	}
 	header := struct {

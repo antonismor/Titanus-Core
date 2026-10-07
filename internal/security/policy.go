@@ -12,6 +12,10 @@ const DefaultProfile = "titanus-default-v1"
 // Policy has no privileged bypass. A missing policy is hardened on first start.
 // Pointer semantics distinguish an omitted no_new_privs from an explicit false.
 type Policy struct {
+	Profile         string   `json:"profile,omitempty"`
+	RunAsUID        int      `json:"run_as_uid,omitempty"`
+	RunAsGID        int      `json:"run_as_gid,omitempty"`
+	ReadOnlyRootFS  bool     `json:"read_only_rootfs,omitempty"`
 	Seccomp         string   `json:"seccomp"`
 	NoNewPrivileges *bool    `json:"no_new_privs,omitempty"`
 	Capabilities    []string `json:"capabilities,omitempty"`
@@ -27,6 +31,7 @@ var applicationCaps = map[string]uint{
 }
 
 func (p *Policy) Normalize() {
+	p.Profile = NormalizeProfile(p.Profile)
 	p.Capabilities = append([]string(nil), p.Capabilities...)
 	if p.Seccomp == "" {
 		p.Seccomp = DefaultProfile
@@ -50,6 +55,15 @@ func (p *Policy) Normalize() {
 
 func (p Policy) Validate() error {
 	p.Normalize()
+	if err := ValidateProfile(p.Profile); err != nil {
+		return err
+	}
+	if p.RunAsUID < 0 || uint64(p.RunAsUID) >= 0xffffffff {
+		return fmt.Errorf("invalid run_as_uid")
+	}
+	if p.RunAsGID < 0 || uint64(p.RunAsGID) >= 0xffffffff {
+		return fmt.Errorf("invalid run_as_gid")
+	}
 	if p.Seccomp != DefaultProfile {
 		return fmt.Errorf("unsupported seccomp profile %q", p.Seccomp)
 	}
