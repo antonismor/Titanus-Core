@@ -54,7 +54,7 @@ jobs:
       - name: Install static BusyBox
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y busybox-static
+          sudo apt-get install -y busybox-static iproute2 nftables util-linux
 
       - name: Build minimal Titanus Source
         run: |
@@ -74,7 +74,10 @@ jobs:
             ./bin/titanus source import busybox /tmp/titanus-rootfs
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
-            ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 -- \
+            ./bin/titanus fabric init --cidr 10.249.0.0/24 --bridge titanus-ci0
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 --fabric -- \
             /bin/sh -c 'echo TITANUS_RUNTIME_OK; sleep 30'
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
@@ -85,6 +88,9 @@ jobs:
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit inspect smoke | tee /tmp/titanus-inspect.json
           grep -q '"status": "ACTIVE"' /tmp/titanus-inspect.json
+          grep -q '"network_address": "10.249.0.10"' /tmp/titanus-inspect.json
+
+          sudo nsenter -t "$(jq -r '.state.pid' /tmp/titanus-inspect.json)" -n ip addr show eth0 | grep -q '10.249.0.10/24'
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit logs smoke | grep -q TITANUS_RUNTIME_OK
