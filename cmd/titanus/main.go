@@ -240,7 +240,7 @@ func pause(reader *bufio.Reader) {
 }
 
 func printHelp() {
-	fmt.Println(`Titanus Core CLI
+	fmt.Print(`Titanus Core CLI
 
 Usage:
   titanus                         Interactive ANSI menu
