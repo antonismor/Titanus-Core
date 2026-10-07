@@ -1,9 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -63,17 +63,19 @@ func main() {
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-stop
-		ctx, cancel := signal.NotifyContext(nil)
-		cancel()
-		_ = server.Close()
-		_ = ctx
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("graceful shutdown failed: %v", err)
+			_ = server.Close()
+		}
 	}()
 
 	log.Printf("Titanus daemon %s listening on unix://%s", version, socketPath)
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
-	fmt.Println("Titanus daemon stopped")
+	log.Print("Titanus daemon stopped")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
