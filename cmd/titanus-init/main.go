@@ -25,9 +25,9 @@ func main() {
 	runProcessSupervisor(os.Args[1:])
 }
 
-func runUnitChild(args []string) error {
-	if len(args) < 9 {
-		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD PROFILE UID GID READONLY -- COMMAND [ARGS...]")
+func runUnitChild(args []string) (retErr error) {
+	if len(args) < 10 {
+		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD STATUS_FD PROFILE UID GID READONLY -- COMMAND [ARGS...]")
 	}
 	rootfs := filepath.Clean(args[0])
 	hostname := args[1]
@@ -35,29 +35,45 @@ func runUnitChild(args []string) error {
 	if err != nil || readyFD < 3 {
 		return fmt.Errorf("invalid runtime readiness fd %q", args[2])
 	}
-	uid, err := strconv.Atoi(args[4])
+	statusFD, err := strconv.Atoi(args[3])
+	if err != nil || statusFD < 3 || statusFD == readyFD {
+		return fmt.Errorf("invalid runtime status fd %q", args[3])
+	}
+	statusFile := os.NewFile(uintptr(statusFD), "titanus-runtime-exec-status")
+	if statusFile == nil {
+		return fmt.Errorf("open runtime status fd")
+	}
+	syscall.CloseOnExec(statusFD)
+	defer func() {
+		if retErr != nil {
+			_, _ = fmt.Fprintln(statusFile, retErr.Error())
+		}
+		_ = statusFile.Close()
+	}()
+
+	uid, err := strconv.Atoi(args[5])
 	if err != nil {
 		return fmt.Errorf("invalid Unit UID %q", args[4])
 	}
-	gid, err := strconv.Atoi(args[5])
+	gid, err := strconv.Atoi(args[6])
 	if err != nil {
-		return fmt.Errorf("invalid Unit GID %q", args[5])
+		return fmt.Errorf("invalid Unit GID %q", args[6])
 	}
-	readOnlyRootFS, err := strconv.ParseBool(args[6])
+	readOnlyRootFS, err := strconv.ParseBool(args[7])
 	if err != nil {
-		return fmt.Errorf("invalid Unit read-only-rootfs value %q", args[6])
+		return fmt.Errorf("invalid Unit read-only-rootfs value %q", args[7])
 	}
 	securitySpec := security.Spec{
-		Profile: args[3], RunAsUID: uid, RunAsGID: gid, ReadOnlyRootFS: readOnlyRootFS,
+		Profile: args[4], RunAsUID: uid, RunAsGID: gid, ReadOnlyRootFS: readOnlyRootFS,
 	}
 	securitySpec.Normalize()
 	if err := securitySpec.Validate(); err != nil {
 		return err
 	}
-	if args[7] != "--" {
+	if args[8] != "--" {
 		return fmt.Errorf("missing command separator")
 	}
-	command := args[8:]
+	command := args[9:]
 	if len(command) == 0 {
 		return fmt.Errorf("missing Unit command")
 	}
