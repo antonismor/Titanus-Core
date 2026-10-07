@@ -3,6 +3,7 @@ package remote
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,6 +30,57 @@ func NewSSHExecutor() *SSHExecutor {
 		ConnectTimeout: 5 * time.Second,
 		CommandTimeout: 20 * time.Second,
 	}
+}
+
+type BlockDevice struct {
+	Name  string
+	Path  string
+	Size  uint64
+	Model string
+}
+
+type lsblkDevice struct {
+	Name        string        `json:"name"`
+	Path        string        `json:"path"`
+	Size        uint64        `json:"size"`
+	Type        string        `json:"type"`
+	Model       string        `json:"model"`
+	Mountpoints []any         `json:"mountpoints"`
+	Children    []lsblkDevice `json:"children"`
+}
+
+func (e *SSHExecutor) DiscoverBlockDevices(node model.NodeSpec) ([]BlockDevice, error) {
+	result, err := e.Run(node, "lsblk -J -b -o NAME,PATH,SIZE,TYPE,MODEL,MOUNTPOINTS")
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Blockdevices []lsblkDevice `json:"blockdevices"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &payload); err != nil {
+		return nil, fmt.Errorf("decode lsblk output from %s: %w", node.Name, err)
+	}
+	devices := make([]BlockDevice, 0)
+	for _, device := range payload.Blockdevices {
+		if device.Type != "disk" || device.Path == "" || len(device.Children) != 0 {
+			continue
+		}
+		mounted := false
+		for _, mountpoint := range device.Mountpoints {
+			if text, ok := mountpoint.(string); ok && strings.TrimSpace(text) != "" {
+				mounted = true
+				break
+			}
+		}
+		if mounted {
+			continue
+		}
+		devices = append(devices, BlockDevice{
+			Name: device.Name, Path: device.Path, Size: device.Size,
+			Model: strings.TrimSpace(device.Model),
+		})
+	}
+	return devices, nil
 }
 
 func (e *SSHExecutor) CopyFile(node model.NodeSpec, localPath, remotePath string) error {
