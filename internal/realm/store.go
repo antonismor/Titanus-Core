@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,9 +36,17 @@ type Resources struct {
 	UnitCount        int   `json:"unit_count"`
 }
 
+type RealmNetwork struct {
+	FabricCIDR  string `json:"fabric_cidr"`
+	ServiceCIDR string `json:"service_cidr"`
+	NodePrefix  int    `json:"node_prefix"`
+	VXLANID     int    `json:"vxlan_id"`
+}
+
 type Node struct {
 	ID           string             `json:"id"`
 	Address      string             `json:"address"`
+	FabricCIDR   string             `json:"fabric_cidr,omitempty"`
 	Capabilities []model.Capability `json:"capabilities"`
 	Labels       map[string]string  `json:"labels,omitempty"`
 	Resources    Resources          `json:"resources"`
@@ -93,6 +102,7 @@ type Assignment struct {
 
 type State struct {
 	Name        string                `json:"name"`
+	Network     RealmNetwork          `json:"network"`
 	Revision    uint64                `json:"revision"`
 	Nodes       map[string]Node       `json:"nodes"`
 	Fleets      map[string]Fleet      `json:"fleets"`
@@ -146,8 +156,88 @@ func (s *Store) UpsertNode(node Node) error {
 	if node.Labels == nil {
 		node.Labels = map[string]string{}
 	}
+	if node.FabricCIDR == "" && s.data.Network.FabricCIDR != "" {
+		subnet, err := s.allocateNodeSubnetLocked()
+		if err != nil {
+			return err
+		}
+		node.FabricCIDR = subnet
+	}
 	s.data.Nodes[node.ID] = node
 	return s.commitLocked()
+}
+
+func (s *Store) ConfigureNetwork(network RealmNetwork) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if network.NodePrefix == 0 {
+		network.NodePrefix = 24
+	}
+	if network.VXLANID == 0 {
+		network.VXLANID = 4242
+	}
+	if network.VXLANID < 1 || network.VXLANID > 16777215 {
+		return fmt.Errorf("VXLAN ID must be between 1 and 16777215")
+	}
+	if _, fabricNet, err := net.ParseCIDR(network.FabricCIDR); err != nil {
+		return fmt.Errorf("invalid Realm Fabric CIDR: %w", err)
+	} else {
+		ones, bits := fabricNet.Mask.Size()
+		if bits != 32 || network.NodePrefix <= ones || network.NodePrefix > 30 {
+			return fmt.Errorf("Node prefix /%d is incompatible with Fabric %s", network.NodePrefix, network.FabricCIDR)
+		}
+		network.FabricCIDR = fabricNet.String()
+	}
+	if _, serviceNet, err := net.ParseCIDR(network.ServiceCIDR); err != nil {
+		return fmt.Errorf("invalid Realm Service CIDR: %w", err)
+	} else {
+		network.ServiceCIDR = serviceNet.String()
+	}
+	s.data.Network = network
+	return s.commitLocked()
+}
+
+func (s *Store) allocateNodeSubnetLocked() (string, error) {
+	_, network, err := net.ParseCIDR(s.data.Network.FabricCIDR)
+	if err != nil {
+		return "", err
+	}
+	ones, bits := network.Mask.Size()
+	prefix := s.data.Network.NodePrefix
+	if bits != 32 || prefix <= ones {
+		return "", fmt.Errorf("unsupported Realm Fabric layout")
+	}
+	used := map[string]bool{}
+	for _, node := range s.data.Nodes {
+		if node.FabricCIDR != "" {
+			used[node.FabricCIDR] = true
+		}
+	}
+	count := 1 << uint(prefix-ones)
+	base := ipv4Uint(network.IP.To4())
+	step := uint32(1) << uint(32-prefix)
+	for index := 1; index < count; index++ {
+		ip := uintIPv4(base + uint32(index)*step)
+		candidate := fmt.Sprintf("%s/%d", ip.String(), prefix)
+		_, candidateNet, _ := net.ParseCIDR(candidate)
+		candidate = candidateNet.String()
+		if !used[candidate] {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("Realm Fabric %s has no free Node subnets", s.data.Network.FabricCIDR)
+}
+
+func ipv4Uint(ip net.IP) uint32 {
+	if ip == nil {
+		return 0
+	}
+	ip = ip.To4()
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+func uintIPv4(value uint32) net.IP {
+	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value))
 }
 
 func (s *Store) Pulse(nodeID string, resources Resources) error {
