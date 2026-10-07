@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -141,5 +140,3 @@ func parseLabels(args []string) map[string]string {
 	}
 	return labels
 }
-
-var _ = os.ErrNotExist
