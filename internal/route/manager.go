@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -14,8 +15,10 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/realm"
 )
 
+type StateProvider func() (realm.State, error)
+
 type Manager struct {
-	Store *realm.Store
+	state StateProvider
 
 	mu        sync.Mutex
 	listeners map[string]*routeListener
@@ -29,7 +32,23 @@ type routeListener struct {
 }
 
 func NewManager(store *realm.Store) *Manager {
-	return &Manager{Store: store, listeners: map[string]*routeListener{}}
+	if store == nil {
+		return NewManagerWithStateProvider(nil)
+	}
+	return NewManagerWithStateProvider(func() (realm.State, error) {
+		return store.Snapshot(), nil
+	})
+}
+
+func NewManagerWithStateProvider(provider StateProvider) *Manager {
+	return &Manager{state: provider, listeners: map[string]*routeListener{}}
+}
+
+func (m *Manager) snapshot() (realm.State, error) {
+	if m.state == nil {
+		return realm.State{}, fmt.Errorf("Route manager has no Realm state provider")
+	}
+	return m.state()
 }
 
 func (m *Manager) Run(ctx context.Context) {
@@ -47,10 +66,10 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 func (m *Manager) Reconcile() error {
-	if m.Store == nil {
-		return fmt.Errorf("Route manager has no Realm store")
+	state, err := m.snapshot()
+	if err != nil {
+		return err
 	}
-	state := m.Store.Snapshot()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -155,7 +174,10 @@ func (m *Manager) proxy(ctx context.Context, running *routeListener, client net.
 }
 
 func (m *Manager) backends(route realm.Route) []string {
-	state := m.Store.Snapshot()
+	state, err := m.snapshot()
+	if err != nil {
+		return nil
+	}
 	out := make([]string, 0)
 	for _, assignment := range state.Assignments {
 		if assignment.Fleet != route.Fleet ||
@@ -163,8 +185,13 @@ func (m *Manager) backends(route realm.Route) []string {
 			assignment.NetworkAddress == "" {
 			continue
 		}
+		node, ok := state.Nodes[assignment.NodeID]
+		if !ok || node.State != realm.NodeReady {
+			continue
+		}
 		out = append(out, net.JoinHostPort(assignment.NetworkAddress, strconv.Itoa(route.TargetPort)))
 	}
+	sort.Strings(out)
 	return out
 }
 

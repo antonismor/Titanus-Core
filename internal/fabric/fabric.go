@@ -112,8 +112,8 @@ func (m *Manager) ConfigureMesh(localVTEP string, vxlanID int, peers []Peer) (Co
 	if os.Geteuid() != 0 {
 		return Config{}, fmt.Errorf("Realm Fabric mesh configuration requires root")
 	}
-	if net.ParseIP(localVTEP) == nil {
-		return Config{}, fmt.Errorf("invalid local VTEP address %q", localVTEP)
+	if ip := net.ParseIP(localVTEP); ip == nil || ip.To4() == nil {
+		return Config{}, fmt.Errorf("invalid IPv4 local VTEP address %q", localVTEP)
 	}
 	if vxlanID < 1 || vxlanID > 16777215 {
 		return Config{}, fmt.Errorf("invalid VXLAN ID %d", vxlanID)
@@ -204,10 +204,10 @@ func normalizedPeers(peers []Peer, localVTEP string) []Peer {
 		if peer.VTEP == "" || peer.VTEP == localVTEP {
 			continue
 		}
-		if net.ParseIP(peer.VTEP) == nil {
+		if ip := net.ParseIP(peer.VTEP); ip == nil || ip.To4() == nil {
 			continue
 		}
-		if _, network, err := net.ParseCIDR(peer.CIDR); err != nil {
+		if ip, network, err := net.ParseCIDR(peer.CIDR); err != nil || ip.To4() == nil {
 			continue
 		} else {
 			peer.CIDR = network.String()
@@ -324,6 +324,7 @@ func (m *Manager) Attach(unitID string, pid int, ports []Port) (Allocation, erro
 	if err := validatePorts(ports); err != nil {
 		return Allocation{}, err
 	}
+	ports = normalizePorts(ports)
 	if err := m.ensureHostFabric(cfg); err != nil {
 		return Allocation{}, err
 	}
@@ -565,6 +566,18 @@ func sortedActive(st state) []Allocation {
 
 func ValidatePorts(ports []Port) error {
 	return validatePorts(ports)
+}
+
+func normalizePorts(ports []Port) []Port {
+	out := make([]Port, len(ports))
+	for i, port := range ports {
+		port.Protocol = strings.ToLower(strings.TrimSpace(port.Protocol))
+		if port.Protocol == "" {
+			port.Protocol = "tcp"
+		}
+		out[i] = port
+	}
+	return out
 }
 
 func validatePorts(ports []Port) error {

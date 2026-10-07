@@ -14,6 +14,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
+	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
@@ -33,6 +34,12 @@ func New(ca, cert, key string) (*Client, error) {
 			Timeout:   20 * time.Second,
 		},
 	}, nil
+}
+
+func (c *Client) RealmState(address string) (realm.State, error) {
+	var state realm.State
+	err := c.doJSON(http.MethodGet, endpoint(address)+"/v1/realm/state", nil, &state)
+	return state, err
 }
 
 func (c *Client) RenewLease(address, id, token string, ttl time.Duration) (lease.Record, error) {

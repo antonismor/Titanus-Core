@@ -152,7 +152,7 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 
 		daemonEnvPath := filepath.Join(tempDir, node.Name+"-daemon.env")
 		agentEnvPath := filepath.Join(tempDir, node.Name+"-agent.env")
-		if err := os.WriteFile(daemonEnvPath, []byte(daemonEnvironment(plan, node, opts, controller, gateway)), 0600); err != nil {
+		if err := os.WriteFile(daemonEnvPath, []byte(daemonEnvironment(plan, node, primary, opts, controller, gateway)), 0600); err != nil {
 			return nil, err
 		}
 		if err := os.WriteFile(agentEnvPath, []byte(agentEnvironment(plan, node, primary, opts)), 0600); err != nil {
@@ -329,10 +329,10 @@ func hasCapability(node model.NodeSpec, wanted model.Capability) bool {
 	return false
 }
 
-func daemonEnvironment(plan model.RealmPlan, node model.NodeSpec, opts RealmDeployOptions, controller, gateway bool) string {
+func daemonEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts RealmDeployOptions, controller, gateway bool) string {
 	return fmt.Sprintf(
-		"TITANUS_STATE_ROOT=/var/lib/titanus\nTITANUS_REALM_NAME=%s\nTITANUS_CONTROLLER_MODE=%t\nTITANUS_GATEWAY_MODE=%t\nTITANUS_CLUSTER_LISTEN=0.0.0.0:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\n",
-		plan.RealmName, controller, gateway, opts.ClusterPort,
+		"TITANUS_STATE_ROOT=/var/lib/titanus\nTITANUS_REALM_NAME=%s\nTITANUS_NODE_ID=%s\nTITANUS_CONTROLLER_MODE=%t\nTITANUS_GATEWAY_MODE=%t\nTITANUS_CONTROLLER_ENDPOINT=https://%s:%d\nTITANUS_CLUSTER_LISTEN=0.0.0.0:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\n",
+		plan.RealmName, node.Name, controller, gateway, primary.ManagementIP, opts.ClusterPort, opts.ClusterPort,
 	)
 }
 
@@ -389,7 +389,7 @@ const realmAgentService = "[Unit]\n" +
 	"[Service]\n" +
 	"Type=simple\n" +
 	"EnvironmentFile=/etc/titanus/agent.env\n" +
-	"ExecStart=/usr/local/sbin/titanus-agent --node=$" + "{TITANUS_NODE_ID} --address=$" + "{TITANUS_NODE_ADDRESS} --controller=$" + "{TITANUS_CONTROLLER} --ca=$" + "{TITANUS_CA} --cert=$" + "{TITANUS_CERT} --key=$" + "{TITANUS_KEY} --capabilities=$" + "{TITANUS_CAPABILITIES}\n" +
+	"ExecStart=/usr/local/sbin/titanus-agent --node=$" + "{TITANUS_NODE_ID} --address=$" + "{TITANUS_NODE_ADDRESS} --fabric-address=$" + "{TITANUS_NODE_FABRIC_ADDRESS} --controller=$" + "{TITANUS_CONTROLLER} --ca=$" + "{TITANUS_CA} --cert=$" + "{TITANUS_CERT} --key=$" + "{TITANUS_KEY} --capabilities=$" + "{TITANUS_CAPABILITIES}\n" +
 	"Restart=always\n" +
 	"RestartSec=5\n" +
 	"NoNewPrivileges=true\n" +

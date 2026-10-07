@@ -45,3 +45,21 @@ func TestParsePort(t *testing.T) {
 		t.Fatalf("unexpected port: %#v", p)
 	}
 }
+
+
+func TestNormalizePortsDefaultsTCP(t *testing.T) {
+	ports := normalizePorts([]Port{{HostPort: 8080, ContainerPort: 80}})
+	if len(ports) != 1 || ports[0].Protocol != "tcp" {
+		t.Fatalf("unexpected normalized ports: %#v", ports)
+	}
+}
+
+func TestNormalizedPeersRejectIPv6ForFabricV1(t *testing.T) {
+	peers := normalizedPeers([]Peer{
+		{NodeID: "ipv6", VTEP: "2001:db8::1", CIDR: "10.241.0.0/24"},
+		{NodeID: "good", VTEP: "192.0.2.10", CIDR: "10.242.0.0/24"},
+	}, "192.0.2.1")
+	if len(peers) != 1 || peers[0].NodeID != "good" {
+		t.Fatalf("unexpected peers: %#v", peers)
+	}
+}
