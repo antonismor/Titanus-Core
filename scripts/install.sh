@@ -18,6 +18,7 @@ cd "${ROOT_DIR}"
 make build
 
 echo "==> Installing binaries"
+install -d -m 0755 /usr/local/libexec
 install -m 0755 bin/titanus /usr/local/bin/titanus
 install -m 0755 bin/titanusd /usr/local/sbin/titanusd
 install -m 0755 bin/titanus-init /usr/local/libexec/titanus-init
