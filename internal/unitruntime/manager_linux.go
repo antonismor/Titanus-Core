@@ -3,6 +3,7 @@ package unitruntime
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -165,9 +166,17 @@ func (m *Manager) Start(id string) (State, error) {
 		m.cleanupAfterStop(id)
 		return m.fail(state, fmt.Errorf("create runtime readiness pipe: %w", err))
 	}
+	statusRead, statusWrite, err := os.Pipe()
+	if err != nil {
+		_ = readyRead.Close()
+		_ = readyWrite.Close()
+		_ = logFile.Close()
+		m.cleanupAfterStop(id)
+		return m.fail(state, fmt.Errorf("create runtime exec-status pipe: %w", err))
+	}
 
 	args := []string{
-		"--unit-child", rootfs, spec.Hostname, "3",
+		"--unit-child", rootfs, spec.Hostname, "3", "4",
 		spec.Security.Profile,
 		strconv.Itoa(spec.Security.RunAsUID),
 		strconv.Itoa(spec.Security.RunAsGID),
@@ -179,7 +188,7 @@ func (m *Manager) Start(id string) (State, error) {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(), spec.Environment...)
-	cmd.ExtraFiles = []*os.File{readyRead}
+	cmd.ExtraFiles = []*os.File{readyRead, statusWrite}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
@@ -192,15 +201,19 @@ func (m *Manager) Start(id string) (State, error) {
 	if err := cmd.Start(); err != nil {
 		_ = readyRead.Close()
 		_ = readyWrite.Close()
+		_ = statusRead.Close()
+		_ = statusWrite.Close()
 		_ = logFile.Close()
 		m.cleanupAfterStop(id)
 		return m.fail(state, fmt.Errorf("start titanus-init: %w", err))
 	}
 	_ = readyRead.Close()
+	_ = statusWrite.Close()
 	pid := cmd.Process.Pid
 
 	failStarted := func(cause error) (State, error) {
 		_ = readyWrite.Close()
+		_ = statusRead.Close()
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		_ = logFile.Close()
 		_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
@@ -233,6 +246,14 @@ func (m *Manager) Start(id string) (State, error) {
 	}
 	_ = readyWrite.Close()
 
+	if err := waitForExecStatus(statusRead, 5*time.Second); err != nil {
+		return failStarted(fmt.Errorf("Unit exec: %w", err))
+	}
+	_ = statusRead.Close()
+	if !processAlive(pid) {
+		return failStarted(fmt.Errorf("Unit process exited during startup"))
+	}
+
 	state.PID = pid
 	state.Status = StatusActive
 	state.StartedAt = time.Now().UTC()
@@ -243,6 +264,34 @@ func (m *Manager) Start(id string) (State, error) {
 	_ = logFile.Close()
 	_ = cmd.Process.Release()
 	return state, nil
+}
+
+func waitForExecStatus(file *os.File, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(file)
+		done <- result{data: data, err: err}
+	}()
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			return outcome.err
+		}
+		if message := strings.TrimSpace(string(outcome.data)); message != "" {
+			return errors.New(message)
+		}
+		return nil
+	case <-time.After(timeout):
+		_ = file.Close()
+		return fmt.Errorf("startup confirmation timed out after %s", timeout)
+	}
 }
 
 func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
