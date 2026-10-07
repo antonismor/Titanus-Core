@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log"
@@ -10,72 +11,169 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/antonismor/Titanus-Core/internal/controlapi"
+	"github.com/antonismor/Titanus-Core/internal/identity"
+	"github.com/antonismor/Titanus-Core/internal/realm"
 )
 
 const (
-	version    = "0.1.0-dev"
+	version    = "0.3.0-dev"
 	socketPath = "/run/titanus/titanus.sock"
 )
 
 func main() {
 	if os.Geteuid() != 0 {
-		log.Fatal("titanusd must run as root during the bootstrap development stage")
+		log.Fatal("titanusd must run as root")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
-		log.Fatal(err)
-	}
-	_ = os.Remove(socketPath)
-
-	listener, err := net.Listen("unix", socketPath)
+	stateRoot := envDefault("TITANUS_STATE_ROOT", "/var/lib/titanus")
+	realmName := envDefault("TITANUS_REALM_NAME", "TITANUS-REALM")
+	store, err := realm.Open(stateRoot, realmName)
 	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() {
-		_ = listener.Close()
-		_ = os.Remove(socketPath)
-	}()
-	if err := os.Chmod(socketPath, 0660); err != nil {
 		log.Fatal(err)
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":  "healthy",
-			"service": "titanusd",
-			"version": version,
-			"time":    time.Now().UTC(),
+			"status":   "healthy",
+			"service":  "titanusd",
+			"version":  version,
+			"realm":    store.Snapshot().Name,
+			"revision": store.Snapshot().Revision,
+			"time":     time.Now().UTC(),
 		})
 	})
 	mux.HandleFunc("/v1/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version})
 	})
+	controlapi.New(store).Register(mux)
 
-	server := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+	unixListener, err := unixSocket()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		_ = unixListener.Close()
+		_ = os.Remove(socketPath)
+	}()
+
+	servers := []*http.Server{newHTTPServer(mux)}
+	listeners := []net.Listener{unixListener}
+
+	clusterListen := strings.TrimSpace(os.Getenv("TITANUS_CLUSTER_LISTEN"))
+	if clusterListen != "" {
+		ca := envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
+		cert := envDefault("TITANUS_CERT", "/etc/titanus/pki/node.crt")
+		key := envDefault("TITANUS_KEY", "/etc/titanus/pki/node.key")
+		tlsConfig, err := identity.TLSConfig(ca, cert, key, true)
+		if err != nil {
+			log.Fatalf("Realm mTLS configuration: %v", err)
+		}
+		listener, err := tls.Listen("tcp", clusterListen, tlsConfig)
+		if err != nil {
+			log.Fatalf("Realm TCP listener: %v", err)
+		}
+		listeners = append(listeners, listener)
+		servers = append(servers, newHTTPServer(mux))
+		log.Printf("Titanus Realm mTLS API listening on %s", clusterListen)
 	}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-stop
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	go healthLoop(ctx, store)
+
+	errCh := make(chan error, len(servers))
+	for i := range servers {
+		server := servers[i]
+		listener := listeners[i]
+		go func() {
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+				return
+			}
+			errCh <- nil
+		}()
+	}
+
+	log.Printf("Titanus daemon %s Realm=%s listening on unix://%s", version, store.Snapshot().Name, socketPath)
+
+	select {
+	case <-ctx.Done():
+		log.Print("Titanus daemon shutdown requested")
+	case err := <-errCh:
+		if err != nil {
+			log.Printf("Titanus API listener failed: %v", err)
+		}
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	for _, server := range servers {
+		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("graceful shutdown failed: %v", err)
 			_ = server.Close()
 		}
-	}()
-
-	log.Printf("Titanus daemon %s listening on unix://%s", version, socketPath)
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
 	}
 	log.Print("Titanus daemon stopped")
+}
+
+func unixSocket() (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(socketPath, 0660); err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	return listener, nil
+}
+
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
+}
+
+func healthLoop(ctx context.Context, store *realm.Store) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			changed, err := store.EvaluateHealth(now.UTC(), 30*time.Second, 90*time.Second)
+			if err != nil {
+				log.Printf("Realm health evaluation failed: %v", err)
+				continue
+			}
+			for _, node := range changed {
+				log.Printf("Realm Node %s health -> %s", node.ID, node.State)
+			}
+		}
+	}
+}
+
+func envDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
