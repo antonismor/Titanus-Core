@@ -105,17 +105,39 @@ func main() {
 	defer cancel()
 
 	go healthLoop(ctx, store)
-	if envBool("TITANUS_GATEWAY_MODE") {
-		routeManager := route.NewManager(store)
-		go routeManager.Run(ctx)
-		log.Printf("Titanus Route gateway enabled")
-	}
-	if envBool("TITANUS_CONTROLLER_MODE") {
-		client, err := realmclient.New(ca, cert, key)
+
+	controllerMode := envBool("TITANUS_CONTROLLER_MODE")
+	gatewayMode := envBool("TITANUS_GATEWAY_MODE")
+	controllerEndpoint := strings.TrimSpace(os.Getenv("TITANUS_CONTROLLER_ENDPOINT"))
+
+	var clusterClient *realmclient.Client
+	if controllerMode || (gatewayMode && controllerEndpoint != "") {
+		clusterClient, err = realmclient.New(ca, cert, key)
 		if err != nil {
-			log.Fatalf("Realm reconciler mTLS client: %v", err)
+			log.Fatalf("Realm mTLS client: %v", err)
 		}
-		controller := &reconcile.Controller{Store: store, Nodes: client, Sources: sourceManager, Interval: 5 * time.Second}
+	}
+
+	if gatewayMode {
+		var routeManager *route.Manager
+		if controllerMode {
+			routeManager = route.NewManager(store)
+			log.Printf("Titanus Route gateway enabled with local controller state")
+		} else if controllerEndpoint != "" {
+			routeManager = route.NewManagerWithStateProvider(func() (realm.State, error) {
+				return clusterClient.RealmState(controllerEndpoint)
+			})
+			log.Printf("Titanus Route gateway enabled with remote controller state %s", controllerEndpoint)
+		} else {
+			log.Printf("Titanus Route gateway disabled: TITANUS_CONTROLLER_ENDPOINT is required on non-controller gateways")
+		}
+		if routeManager != nil {
+			go routeManager.Run(ctx)
+		}
+	}
+
+	if controllerMode {
+		controller := &reconcile.Controller{Store: store, Nodes: clusterClient, Sources: sourceManager, Interval: 5 * time.Second}
 		go controller.Run(ctx)
 		log.Printf("Titanus Fleet reconciler enabled")
 	}
