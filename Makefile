@@ -5,7 +5,7 @@ build:
 	go build -o bin/titanus ./cmd/titanus
 	go build -o bin/titanusd ./cmd/titanusd
 	go build -o bin/titanus-agent ./cmd/titanus-agent
-	go build -o bin/titanus-init ./cmd/titanus-init
+	CGO_ENABLED=0 go build -o bin/titanus-init ./cmd/titanus-init
 
 test:
 	go test ./...

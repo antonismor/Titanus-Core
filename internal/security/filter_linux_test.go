@@ -105,3 +105,15 @@ func TestDefaultFilterBoundaries(t *testing.T) {
 		t.Fatal("unsupported architecture accepted")
 	}
 }
+
+func TestARM64RuntimeAndDynamicLoaderSyscalls(t *testing.T) {
+	f, err := DefaultFilter("arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, nr := range map[string]uint32{"newfstatat": 79, "fstat": 80, "renameat": 38, "getrlimit": 163, "setrlimit": 164} {
+		if evaluate(t, f, 0xc00000b7, nr, 0) != actionAllow {
+			t.Fatalf("ARM64 %s must be available to native loaders and runtime", name)
+		}
+	}
+}

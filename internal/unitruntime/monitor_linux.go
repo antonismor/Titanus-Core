@@ -34,6 +34,11 @@ func RunMonitor(encoded string) error {
 	if cfg.RunID == "" || !filepath.IsAbs(cfg.ExitPath) || len(cfg.Args) == 0 {
 		return fmt.Errorf("invalid monitor configuration")
 	}
+	// Mark every inherited monitor descriptor CLOEXEC before spawning init.
+	// ExtraFiles clears CLOEXEC only on the child's explicitly passed 3/4.
+	for _, fd := range []int{3, 4, 5} {
+		syscall.CloseOnExec(fd)
+	}
 	ready := os.NewFile(3, "startup-barrier")
 	status := os.NewFile(4, "startup-status")
 	control := os.NewFile(5, "process-identity")

@@ -170,3 +170,9 @@ jobs:
 
       - name: Exercise lifecycle and daemon recovery
         run: sudo env "PATH=$PATH" bash scripts/ci-runtime-lifecycle.sh
+
+      - name: Runtime diagnostics on failure
+        if: failure()
+        run: |
+          sudo find /tmp/titanus-ci-state/units -name unit.log -exec tail -n 50 {} \; || true
+          sudo cat /tmp/titanus-lifecycle-daemon.log || true
