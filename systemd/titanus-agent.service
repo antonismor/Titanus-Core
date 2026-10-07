@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/titanus/agent.env
-ExecStart=/usr/local/sbin/titanus-agent --node=${TITANUS_NODE_ID} --address=${TITANUS_NODE_ADDRESS} --controller=${TITANUS_CONTROLLER} --ca=${TITANUS_CA} --cert=${TITANUS_CERT} --key=${TITANUS_KEY} --capabilities=${TITANUS_CAPABILITIES}
+ExecStart=/usr/local/sbin/titanus-agent --node=${TITANUS_NODE_ID} --address=${TITANUS_NODE_ADDRESS} --fabric-address=${TITANUS_NODE_FABRIC_ADDRESS} --controller=${TITANUS_CONTROLLER} --ca=${TITANUS_CA} --cert=${TITANUS_CERT} --key=${TITANUS_KEY} --capabilities=${TITANUS_CAPABILITIES}
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
