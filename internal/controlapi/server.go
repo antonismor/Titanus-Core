@@ -36,6 +36,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/realm/pulse", s.pulse)
 	mux.HandleFunc("/v1/realm/fleets", s.fleets)
 	mux.HandleFunc("/v1/realm/fleets/", s.fleetObject)
+	mux.HandleFunc("/v1/realm/routes", s.routes)
+	mux.HandleFunc("/v1/realm/routes/", s.routeObject)
 	mux.HandleFunc("/v1/node/units", s.units)
 	mux.HandleFunc("/v1/node/units/", s.unitAction)
 	mux.HandleFunc("/v1/node/sources", s.sources)
@@ -310,6 +312,57 @@ func (s *Server) pulse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accepted": true, "revision": s.Store.Snapshot().Revision})
+}
+
+func (s *Server) routes(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		state := s.Store.Snapshot()
+		items := make([]realm.Route, 0, len(state.Routes))
+		for _, route := range state.Routes {
+			items = append(items, route)
+		}
+		writeJSON(w, http.StatusOK, items)
+	case http.MethodPost:
+		var route realm.Route
+		if err := decodeJSON(r, &route); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		stored, err := s.Store.PutRoute(route)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, stored)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) routeObject(w http.ResponseWriter, r *http.Request) {
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/realm/routes/"), "/")
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid Route name"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		route, ok := s.Store.GetRoute(name)
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("Route %s not found", name))
+			return
+		}
+		writeJSON(w, http.StatusOK, route)
+	case http.MethodDelete:
+		if err := s.Store.DeleteRoute(name); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 type ScaleFleetRequest struct {
