@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/identity"
+	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
@@ -31,6 +33,21 @@ func New(ca, cert, key string) (*Client, error) {
 			Timeout:   20 * time.Second,
 		},
 	}, nil
+}
+
+func (c *Client) RenewLease(address, id, token string, ttl time.Duration) (lease.Record, error) {
+	var record lease.Record
+	req := controlapi.LeaseRequest{Token: token, TTLSeconds: int(ttl / time.Second)}
+	err := c.doJSON(http.MethodPost, endpoint(address)+"/v1/node/leases/"+url.PathEscape(id), req, &record)
+	return record, err
+}
+
+func (c *Client) RevokeLease(address, id, token string) error {
+	target := endpoint(address) + "/v1/node/leases/" + url.PathEscape(id)
+	if token != "" {
+		target += "?token=" + url.QueryEscape(token)
+	}
+	return c.doJSON(http.MethodDelete, target, nil, nil)
 }
 
 func (c *Client) EnsureSource(address, name string, local *source.Manager) error {
