@@ -15,6 +15,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 type NodeState string
@@ -68,6 +69,7 @@ type UnitTemplate struct {
 	Fabric      bool          `json:"fabric"`
 	Ports       []fabric.Port `json:"ports,omitempty"`
 	Mounts      []disk.Mount  `json:"mounts,omitempty"`
+	Security    security.Spec `json:"security"`
 }
 
 type Fleet struct {
@@ -450,6 +452,10 @@ func (s *Store) PutFleet(fleet Fleet) error {
 	}
 	if err := disk.ValidateMounts(fleet.Template.Mounts); err != nil {
 		return err
+	}
+	fleet.Template.Security.Normalize()
+	if err := fleet.Template.Security.Validate(); err != nil {
+		return fmt.Errorf("Fleet %s security: %w", fleet.Name, err)
 	}
 	if existing, ok := s.data.Fleets[fleet.Name]; ok {
 		fleet.Generation = existing.Generation + 1
