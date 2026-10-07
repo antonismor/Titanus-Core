@@ -18,6 +18,8 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/realmclient"
+	"github.com/antonismor/Titanus-Core/internal/reconcile"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
@@ -74,11 +76,11 @@ func main() {
 	servers := []*http.Server{newHTTPServer(mux)}
 	listeners := []net.Listener{unixListener}
 
+	ca := envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
+	cert := envDefault("TITANUS_CERT", "/etc/titanus/pki/node.crt")
+	key := envDefault("TITANUS_KEY", "/etc/titanus/pki/node.key")
 	clusterListen := strings.TrimSpace(os.Getenv("TITANUS_CLUSTER_LISTEN"))
 	if clusterListen != "" {
-		ca := envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
-		cert := envDefault("TITANUS_CERT", "/etc/titanus/pki/node.crt")
-		key := envDefault("TITANUS_KEY", "/etc/titanus/pki/node.key")
 		tlsConfig, err := identity.TLSConfig(ca, cert, key, true)
 		if err != nil {
 			log.Fatalf("Realm mTLS configuration: %v", err)
@@ -96,6 +98,15 @@ func main() {
 	defer cancel()
 
 	go healthLoop(ctx, store)
+	if envBool("TITANUS_CONTROLLER_MODE") {
+		client, err := realmclient.New(ca, cert, key)
+		if err != nil {
+			log.Fatalf("Realm reconciler mTLS client: %v", err)
+		}
+		controller := &reconcile.Controller{Store: store, Nodes: client, Interval: 5 * time.Second}
+		go controller.Run(ctx)
+		log.Printf("Titanus Fleet reconciler enabled")
+	}
 
 	errCh := make(chan error, len(servers))
 	for i := range servers {
@@ -183,6 +194,15 @@ func envDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
