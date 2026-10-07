@@ -332,7 +332,7 @@ func hasCapability(node model.NodeSpec, wanted model.Capability) bool {
 func daemonEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts RealmDeployOptions, controller, gateway bool) string {
 	return fmt.Sprintf(
 		"TITANUS_STATE_ROOT=/var/lib/titanus\nTITANUS_REALM_NAME=%s\nTITANUS_NODE_ID=%s\nTITANUS_CONTROLLER_MODE=%t\nTITANUS_GATEWAY_MODE=%t\nTITANUS_CONTROLLER_ENDPOINT=https://%s:%d\nTITANUS_CLUSTER_LISTEN=0.0.0.0:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\n",
-		plan.RealmName, node.Name, controller, gateway, controllerAddress(plan, primary), opts.ClusterPort, opts.ClusterPort,
+		plan.RealmName, node.Name, controller, gateway, primary.ManagementIP, opts.ClusterPort, opts.ClusterPort,
 	)
 }
 
@@ -348,15 +348,8 @@ func agentEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts R
 	}
 	return fmt.Sprintf(
 		"TITANUS_NODE_ID=%s\nTITANUS_NODE_ADDRESS=%s\nTITANUS_NODE_FABRIC_ADDRESS=%s\nTITANUS_CONTROLLER=https://%s:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\nTITANUS_CAPABILITIES=%s\n",
-		node.Name, node.ManagementIP, fabricAddress, controllerAddress(plan, primary), opts.ClusterPort, strings.Join(caps, ","),
+		node.Name, node.ManagementIP, fabricAddress, primary.ManagementIP, opts.ClusterPort, strings.Join(caps, ","),
 	)
-}
-
-func controllerAddress(plan model.RealmPlan, primary model.NodeSpec) string {
-	if strings.TrimSpace(plan.ControlVIP) != "" {
-		return strings.TrimSpace(plan.ControlVIP)
-	}
-	return primary.ManagementIP
 }
 
 func validateEnvValue(value string) error {
