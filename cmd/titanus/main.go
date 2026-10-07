@@ -16,6 +16,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/identity"
+	"github.com/antonismor/Titanus-Core/internal/localclient"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
@@ -52,6 +53,8 @@ func dispatch(args []string) error {
 		return runSource(args[1:])
 	case "fabric":
 		return runFabric(args[1:])
+	case "fleet":
+		return runFleet(args[1:])
 	case "disk":
 		return runDisk(args[1:])
 	case "unit":
@@ -157,11 +160,16 @@ func menu() error {
 				pause(reader)
 			}
 		case "9":
-			if err := unitMenu(reader); err != nil {
+			if err := fleetMenu(reader); err != nil {
 				ansi.Error(err.Error())
 				pause(reader)
 			}
 		case "10":
+			if err := unitMenu(reader); err != nil {
+				ansi.Error(err.Error())
+				pause(reader)
+			}
+		case "11":
 			fmt.Println("Titanus Core", version)
 			pause(reader)
 		case "0":
@@ -652,6 +660,260 @@ func runRealm(args []string) error {
 	}
 }
 
+func fleetMenu(reader *bufio.Reader) error {
+	for {
+		ansi.Clear()
+		ansi.Banner()
+		fmt.Println(ansi.Paint(ansi.Bold+ansi.White, "Titanus Fleets"))
+		fmt.Println()
+		fmt.Println("  1) List Fleets")
+		fmt.Println("  2) Create Fleet")
+		fmt.Println("  3) Fleet status")
+		fmt.Println("  4) Scale Fleet")
+		fmt.Println("  5) Delete Fleet")
+		fmt.Println("  0) Back")
+		fmt.Print("\nSelect: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "1":
+			if err := runFleet([]string{"list"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "2":
+			if err := interactiveFleetCreate(reader); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "3":
+			name, err := prompt(reader, "Fleet name")
+			if err != nil {
+				return err
+			}
+			if err := runFleet([]string{"status", name}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "4":
+			name, err := prompt(reader, "Fleet name")
+			if err != nil {
+				return err
+			}
+			count, err := promptDefault(reader, "Instances", "3")
+			if err != nil {
+				return err
+			}
+			if err := runFleet([]string{"scale", name, count}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "5":
+			name, err := prompt(reader, "Fleet name")
+			if err != nil {
+				return err
+			}
+			if err := runFleet([]string{"delete", name}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "0":
+			return nil
+		default:
+			ansi.Warn("Unknown selection")
+			pause(reader)
+		}
+	}
+}
+
+func interactiveFleetCreate(reader *bufio.Reader) error {
+	name, err := prompt(reader, "Fleet name")
+	if err != nil {
+		return err
+	}
+	src, err := prompt(reader, "Source")
+	if err != nil {
+		return err
+	}
+	instances, err := promptDefault(reader, "Instances", "3")
+	if err != nil {
+		return err
+	}
+	memory, err := promptDefault(reader, "Memory per Unit", "512M")
+	if err != nil {
+		return err
+	}
+	cpu, err := promptDefault(reader, "CPU per Unit (%)", "100")
+	if err != nil {
+		return err
+	}
+	command, err := promptDefault(reader, "Executable", "/bin/sh")
+	if err != nil {
+		return err
+	}
+	arguments, err := promptDefault(reader, "Arguments", "")
+	if err != nil {
+		return err
+	}
+	spread, err := promptDefault(reader, "Spread label (blank = none)", "")
+	if err != nil {
+		return err
+	}
+	args := []string{
+		"create", name, "--source", src, "--instances", instances,
+		"--memory", memory, "--cpu", cpu, "--fabric",
+	}
+	if spread != "" {
+		args = append(args, "--spread", spread)
+	}
+	args = append(args, "--", command)
+	if arguments != "" {
+		args = append(args, strings.Fields(arguments)...)
+	}
+	return runFleet(args)
+}
+
+func runFleet(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: titanus fleet <create|list|status|scale|delete>")
+	}
+	client := localclient.New("/run/titanus/titanus.sock")
+	switch args[0] {
+	case "list":
+		fleets, err := client.ListFleets()
+		if err != nil {
+			return err
+		}
+		if len(fleets) == 0 {
+			fmt.Println("No Titanus Fleets.")
+			return nil
+		}
+		fmt.Printf("%-24s %-10s %-16s %-12s\n", "FLEET", "INSTANCES", "SOURCE", "GENERATION")
+		for _, fleet := range fleets {
+			fmt.Printf("%-24s %-10d %-16s %-12d\n", fleet.Name, fleet.Instances, fleet.Template.Source, fleet.Generation)
+		}
+		return nil
+
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: titanus fleet create NAME --source SOURCE [options] -- COMMAND [ARGS...]")
+		}
+		name := args[1]
+		fs := flag.NewFlagSet("fleet create", flag.ContinueOnError)
+		sourceName := fs.String("source", "", "Titanus Source")
+		instances := fs.Int("instances", 1, "desired Unit count")
+		minAvailable := fs.Int("minimum", 1, "minimum desired availability")
+		memory := fs.String("memory", "512M", "memory per Unit")
+		cpu := fs.Int("cpu", 100, "CPU percentage per Unit")
+		pids := fs.Int("pids", 256, "maximum processes per Unit")
+		fabricEnabled := fs.Bool("fabric", false, "attach Units to Titanus Fabric")
+		publish := fs.String("publish", "", "comma-separated HOST:UNIT[/tcp|udp]")
+		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro]")
+		spread := fs.String("spread", "", "label key used to spread replicas")
+		require := fs.String("require", "", "comma-separated label=value placement requirements")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if *sourceName == "" || len(fs.Args()) == 0 {
+			return fmt.Errorf("--source and Unit command after -- are required")
+		}
+		memBytes, err := unitruntime.ParseBytes(*memory)
+		if err != nil {
+			return err
+		}
+		var ports []fabric.Port
+		if strings.TrimSpace(*publish) != "" {
+			for _, raw := range strings.Split(*publish, ",") {
+				port, err := fabric.ParsePort(strings.TrimSpace(raw))
+				if err != nil {
+					return err
+				}
+				ports = append(ports, port)
+			}
+		}
+		var mounts []disk.Mount
+		if strings.TrimSpace(*mountText) != "" {
+			for _, raw := range strings.Split(*mountText, ",") {
+				mount, err := disk.ParseMount(strings.TrimSpace(raw))
+				if err != nil {
+					return err
+				}
+				mounts = append(mounts, mount)
+			}
+		}
+		labels := map[string]string{}
+		if strings.TrimSpace(*require) != "" {
+			for _, raw := range strings.Split(*require, ",") {
+				parts := strings.SplitN(strings.TrimSpace(raw), "=", 2)
+				if len(parts) != 2 || parts[0] == "" {
+					return fmt.Errorf("invalid required label %q", raw)
+				}
+				labels[parts[0]] = parts[1]
+			}
+		}
+		fleet := realm.Fleet{
+			Name: name, Instances: *instances, MinimumAvailable: *minAvailable,
+			RequiredLabels: labels, SpreadLabel: strings.TrimSpace(*spread),
+			Template: realm.UnitTemplate{
+				Source: *sourceName, Command: fs.Args(),
+				MemoryBytes: memBytes, CPUPercent: *cpu, PidsMax: *pids,
+				Fabric: *fabricEnabled || len(ports) > 0,
+				Ports: ports, Mounts: mounts,
+			},
+		}
+		result, err := client.CreateFleet(fleet)
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		ansi.OK("Fleet accepted by Titanus Realm")
+		return nil
+
+	case "status":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus fleet status NAME")
+		}
+		result, err := client.FleetStatus(args[1])
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
+
+	case "scale":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: titanus fleet scale NAME INSTANCES")
+		}
+		count, err := strconv.Atoi(args[2])
+		if err != nil || count < 0 {
+			return fmt.Errorf("invalid instance count %q", args[2])
+		}
+		fleet, err := client.ScaleFleet(args[1], count)
+		if err != nil {
+			return err
+		}
+		ansi.OK(fmt.Sprintf("Fleet %s desired instances = %d", fleet.Name, fleet.Instances))
+		return nil
+
+	case "delete":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus fleet delete NAME")
+		}
+		if err := client.DeleteFleet(args[1]); err != nil {
+			return err
+		}
+		ansi.OK("Fleet deleted; Titanus will retire its Units")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown Fleet action %q", args[0])
+	}
+}
+
 func unitMenu(reader *bufio.Reader) error {
 	for {
 		ansi.Clear()
@@ -1121,6 +1383,12 @@ Usage:
   titanus fabric init [--cidr CIDR] [--bridge NAME]
   titanus fabric status
   titanus fabric allocations
+
+  titanus fleet create NAME --source SOURCE [options] -- COMMAND [ARGS...]
+  titanus fleet list
+  titanus fleet status NAME
+  titanus fleet scale NAME INSTANCES
+  titanus fleet delete NAME
 
   titanus disk create NAME --provider local|ceph-rbd|cephfs --size SIZE
   titanus disk list
