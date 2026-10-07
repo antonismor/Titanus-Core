@@ -335,6 +335,45 @@ func (s *Store) PutFleet(fleet Fleet) error {
 	return s.commitLocked()
 }
 
+func (s *Store) GetFleet(name string) (Fleet, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fleet, ok := s.data.Fleets[name]
+	return fleet, ok
+}
+
+func (s *Store) ScaleFleet(name string, instances int) (Fleet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fleet, ok := s.data.Fleets[name]
+	if !ok {
+		return Fleet{}, fmt.Errorf("unknown Fleet %s", name)
+	}
+	if instances < 0 {
+		return Fleet{}, fmt.Errorf("Fleet instances cannot be negative")
+	}
+	fleet.Instances = instances
+	if fleet.MinimumAvailable > instances {
+		fleet.MinimumAvailable = instances
+	}
+	fleet.UpdatedAt = time.Now().UTC()
+	s.data.Fleets[name] = fleet
+	if err := s.commitLocked(); err != nil {
+		return Fleet{}, err
+	}
+	return fleet, nil
+}
+
+func (s *Store) DeleteFleet(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data.Fleets[name]; !ok {
+		return fmt.Errorf("unknown Fleet %s", name)
+	}
+	delete(s.data.Fleets, name)
+	return s.commitLocked()
+}
+
 func (s *Store) SetAssignments(fleetName string, assignments []Assignment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
