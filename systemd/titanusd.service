@@ -10,6 +10,8 @@ EnvironmentFile=-/etc/titanus/daemon.env
 ExecStart=/usr/local/sbin/titanusd
 Restart=on-failure
 RestartSec=3
+# Workloads and their host monitors outlive the daemon. Unit stop is explicit.
+KillMode=process
 RuntimeDirectory=titanus
 RuntimeDirectoryMode=0755
 LimitNOFILE=1048576

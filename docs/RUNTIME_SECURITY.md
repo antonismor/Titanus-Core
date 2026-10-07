@@ -58,16 +58,18 @@ applications must arrange ownership of their writable Disks themselves.
 
 ## Enforcement boundary
 
-The existing parent/child barrier first completes cgroup and Fabric attachment.
-The helper locks its OS thread, prepares namespaces, pivots into the rootfs,
-mounts proc/dev/tmp and brings loopback up. Only then does it apply security and
-execute the workload on the same thread. Seccomp TSYNC covers all helper threads.
+The parent/child barrier completes cgroup and Fabric attachment. A host monitor
+starts namespace init, stays outside the Unit and waits for its exit independently
+of titanusd. Init locks its OS thread, prepares namespaces, pivots into rootfs,
+mounts proc/dev/tmp and brings loopback up. It applies security and re-execs its
+already-open executable on that same thread. Every new supervisor thread then
+inherits the restricted identity, capabilities, no_new_privs and seccomp.
 
-The startup status descriptor is CLOEXEC. The parent requires a pre-exec marker
-and closure of the descriptor before reporting ACTIVE. Setup/hardening/exec
-errors, missing markers and timeouts produce FAILED, kill/reap the helper and
-clean up Fabric, mounts and cgroups. The marker confirms initialization; this
-protocol is not an application health check and workloads can exit after exec.
+The restricted supervisor remains PID 1, starts the application in a process
+group and owns all wait4 calls, including adopted orphans. It acknowledges
+startup only after the application's exec succeeds. Errors, premature EOF and
+timeouts produce FAILED and clean up the Unit. ACTIVE confirms exec, not
+application readiness. See [RUNTIME_LIFECYCLE.md](RUNTIME_LIFECYCLE.md).
 
 Existing persisted specs without security fields receive hardened defaults on
 their next start. Stop and restart Units that were already running at upgrade;

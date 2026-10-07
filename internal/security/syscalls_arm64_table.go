@@ -19,6 +19,8 @@ func arm64Profile() archProfile {
 		436, // close_range
 		56,  // openat
 		437, // openat2
+		79,  // newfstatat
+		80,  // fstat
 		291, // statx
 		73,  // ppoll
 		72,  // pselect6
@@ -55,6 +57,7 @@ func arm64Profile() archProfile {
 		61,  // getdents64
 		34,  // mkdirat
 		35,  // unlinkat
+		38,  // renameat
 		276, // renameat2
 		37,  // linkat
 		36,  // symlinkat
@@ -182,6 +185,8 @@ func arm64Profile() archProfile {
 		127, // sched_rr_get_interval
 		141, // getpriority
 		140, // setpriority
+		163, // getrlimit
+		164, // setrlimit
 		261, // prlimit64
 		165, // getrusage
 		153, // times

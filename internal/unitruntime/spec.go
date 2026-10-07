@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/disk"
+	"github.com/antonismor/Titanus-Core/internal/durable"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/security"
 )
@@ -47,14 +48,18 @@ const (
 )
 
 type State struct {
-	ID             string    `json:"id"`
-	Status         Status    `json:"status"`
-	PID            int       `json:"pid,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	StartedAt      time.Time `json:"started_at,omitempty"`
-	StoppedAt      time.Time `json:"stopped_at,omitempty"`
-	LastError      string    `json:"last_error,omitempty"`
-	NetworkAddress string    `json:"network_address,omitempty"`
+	ID             string          `json:"id"`
+	Status         Status          `json:"status"`
+	Process        ProcessIdentity `json:"process"`
+	RunID          string          `json:"run_id,omitempty"`
+	ExitCode       *int            `json:"exit_code,omitempty"`
+	ExitSignal     int             `json:"exit_signal,omitempty"`
+	PID            int             `json:"pid,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	StartedAt      time.Time       `json:"started_at,omitempty"`
+	StoppedAt      time.Time       `json:"stopped_at,omitempty"`
+	LastError      string          `json:"last_error,omitempty"`
+	NetworkAddress string          `json:"network_address,omitempty"`
 }
 
 func (s *Spec) Normalize() {
@@ -152,15 +157,7 @@ func ParseBytes(value string) (int64, error) {
 }
 
 func saveJSON(path string, value any, mode os.FileMode) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return durable.WriteJSON(path, value, mode)
 }
 
 func loadJSON(path string, value any) error {

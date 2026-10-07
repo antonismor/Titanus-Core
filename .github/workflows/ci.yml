@@ -32,7 +32,7 @@ jobs:
         run: go vet ./...
 
       - name: Race checks
-        run: go test -race ./internal/security ./internal/unitruntime ./internal/realm ./internal/reconcile
+        run: go test -race ./cmd/titanus-init ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile
 
       - name: Cross-build native ARM64 runtime
         run: |
@@ -46,8 +46,12 @@ jobs:
         run: ./bin/titanus version
 
   runtime-smoke:
-    name: Native Unit runtime smoke
-    runs-on: ubuntu-latest
+    name: Native Unit runtime (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     needs: build
     steps:
       - name: Checkout Titanus
@@ -163,3 +167,12 @@ jobs:
           test ! -d "$CGROUP/bad-exec"
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit delete bad-exec
+
+      - name: Exercise lifecycle and daemon recovery
+        run: sudo env "PATH=$PATH" bash scripts/ci-runtime-lifecycle.sh
+
+      - name: Runtime diagnostics on failure
+        if: failure()
+        run: |
+          sudo find /tmp/titanus-ci-state/units -name unit.log -exec tail -n 50 {} \; || true
+          sudo cat /tmp/titanus-lifecycle-daemon.log || true
