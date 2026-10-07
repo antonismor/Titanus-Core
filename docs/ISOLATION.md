@@ -24,8 +24,11 @@ idmapped OverlayFS. Source hardlinks/xattrs/file capabilities are not preserved
 by the existing Source importer; no_new_privs blocks file privilege escalation.
 Previously populated unshifted upper/work layers fail closed and require offline
 migration or Unit recreation; there is no automatic recursive ownership rewrite
-of existing data. The host state remains private; only rootfs/executable handles
-cross the startup boundary, and close before workload exec. Init binds the
+of existing data. The host state remains private; only an executable file handle crosses the startup boundary and closes on
+workload exec. A temporary root-owned access directory exposes only the rootfs
+behind a mapped-owner 0700 gate. Init resolves this path in its own mount
+namespace, and the parent removes the access mount on startup completion/failure.
+Host state directories and directory descriptors are not exposed. Init binds the
 rootfs onto a private child staging mount (avoiding the inherited locked mount),
 pivots into it and detaches the entire old root before applying workload policy. The host monitor
 alone writes durable exit records.

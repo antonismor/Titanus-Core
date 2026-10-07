@@ -58,16 +58,11 @@ func RunMonitor(encoded string) error {
 		return err
 	}
 	defer executable.Close()
-	rootfs, err := os.Open(cfg.Args[1])
-	if err != nil {
-		return err
-	}
-	defer rootfs.Close()
 	cmd := exec.Command("/proc/self/fd/5", cfg.Args...)
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.ExtraFiles = []*os.File{ready, status, executable, rootfs}
+	cmd.ExtraFiles = []*os.File{ready, status, executable}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET, Setsid: true,
 		Credential:                 &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: true},
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: cfg.Mapping.Base, Size: mappingSize}},

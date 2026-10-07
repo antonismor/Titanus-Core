@@ -118,3 +118,39 @@ func (m *Manager) prepareMappedSource(spec Spec, mapping IDMapping) (string, err
 	}
 	return target, nil
 }
+
+// A directory FD opened before CLONE_NEWNS still points into the host mount
+// tree. Export only the filesystem through a mapped-owner gate so init can
+// resolve the copied mount in its own namespace, without opening host state.
+func prepareRootAccess(rootfs string, mapping IDMapping, run string) (string, func(), error) {
+	const parent = "/run/titanus-roots"
+	if e := os.MkdirAll(parent, 0711); e != nil {
+		return "", nil, e
+	}
+	// Search-only parent; unprivileged callers cannot list or create gates.
+	if e := os.Chmod(parent, 0711); e != nil {
+		return "", nil, e
+	}
+	directory := filepath.Join(parent, run)
+	if e := os.Mkdir(directory, 0700); e != nil {
+		return "", nil, e
+	}
+	cleanup := func() {
+		_ = syscall.Unmount(filepath.Join(directory, "rootfs"), syscall.MNT_DETACH)
+		_ = os.RemoveAll(directory)
+	}
+	if e := os.Chown(directory, mapping.Base, mapping.Base); e != nil {
+		cleanup()
+		return "", nil, e
+	}
+	target := filepath.Join(directory, "rootfs")
+	if e := os.Mkdir(target, 0700); e != nil {
+		cleanup()
+		return "", nil, e
+	}
+	if e := syscall.Mount(rootfs, target, "", syscall.MS_BIND|syscall.MS_REC, ""); e != nil {
+		cleanup()
+		return "", nil, e
+	}
+	return target, cleanup, nil
+}

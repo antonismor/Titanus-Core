@@ -101,7 +101,6 @@ func runUnitChild(args []string) (result error) {
 	// Do not unlock after security changes: this thread must execute workload.
 	rootfs := filepath.Clean(args[0])
 	syscall.CloseOnExec(5)
-	syscall.CloseOnExec(6)
 	hostname := args[1]
 	readyFD, err := strconv.Atoi(args[2])
 	if err != nil || readyFD < 3 {
@@ -121,9 +120,10 @@ func runUnitChild(args []string) (result error) {
 	if err := syscall.Mount("", "/", "", uintptr(syscall.MS_REC|syscall.MS_PRIVATE), ""); err != nil {
 		return fmt.Errorf("make mount namespace private: %w", err)
 	}
-	// The monitor passes only an executable and rootfs handle, avoiding world
-	// traversal permissions on the host's private state directory.
-	if err := syscall.Fchdir(6); err != nil {
+	// The parent exports only this rootfs through a temporary mapped-owner
+	// access path. Resolve it in this mount namespace; a host-opened directory
+	// descriptor would still reference the original host mount tree.
+	if err := syscall.Chdir(rootfs); err != nil {
 		return fmt.Errorf("enter mapped rootfs: %w", err)
 	}
 	// Bind onto a child mountpoint and then resolve that path. A descriptor's
@@ -147,7 +147,6 @@ func runUnitChild(args []string) (result error) {
 	if err := syscall.Mount(".", rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind mapped root: %w", err)
 	}
-	_ = syscall.Close(6)
 	if err := syscall.Sethostname([]byte(hostname)); err != nil {
 		return fmt.Errorf("set hostname: %w", err)
 	}

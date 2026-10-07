@@ -265,6 +265,13 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 	}
 
 	rootfs := filepath.Join(m.unitDir(id), "rootfs")
+	access, releaseAccess, err := prepareRootAccess(rootfs, mapping, state.RunID)
+	if err != nil {
+		_ = logFile.Close()
+		m.cleanupAfterStop(id)
+		return m.fail(state, err)
+	}
+	defer releaseAccess()
 	readyRead, readyWrite, err := os.Pipe()
 	if err != nil {
 		_ = logFile.Close()
@@ -281,7 +288,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return m.fail(state, fmt.Errorf("create startup status pipe: %w", err))
 	}
 	defer statusRead.Close()
-	args := []string{"--unit-child", rootfs, spec.Hostname, "3", string(policyJSON), "4", "--"}
+	args := []string{"--unit-child", access, spec.Hostname, "3", string(policyJSON), "4", "--"}
 	args = append(args, spec.Command...)
 	controlRead, controlWrite, err := os.Pipe()
 	if err != nil {
