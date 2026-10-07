@@ -6,12 +6,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
 type Server struct {
-	Store *realm.Store
+	Store   *realm.Store
+	Runtime *unitruntime.Manager
 }
 
 type PulseRequest struct {
@@ -19,8 +22,8 @@ type PulseRequest struct {
 	Resources realm.Resources `json:"resources"`
 }
 
-func New(store *realm.Store) *Server {
-	return &Server{Store: store}
+func New(store *realm.Store, runtime *unitruntime.Manager) *Server {
+	return &Server{Store: store, Runtime: runtime}
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -28,6 +31,97 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/realm/nodes", s.nodes)
 	mux.HandleFunc("/v1/realm/pulse", s.pulse)
 	mux.HandleFunc("/v1/realm/fleets", s.fleets)
+	mux.HandleFunc("/v1/node/units", s.units)
+	mux.HandleFunc("/v1/node/units/", s.unitAction)
+}
+
+func (s *Server) units(w http.ResponseWriter, r *http.Request) {
+	if s.Runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("Unit runtime unavailable"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.Runtime.List()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, items)
+	case http.MethodPost:
+		var spec unitruntime.Spec
+		if err := decodeJSON(r, &spec); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		state, err := s.Runtime.Ensure(spec)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
+	if s.Runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("Unit runtime unavailable"))
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/v1/node/units/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("Unit ID is required"))
+		return
+	}
+	id := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	if r.Method == http.MethodGet && action == "" {
+		spec, state, err := s.Runtime.Inspect(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"spec": spec, "state": state})
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		methodNotAllowed(w)
+		return
+	}
+	switch action {
+	case "start":
+		state, err := s.Runtime.Start(id)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	case "stop":
+		state, err := s.Runtime.Stop(id, 10*time.Second)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	case "":
+		if r.Method != http.MethodDelete {
+			methodNotAllowed(w)
+			return
+		}
+		if err := s.Runtime.Delete(id); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	default:
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown Unit action %q", action))
+	}
 }
 
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
