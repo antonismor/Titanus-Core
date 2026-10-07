@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os/signal"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/fabricdns"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/pulse"
@@ -81,8 +83,13 @@ func main() {
 		log.Fatalf("Realm registration failed: %v", err)
 	}
 	log.Printf("Titanus Agent registered Node %s with %s, Fabric=%s", cfg.NodeID, cfg.Controller, registered.FabricCIDR)
+	dnsStarted := false
 	if err := syncFabric(client, cfg, registered); err != nil {
 		log.Printf("initial Fabric sync failed: %v", err)
+	} else if err := startFabricDNS(ctx, cfg); err != nil {
+		log.Printf("Titanus DNS startup failed: %v", err)
+	} else {
+		dnsStarted = true
 	}
 
 	ticker := time.NewTicker(cfg.Interval)
@@ -93,6 +100,12 @@ func main() {
 		}
 		if err := syncFabric(client, cfg, registered); err != nil {
 			log.Printf("Fabric sync failed: %v", err)
+		} else if !dnsStarted {
+			if err := startFabricDNS(ctx, cfg); err != nil {
+				log.Printf("Titanus DNS startup failed: %v", err)
+			} else {
+				dnsStarted = true
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -179,6 +192,32 @@ func servicesFromState(state realm.State) []fabric.Service {
 		services = append(services, service)
 	}
 	return services
+}
+
+func startFabricDNS(ctx context.Context, cfg config) error {
+	manager := fabric.NewManager(cfg.StateRoot)
+	fabricConfig, err := manager.Config()
+	if err != nil {
+		return err
+	}
+	address, err := fabricdns.GatewayListenAddress(fabricConfig.Gateway)
+	if err != nil {
+		return err
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	resolver := fabricdns.NewResolver("titanus", manager.Services)
+	resolver.Upstreams = fabricdns.SystemUpstreams("/etc/resolv.conf", host)
+	server := &fabricdns.Server{Resolver: resolver, Address: address}
+	go func() {
+		if err := server.Run(ctx); err != nil {
+			log.Printf("Titanus DNS stopped: %v", err)
+		}
+	}()
+	log.Printf("Titanus DNS service discovery listening on %s for *.titanus", address)
+	return nil
 }
 
 func requestJSON(client *http.Client, method, url string, payload any, response any) error {
