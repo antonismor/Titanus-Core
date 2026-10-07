@@ -210,6 +210,16 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 			return results, err
 		}
 	}
+	if plan.Ceph.Enabled && plan.Ceph.Provision {
+		cephResult, err := NewCephDeployer().Deploy(plan)
+		if err != nil {
+			return results, fmt.Errorf("Titanus Realm is running but Ceph provisioning failed: %w", err)
+		}
+		results = append(results, RealmNodeResult{
+			Node: "ceph", Address: cephResult.FSID, Role: "DISTRIBUTED-STORAGE",
+			Message: fmt.Sprintf("installed:%d-osd:%s-usable", cephResult.OSDs, formatBytes(cephResult.UsableBytes)),
+		})
+	}
 	return results, nil
 }
 
