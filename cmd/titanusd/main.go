@@ -18,6 +18,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
 const (
@@ -51,7 +52,15 @@ func main() {
 	mux.HandleFunc("/v1/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version})
 	})
-	controlapi.New(store).Register(mux)
+	runtimeConfig := unitruntime.DefaultConfig()
+	runtimeConfig.StateRoot = stateRoot
+	if cgroupRoot := strings.TrimSpace(os.Getenv("TITANUS_CGROUP_ROOT")); cgroupRoot != "" {
+		runtimeConfig.CgroupRoot = cgroupRoot
+	}
+	if initBinary := strings.TrimSpace(os.Getenv("TITANUS_INIT_BINARY")); initBinary != "" {
+		runtimeConfig.InitBinary = initBinary
+	}
+	controlapi.New(store, unitruntime.NewManager(runtimeConfig)).Register(mux)
 
 	unixListener, err := unixSocket()
 	if err != nil {
