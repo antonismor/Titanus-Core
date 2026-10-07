@@ -3,6 +3,7 @@ package unitruntime
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,11 +206,19 @@ func (m *Manager) Start(id string) (State, error) {
 	}
 
 	if spec.Network.Fabric {
-		allocation, err := fabric.NewManager(m.cfg.StateRoot).Attach(id, pid, spec.Network.Ports)
+		fabricManager := fabric.NewManager(m.cfg.StateRoot)
+		allocation, err := fabricManager.Attach(id, pid, spec.Network.Ports)
 		if err != nil {
 			return failStarted(fmt.Errorf("Fabric attach: %w", err))
 		}
 		state.NetworkAddress = allocation.Address
+		fabricConfig, err := fabricManager.Config()
+		if err != nil {
+			return failStarted(fmt.Errorf("Fabric resolver config: %w", err))
+		}
+		if err := prepareFabricResolver(rootfs, fabricConfig.Gateway); err != nil {
+			return failStarted(fmt.Errorf("Fabric resolver: %w", err))
+		}
 	}
 
 	if _, err := readyWrite.Write([]byte{1}); err != nil {
@@ -337,6 +346,29 @@ func (m *Manager) LogsPath(id string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(m.unitDir(id), "logs", "unit.log"), nil
+}
+
+func prepareFabricResolver(rootfs, gatewayCIDR string) error {
+	gatewayIP, _, err := net.ParseCIDR(strings.TrimSpace(gatewayCIDR))
+	if err != nil || gatewayIP.To4() == nil {
+		return fmt.Errorf("invalid IPv4 Fabric gateway %q", gatewayCIDR)
+	}
+	etcDir := filepath.Join(rootfs, "etc")
+	if err := os.MkdirAll(etcDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(etcDir, "resolv.conf")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("replace Unit resolv.conf: %w", err)
+	}
+	content := fmt.Sprintf(
+		"# Managed by Titanus Fabric\nsearch titanus\nnameserver %s\noptions ndots:1 timeout:2 attempts:2\n",
+		gatewayIP.To4().String(),
+	)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write Unit resolv.conf: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) prepareDiskMounts(spec Spec) error {
