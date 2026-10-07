@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -55,6 +56,8 @@ func dispatch(args []string) error {
 		return runFabric(args[1:])
 	case "fleet":
 		return runFleet(args[1:])
+	case "route":
+		return runRoute(args[1:])
 	case "disk":
 		return runDisk(args[1:])
 	case "unit":
@@ -165,11 +168,16 @@ func menu() error {
 				pause(reader)
 			}
 		case "10":
-			if err := unitMenu(reader); err != nil {
+			if err := routeMenu(reader); err != nil {
 				ansi.Error(err.Error())
 				pause(reader)
 			}
 		case "11":
+			if err := unitMenu(reader); err != nil {
+				ansi.Error(err.Error())
+				pause(reader)
+			}
+		case "12":
 			fmt.Println("Titanus Core", version)
 			pause(reader)
 		case "0":
@@ -914,6 +922,151 @@ func runFleet(args []string) error {
 	}
 }
 
+func routeMenu(reader *bufio.Reader) error {
+	for {
+		ansi.Clear()
+		ansi.Banner()
+		fmt.Println(ansi.Paint(ansi.Bold+ansi.White, "Titanus Routes"))
+		fmt.Println()
+		fmt.Println("  1) List Routes")
+		fmt.Println("  2) Create Route")
+		fmt.Println("  3) Inspect Route")
+		fmt.Println("  4) Delete Route")
+		fmt.Println("  0) Back")
+		fmt.Print("\nSelect: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "1":
+			if err := runRoute([]string{"list"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "2":
+			name, err := prompt(reader, "Route name")
+			if err != nil {
+				return err
+			}
+			fleet, err := prompt(reader, "Target Fleet")
+			if err != nil {
+				return err
+			}
+			listen, err := promptDefault(reader, "Listen IP", "0.0.0.0")
+			if err != nil {
+				return err
+			}
+			listenPort, err := promptDefault(reader, "Listen port", "8080")
+			if err != nil {
+				return err
+			}
+			targetPort, err := promptDefault(reader, "Fleet target port", "80")
+			if err != nil {
+				return err
+			}
+			if err := runRoute([]string{"create", name, "--fleet", fleet, "--listen", listen, "--port", listenPort, "--target-port", targetPort}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "3":
+			name, err := prompt(reader, "Route name")
+			if err != nil {
+				return err
+			}
+			if err := runRoute([]string{"status", name}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "4":
+			name, err := prompt(reader, "Route name")
+			if err != nil {
+				return err
+			}
+			if err := runRoute([]string{"delete", name}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "0":
+			return nil
+		default:
+			ansi.Warn("Unknown selection")
+			pause(reader)
+		}
+	}
+}
+
+func runRoute(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: titanus route <create|list|status|delete>")
+	}
+	client := localclient.New("/run/titanus/titanus.sock")
+	switch args[0] {
+	case "list":
+		routes, err := client.ListRoutes()
+		if err != nil {
+			return err
+		}
+		if len(routes) == 0 {
+			fmt.Println("No Titanus Routes.")
+			return nil
+		}
+		fmt.Printf("%-20s %-20s %-20s %-12s\n", "ROUTE", "FLEET", "LISTEN", "TARGET")
+		for _, route := range routes {
+			fmt.Printf("%-20s %-20s %-20s %-12s\n",
+				route.Name, route.Fleet,
+				net.JoinHostPort(route.ListenIP, strconv.Itoa(route.ListenPort)),
+				strconv.Itoa(route.TargetPort))
+		}
+		return nil
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: titanus route create NAME --fleet FLEET --port PORT --target-port PORT")
+		}
+		name := args[1]
+		fs := flag.NewFlagSet("route create", flag.ContinueOnError)
+		fleetName := fs.String("fleet", "", "target Fleet")
+		listenIP := fs.String("listen", "0.0.0.0", "listen IP")
+		listenPort := fs.Int("port", 0, "listen port")
+		targetPort := fs.Int("target-port", 0, "target Unit port")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		stored, err := client.CreateRoute(realm.Route{
+			Name: name, Fleet: *fleetName, ListenIP: *listenIP,
+			ListenPort: *listenPort, TargetPort: *targetPort, Protocol: "tcp",
+		})
+		if err != nil {
+			return err
+		}
+		ansi.OK(fmt.Sprintf("Route %s: %s:%d -> Fleet %s:%d",
+			stored.Name, stored.ListenIP, stored.ListenPort, stored.Fleet, stored.TargetPort))
+		return nil
+	case "status":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus route status NAME")
+		}
+		route, err := client.RouteStatus(args[1])
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(route, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case "delete":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus route delete NAME")
+		}
+		if err := client.DeleteRoute(args[1]); err != nil {
+			return err
+		}
+		ansi.OK("Route deleted: " + args[1])
+		return nil
+	default:
+		return fmt.Errorf("unknown Route action %q", args[0])
+	}
+}
+
 func unitMenu(reader *bufio.Reader) error {
 	for {
 		ansi.Clear()
@@ -1389,6 +1542,11 @@ Usage:
   titanus fleet status NAME
   titanus fleet scale NAME INSTANCES
   titanus fleet delete NAME
+
+  titanus route create NAME --fleet FLEET --port PORT --target-port PORT
+  titanus route list
+  titanus route status NAME
+  titanus route delete NAME
 
   titanus disk create NAME --provider local|ceph-rbd|cephfs --size SIZE
   titanus disk list
