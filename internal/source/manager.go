@@ -55,6 +55,20 @@ func (m *Manager) ImportDirectory(name, sourceDir string) error {
 	return nil
 }
 
+func (m *Manager) Exists(name string) (bool, error) {
+	if !sourceName.MatchString(name) {
+		return false, fmt.Errorf("invalid Source name %q", name)
+	}
+	info, err := os.Stat(filepath.Join(m.StateRoot, "sources", name, "rootfs"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
+}
+
 func (m *Manager) List() ([]string, error) {
 	root := filepath.Join(m.StateRoot, "sources")
 	entries, err := os.ReadDir(root)
