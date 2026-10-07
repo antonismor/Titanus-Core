@@ -132,10 +132,14 @@ func (p *PlacementEngine) Reconcile(state State, fleet Fleet) ([]Assignment, err
 			return nil, fmt.Errorf("no eligible Node remains for Fleet %s slot %d", fleet.Name, slot)
 		}
 		nodeID := ranked[0].NodeID
+		startAfter := time.Time{}
+		if previous, ok := existing[id]; ok && !previous.LeaseExpiresAt.IsZero() {
+			startAfter = previous.LeaseExpiresAt.Add(2 * time.Second)
+		}
 		assignment := Assignment{
 			ID: id, Fleet: fleet.Name, NodeID: nodeID,
 			State: AssignmentPlanned, Generation: fleet.Generation,
-			CreatedAt: now, UpdatedAt: now,
+			CreatedAt: now, UpdatedAt: now, StartAfter: startAfter,
 		}
 		result = append(result, assignment)
 		node := working.Nodes[nodeID]
