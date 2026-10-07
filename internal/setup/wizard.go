@@ -11,6 +11,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/ansi"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/remote"
 )
 
 type Wizard struct {
@@ -79,6 +80,29 @@ func (w *Wizard) Run() (Result, error) {
 		return Result{}, err
 	}
 
+	controlNodes := 1
+	if mode != 1 {
+		defaultControl := 3
+		if nodeCount < defaultControl {
+			defaultControl = nodeCount
+		}
+		controlNodes, err = w.askInt("How many nodes should be CONTROL-capable", defaultControl, 1, nodeCount)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	storageNodesWanted := 0
+	if mode == 3 {
+		defaultStorage := 3
+		if nodeCount < defaultStorage {
+			defaultStorage = nodeCount
+		}
+		storageNodesWanted, err = w.askInt("How many nodes should provide Ceph storage", defaultStorage, 1, nodeCount)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Magenta, "Node configuration"))
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "Capabilities: CONTROL, EXECUTION, STORAGE, GATEWAY, GPU, BACKUP"))
@@ -109,12 +133,10 @@ func (w *Wizard) Run() (Result, error) {
 		}
 
 		defaultCaps := "EXECUTION"
-		if mode == 1 {
-			defaultCaps = "CONTROL,EXECUTION"
-		} else if i < 3 {
+		if mode == 1 || i < controlNodes {
 			defaultCaps = "CONTROL,EXECUTION"
 		}
-		if mode == 3 && i < 3 {
+		if mode == 3 && i < storageNodesWanted {
 			defaultCaps += ",STORAGE"
 		}
 		capsRaw, askErr := w.ask("  Capabilities", defaultCaps, true)
@@ -143,6 +165,10 @@ func (w *Wizard) Run() (Result, error) {
 	if mode == 3 {
 		plan.Ceph.Enabled = true
 		fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Magenta, "Ceph storage"))
+		plan.Ceph.Provision, err = w.askBool("Provision a new Ceph cluster automatically", true)
+		if err != nil {
+			return Result{}, err
+		}
 		plan.Ceph.PublicCIDR, err = w.ask("Ceph public network CIDR", "10.230.0.0/24", true)
 		if err != nil {
 			return Result{}, err
@@ -184,9 +210,59 @@ func (w *Wizard) Run() (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
+
+		if plan.Ceph.Provision {
+			fmt.Fprintln(w.out)
+			fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Yellow, "Ceph OSD device selection"))
+			fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "Only devices explicitly selected here may be erased by Titanus."))
+			executor := remote.NewSSHExecutor()
+			for i := range plan.Nodes {
+				if !hasCapability(plan.Nodes[i], model.CapabilityStorage) {
+					continue
+				}
+				node := &plan.Nodes[i]
+				fmt.Fprintln(w.out)
+				fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Cyan, node.Name+" ("+node.ManagementIP+")"))
+				discovered, discoverErr := executor.DiscoverBlockDevices(*node)
+				known := map[string]remote.BlockDevice{}
+				if discoverErr != nil {
+					fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "  Automatic disk discovery failed: "+discoverErr.Error()))
+				} else if len(discovered) == 0 {
+					fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "  No unused whole disks were discovered automatically."))
+				} else {
+					fmt.Fprintln(w.out, "  Eligible unmounted whole disks:")
+					for _, device := range discovered {
+						known[device.Path] = device
+						fmt.Fprintf(w.out, "    %-14s %-10s %s\n", device.Path, humanBytes(device.Size), device.Model)
+					}
+				}
+				raw, askErr := w.ask("  Ceph data devices (comma separated, e.g. /dev/sdb,/dev/sdc)", "", true)
+				if askErr != nil {
+					return Result{}, askErr
+				}
+				for _, value := range strings.Split(raw, ",") {
+					device := strings.TrimSpace(value)
+					if device == "" {
+						continue
+					}
+					node.CephDevices = append(node.CephDevices, device)
+					if _, ok := known[device]; !ok && len(known) > 0 {
+						fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "  Warning: "+device+" was not in the automatically discovered safe-device list."))
+					}
+				}
+			}
+
+			confirmed, confirmErr := w.askBool("I understand the selected Ceph devices WILL BE ERASED during provisioning", false)
+			if confirmErr != nil {
+				return Result{}, confirmErr
+			}
+			if !confirmed {
+				return Result{}, fmt.Errorf("Ceph provisioning cancelled because destructive device use was not confirmed")
+			}
+		}
 	}
 
-	plan.AutoDeploy, err = w.askBool("Run pre-flight and bootstrap automatically after saving the Plan", false)
+	plan.AutoDeploy, err = w.askBool("Deploy the complete Titanus Realm automatically after saving the Plan", false)
 	if err != nil {
 		return Result{}, err
 	}
@@ -278,6 +354,25 @@ func (w *Wizard) askBool(label string, def bool) (bool, error) {
 		default:
 			fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "Please answer y or n."))
 		}
+	}
+}
+
+func humanBytes(value uint64) string {
+	const (
+		kiB = 1024
+		miB = 1024 * kiB
+		giB = 1024 * miB
+		tiB = 1024 * giB
+	)
+	switch {
+	case value >= tiB:
+		return fmt.Sprintf("%.2f TiB", float64(value)/float64(tiB))
+	case value >= giB:
+		return fmt.Sprintf("%.2f GiB", float64(value)/float64(giB))
+	case value >= miB:
+		return fmt.Sprintf("%.2f MiB", float64(value)/float64(miB))
+	default:
+		return fmt.Sprintf("%d B", value)
 	}
 }
 
