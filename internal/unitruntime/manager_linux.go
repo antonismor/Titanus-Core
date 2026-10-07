@@ -295,6 +295,10 @@ func (m *Manager) prepareCgroup(spec Spec) error {
 	if err := os.MkdirAll(m.cfg.CgroupRoot, 0755); err != nil {
 		return err
 	}
+	if err := enableControllers(m.cfg.CgroupRoot, []string{"cpu", "memory", "pids"}); err != nil {
+		return err
+	}
+
 	dir := m.cgroupDir(spec.ID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -309,6 +313,33 @@ func (m *Manager) prepareCgroup(spec Spec) error {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0644); err != nil {
 			return fmt.Errorf("%s=%s: %w", name, value, err)
 		}
+	}
+	return nil
+}
+
+func enableControllers(cgroupRoot string, required []string) error {
+	controllersPath := filepath.Join(cgroupRoot, "cgroup.controllers")
+	availableData, err := os.ReadFile(controllersPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", controllersPath, err)
+	}
+	available := map[string]bool{}
+	for _, controller := range strings.Fields(string(availableData)) {
+		available[controller] = true
+	}
+	for _, controller := range required {
+		if !available[controller] {
+			return fmt.Errorf("cgroup controller %q is not delegated to %s", controller, cgroupRoot)
+		}
+	}
+
+	commands := make([]string, 0, len(required))
+	for _, controller := range required {
+		commands = append(commands, "+"+controller)
+	}
+	path := filepath.Join(cgroupRoot, "cgroup.subtree_control")
+	if err := os.WriteFile(path, []byte(strings.Join(commands, " ")), 0644); err != nil {
+		return fmt.Errorf("enable cgroup controllers in %s: %w", cgroupRoot, err)
 	}
 	return nil
 }
