@@ -76,9 +76,12 @@ jobs:
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus fabric init --cidr 10.249.0.0/24 --bridge titanus-ci0
 
+          sudo env TITANUS_STATE_ROOT="$STATE" ./bin/titanus disk create smoke-data --provider local --size 64M
+
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
-            ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 --fabric -- \
-            /bin/sh -c 'echo TITANUS_RUNTIME_OK; sleep 30'
+            ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 --fabric \
+            --mount smoke-data:/data -- \
+            /bin/sh -c 'echo TITANUS_RUNTIME_OK; echo PERSISTENT_OK > /data/proof; sleep 30'
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit start smoke
@@ -97,6 +100,8 @@ jobs:
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit stop smoke
+
+          sudo grep -q PERSISTENT_OK "$STATE/disks/smoke-data/data/proof"
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit delete smoke
