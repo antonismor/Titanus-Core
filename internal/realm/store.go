@@ -103,6 +103,22 @@ type Route struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+type NetworkPolicyRule struct {
+	FromFleet string `json:"from_fleet,omitempty"`
+	FromCIDR  string `json:"from_cidr,omitempty"`
+	Protocol  string `json:"protocol,omitempty"`
+	Ports     []int  `json:"ports,omitempty"`
+}
+
+type NetworkPolicy struct {
+	Name        string              `json:"name"`
+	Fleet       string              `json:"fleet"`
+	DefaultDeny bool                `json:"default_deny"`
+	Ingress     []NetworkPolicyRule `json:"ingress,omitempty"`
+	CreatedAt   time.Time           `json:"created_at"`
+	UpdatedAt   time.Time           `json:"updated_at"`
+}
+
 type Assignment struct {
 	ID         string          `json:"id"`
 	Fleet      string          `json:"fleet"`
@@ -124,8 +140,9 @@ type State struct {
 	Nodes       map[string]Node       `json:"nodes"`
 	Fleets      map[string]Fleet      `json:"fleets"`
 	Assignments map[string]Assignment `json:"assignments"`
-	Routes      map[string]Route      `json:"routes"`
-	UpdatedAt   time.Time             `json:"updated_at"`
+	Routes      map[string]Route         `json:"routes"`
+	Policies    map[string]NetworkPolicy `json:"policies"`
+	UpdatedAt   time.Time                `json:"updated_at"`
 }
 
 type Store struct {
@@ -499,6 +516,88 @@ func (s *Store) PutRoute(route Route) (Route, error) {
 	return route, nil
 }
 
+func (s *Store) PutPolicy(policy NetworkPolicy) (NetworkPolicy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	policy.Name = strings.TrimSpace(policy.Name)
+	policy.Fleet = strings.TrimSpace(policy.Fleet)
+	if policy.Name == "" || policy.Fleet == "" {
+		return NetworkPolicy{}, fmt.Errorf("Network Policy name and Fleet are required")
+	}
+	if _, ok := s.data.Fleets[policy.Fleet]; !ok {
+		return NetworkPolicy{}, fmt.Errorf("unknown Fleet %s", policy.Fleet)
+	}
+	policy.DefaultDeny = true
+	for i, rule := range policy.Ingress {
+		rule.FromFleet = strings.TrimSpace(rule.FromFleet)
+		rule.FromCIDR = strings.TrimSpace(rule.FromCIDR)
+		rule.Protocol = strings.ToLower(strings.TrimSpace(rule.Protocol))
+		if rule.Protocol == "" {
+			rule.Protocol = "tcp"
+		}
+		if rule.Protocol != "tcp" && rule.Protocol != "udp" && rule.Protocol != "any" {
+			return NetworkPolicy{}, fmt.Errorf("Network Policy %s rule %d has unsupported protocol %q", policy.Name, i+1, rule.Protocol)
+		}
+		if rule.FromFleet != "" {
+			if _, ok := s.data.Fleets[rule.FromFleet]; !ok {
+				return NetworkPolicy{}, fmt.Errorf("Network Policy %s references unknown source Fleet %s", policy.Name, rule.FromFleet)
+			}
+		}
+		if rule.FromCIDR != "" {
+			ip, network, err := net.ParseCIDR(rule.FromCIDR)
+			if err != nil || ip.To4() == nil {
+				return NetworkPolicy{}, fmt.Errorf("Network Policy %s rule %d has invalid IPv4 source CIDR %q", policy.Name, i+1, rule.FromCIDR)
+			}
+			rule.FromCIDR = network.String()
+		}
+		seenPorts := map[int]bool{}
+		ports := make([]int, 0, len(rule.Ports))
+		for _, port := range rule.Ports {
+			if port < 1 || port > 65535 {
+				return NetworkPolicy{}, fmt.Errorf("Network Policy %s rule %d has invalid port %d", policy.Name, i+1, port)
+			}
+			if seenPorts[port] {
+				continue
+			}
+			seenPorts[port] = true
+			ports = append(ports, port)
+		}
+		sort.Ints(ports)
+		rule.Ports = ports
+		policy.Ingress[i] = rule
+	}
+	now := time.Now().UTC()
+	if existing, ok := s.data.Policies[policy.Name]; ok {
+		policy.CreatedAt = existing.CreatedAt
+	} else {
+		policy.CreatedAt = now
+	}
+	policy.UpdatedAt = now
+	s.data.Policies[policy.Name] = policy
+	if err := s.commitLocked(); err != nil {
+		return NetworkPolicy{}, err
+	}
+	return policy, nil
+}
+
+func (s *Store) GetPolicy(name string) (NetworkPolicy, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	policy, ok := s.data.Policies[name]
+	return policy, ok
+}
+
+func (s *Store) DeletePolicy(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data.Policies[name]; !ok {
+		return fmt.Errorf("unknown Network Policy %s", name)
+	}
+	delete(s.data.Policies, name)
+	return s.commitLocked()
+}
+
 func (s *Store) DeleteRoute(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -565,6 +664,16 @@ func (s *Store) DeleteFleet(name string) error {
 	if _, ok := s.data.Fleets[name]; !ok {
 		return fmt.Errorf("unknown Fleet %s", name)
 	}
+	for policyName, policy := range s.data.Policies {
+		if policy.Fleet == name {
+			return fmt.Errorf("Fleet %s is protected by Network Policy %s", name, policyName)
+		}
+		for _, rule := range policy.Ingress {
+			if rule.FromFleet == name {
+				return fmt.Errorf("Fleet %s is referenced by Network Policy %s", name, policyName)
+			}
+		}
+	}
 	delete(s.data.Fleets, name)
 	return s.commitLocked()
 }
@@ -622,7 +731,7 @@ func (s *Store) load(realmName string) error {
 		s.data = State{
 			Name: realmName, Nodes: map[string]Node{},
 			Fleets: map[string]Fleet{}, Assignments: map[string]Assignment{}, Routes: map[string]Route{},
-			UpdatedAt: time.Now().UTC(),
+			Policies: map[string]NetworkPolicy{}, UpdatedAt: time.Now().UTC(),
 		}
 		return s.commitLocked()
 	}
@@ -643,6 +752,9 @@ func (s *Store) load(realmName string) error {
 	}
 	if s.data.Routes == nil {
 		s.data.Routes = map[string]Route{}
+	}
+	if s.data.Policies == nil {
+		s.data.Policies = map[string]NetworkPolicy{}
 	}
 	if s.data.Name == "" {
 		s.data.Name = realmName
