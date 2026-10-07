@@ -21,6 +21,7 @@ echo "==> Installing binaries"
 install -d -m 0755 /usr/local/libexec
 install -m 0755 bin/titanus /usr/local/bin/titanus
 install -m 0755 bin/titanusd /usr/local/sbin/titanusd
+install -m 0755 bin/titanus-agent /usr/local/sbin/titanus-agent
 install -m 0755 bin/titanus-init /usr/local/libexec/titanus-init
 
 echo "==> Creating Titanus filesystem"
@@ -34,6 +35,7 @@ install -d -m 0755 /run/titanus
 
 echo "==> Installing systemd service"
 install -m 0644 systemd/titanusd.service /etc/systemd/system/titanusd.service
+install -m 0644 systemd/titanus-agent.service /etc/systemd/system/titanus-agent.service
 systemctl daemon-reload
 systemctl enable titanusd.service
 
@@ -41,3 +43,4 @@ echo
 echo "Titanus Core installed."
 echo "Start the guided setup with: titanus"
 echo "Start the daemon with:       systemctl start titanusd"
+echo "Configure agent.env, then:   systemctl enable --now titanus-agent"
