@@ -21,6 +21,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/realmclient"
 	"github.com/antonismor/Titanus-Core/internal/reconcile"
+	"github.com/antonismor/Titanus-Core/internal/route"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
@@ -104,6 +105,11 @@ func main() {
 	defer cancel()
 
 	go healthLoop(ctx, store)
+	if envBool("TITANUS_GATEWAY_MODE") {
+		routeManager := route.NewManager(store)
+		go routeManager.Run(ctx)
+		log.Printf("Titanus Route gateway enabled")
+	}
 	if envBool("TITANUS_CONTROLLER_MODE") {
 		client, err := realmclient.New(ca, cert, key)
 		if err != nil {
