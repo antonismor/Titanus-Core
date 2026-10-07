@@ -140,11 +140,23 @@ func (s *Store) UpsertNode(node Node) error {
 	if strings.TrimSpace(node.ID) == "" {
 		return fmt.Errorf("node ID is required")
 	}
+	existing, existed := s.data.Nodes[node.ID]
 	if node.JoinedAt.IsZero() {
-		if existing, ok := s.data.Nodes[node.ID]; ok {
+		if existed {
 			node.JoinedAt = existing.JoinedAt
 		} else {
 			node.JoinedAt = time.Now().UTC()
+		}
+	}
+	if existed {
+		if node.FabricCIDR == "" {
+			node.FabricCIDR = existing.FabricCIDR
+		}
+		if node.Failures == 0 {
+			node.Failures = existing.Failures
+		}
+		if node.Successes == 0 {
+			node.Successes = existing.Successes
 		}
 	}
 	if node.LastPulse.IsZero() {
