@@ -254,10 +254,16 @@ func mountProc(rootfs string) error {
 func mountDevices(rootfs string) error {
 	directory := filepath.Join(rootfs, "dev")
 	if info, err := os.Lstat(directory); err == nil {
-		if !info.IsDir() { return fmt.Errorf("Source dev path must be a directory") }
+		if !info.IsDir() {
+			return fmt.Errorf("Source dev path must be a directory")
+		}
 	} else if os.IsNotExist(err) {
-		if err := os.Mkdir(directory, 0755); err != nil { return err }
-	} else { return err }
+		if err := os.Mkdir(directory, 0755); err != nil {
+			return err
+		}
+	} else {
+		return err
+	}
 	if err := syscall.Mount("tmpfs", directory, "tmpfs", syscall.MS_NOSUID, "mode=755,size=16m"); err != nil {
 		return fmt.Errorf("mount /dev tmpfs: %w", err)
 	}
@@ -266,21 +272,31 @@ func mountDevices(rootfs string) error {
 	for _, name := range []string{"null", "zero", "full", "random", "urandom", "tty"} {
 		target := filepath.Join(directory, name)
 		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		_ = file.Close()
 		if err := syscall.Mount("/dev/"+name, target, "", syscall.MS_BIND, ""); err != nil {
 			return fmt.Errorf("bind safe device %s: %w", name, err)
 		}
-		if err := syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_NOSUID|syscall.MS_NOEXEC, ""); err != nil { return err }
+		if err := syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_NOSUID|syscall.MS_NOEXEC, ""); err != nil {
+			return err
+		}
 	}
 	pts := filepath.Join(directory, "pts")
-	if err := os.Mkdir(pts, 0755); err != nil { return err }
+	if err := os.Mkdir(pts, 0755); err != nil {
+		return err
+	}
 	if err := syscall.Mount("devpts", pts, "devpts", syscall.MS_NOSUID|syscall.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620,max=256"); err != nil {
 		return fmt.Errorf("mount private devpts: %w", err)
 	}
-	if err := os.Symlink("pts/ptmx", filepath.Join(directory, "ptmx")); err != nil { return err }
-	for name, target := range map[string]string{"fd":"/proc/self/fd", "stdin":"/proc/self/fd/0", "stdout":"/proc/self/fd/1", "stderr":"/proc/self/fd/2"} {
-		if err := os.Symlink(target, filepath.Join(directory, name)); err != nil { return err }
+	if err := os.Symlink("pts/ptmx", filepath.Join(directory, "ptmx")); err != nil {
+		return err
+	}
+	for name, target := range map[string]string{"fd": "/proc/self/fd", "stdin": "/proc/self/fd/0", "stdout": "/proc/self/fd/1", "stderr": "/proc/self/fd/2"} {
+		if err := os.Symlink(target, filepath.Join(directory, name)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
