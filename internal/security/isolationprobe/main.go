@@ -87,6 +87,19 @@ func verify() error {
 			return fmt.Errorf("proc path not mounted read-only: %s", path)
 		}
 	}
+	initNamespace, e := os.Readlink("/proc/1/ns/pid")
+	if e != nil {
+		return e
+	}
+	selfNamespace, e := os.Readlink("/proc/self/ns/pid")
+	if e != nil || initNamespace != selfNamespace {
+		return fmt.Errorf("proc exposes another PID namespace")
+	}
+	for _, path := range []string{"/.titanus-oldroot", "/.titanus-newroot"} {
+		if _, e := os.Lstat(path); !os.IsNotExist(e) {
+			return fmt.Errorf("root transition artifact remains: %s", path)
+		}
+	}
 	// Parent namespace root is never in this map. Compare from the host too.
 	data, e = os.ReadFile("/proc/self/uid_map")
 	if e != nil {

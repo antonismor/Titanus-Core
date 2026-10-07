@@ -126,8 +126,25 @@ func runUnitChild(args []string) (result error) {
 	if err := syscall.Fchdir(6); err != nil {
 		return fmt.Errorf("enter mapped rootfs: %w", err)
 	}
-	rootfs = "."
-	if err := syscall.Mount(rootfs, rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+	// Bind onto a child mountpoint and then resolve that path. A descriptor's
+	// cwd still refers to the inherited locked mount after a self-bind on '.'.
+	// The new child bind is owned by this namespace and can be pivoted safely.
+	const stage = ".titanus-newroot"
+	if info, e := os.Lstat(stage); e == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("reserved root staging path is not a directory")
+		}
+		if e := os.Remove(stage); e != nil {
+			return fmt.Errorf("reserved root staging path is not empty: %w", e)
+		}
+	} else if !os.IsNotExist(e) {
+		return e
+	}
+	if e := os.Mkdir(stage, 0700); e != nil {
+		return e
+	}
+	rootfs = stage
+	if err := syscall.Mount(".", rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind mapped root: %w", err)
 	}
 	_ = syscall.Close(6)
@@ -210,6 +227,9 @@ func pivotInto(rootfs string) error {
 	}
 	if err := os.Remove("/.titanus-oldroot"); err != nil {
 		return fmt.Errorf("remove old-root directory: %w", err)
+	}
+	if err := os.Remove("/.titanus-newroot"); err != nil {
+		return fmt.Errorf("remove root staging directory: %w", err)
 	}
 	return nil
 }

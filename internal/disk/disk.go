@@ -393,7 +393,7 @@ func ValidateMounts(mounts []Mount) error {
 			return fmt.Errorf("Disk %s requires an absolute non-root target", mount.Disk)
 		}
 		target := filepath.Clean(mount.Target)
-		for _, protected := range []string{"/proc", "/sys", "/dev", "/.titanus-oldroot"} {
+		for _, protected := range []string{"/proc", "/sys", "/dev", "/.titanus-oldroot", "/.titanus-newroot"} {
 			if target == protected || strings.HasPrefix(target, protected+"/") {
 				return fmt.Errorf("protected Disk target %s", target)
 			}

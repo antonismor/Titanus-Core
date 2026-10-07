@@ -84,7 +84,7 @@ func (p Policy) Validate() error {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" || strings.ContainsAny(path, "\x00\n") {
 			return fmt.Errorf("invalid LSM writable path %q", path)
 		}
-		for _, protected := range []string{"/proc", "/sys", "/dev", "/.titanus-oldroot"} {
+		for _, protected := range []string{"/proc", "/sys", "/dev", "/.titanus-oldroot", "/.titanus-newroot"} {
 			if path == protected || strings.HasPrefix(path, protected+"/") {
 				return fmt.Errorf("protected LSM path %q", path)
 			}

@@ -25,7 +25,9 @@ by the existing Source importer; no_new_privs blocks file privilege escalation.
 Previously populated unshifted upper/work layers fail closed and require offline
 migration or Unit recreation; there is no automatic recursive ownership rewrite
 of existing data. The host state remains private; only rootfs/executable handles
-cross the startup boundary, and close before workload exec. The host monitor
+cross the startup boundary, and close before workload exec. Init binds the
+rootfs onto a private child staging mount (avoiding the inherited locked mount),
+pivots into it and detaches the entire old root before applying workload policy. The host monitor
 alone writes durable exit records.
 
 Writable Disks retain their real ownership. Provision them for the mapped UID/GID
