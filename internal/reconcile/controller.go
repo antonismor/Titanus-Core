@@ -123,9 +123,9 @@ func (c *Controller) Once() error {
 				continue
 			}
 			if runtimeState.Status == unitruntime.StatusActive {
-				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentActive)
+				_ = c.Store.UpdateAssignmentRuntime(assignment.ID, runtimeState.NetworkAddress, realm.AssignmentActive)
 			} else {
-				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentStarting)
+				_ = c.Store.UpdateAssignmentRuntime(assignment.ID, runtimeState.NetworkAddress, realm.AssignmentStarting)
 			}
 		}
 	}
