@@ -9,19 +9,27 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/antonismor/Titanus-Core/internal/fabric"
 )
 
 var objectName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
+type NetworkSpec struct {
+	Fabric bool          `json:"fabric"`
+	Ports  []fabric.Port `json:"ports,omitempty"`
+}
+
 type Spec struct {
-	ID          string   `json:"id"`
-	Source      string   `json:"source"`
-	Hostname    string   `json:"hostname"`
-	Command     []string `json:"command"`
-	Environment []string `json:"environment,omitempty"`
-	MemoryBytes int64    `json:"memory_bytes"`
-	CPUPercent  int      `json:"cpu_percent"`
-	PidsMax     int      `json:"pids_max"`
+	ID          string      `json:"id"`
+	Source      string      `json:"source"`
+	Hostname    string      `json:"hostname"`
+	Command     []string    `json:"command"`
+	Environment []string    `json:"environment,omitempty"`
+	MemoryBytes int64       `json:"memory_bytes"`
+	CPUPercent  int         `json:"cpu_percent"`
+	PidsMax     int         `json:"pids_max"`
+	Network     NetworkSpec `json:"network"`
 }
 
 type Status string
@@ -41,7 +49,8 @@ type State struct {
 	CreatedAt time.Time `json:"created_at"`
 	StartedAt time.Time `json:"started_at,omitempty"`
 	StoppedAt time.Time `json:"stopped_at,omitempty"`
-	LastError string    `json:"last_error,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	NetworkAddress string    `json:"network_address,omitempty"`
 }
 
 func (s *Spec) Normalize() {
@@ -79,6 +88,12 @@ func (s Spec) Validate() error {
 	}
 	if s.PidsMax < 8 || s.PidsMax > 1048576 {
 		return fmt.Errorf("Unit %s pids limit is outside the supported range", s.ID)
+	}
+	if err := fabric.ValidatePorts(s.Network.Ports); err != nil {
+		return fmt.Errorf("Unit %s network: %w", s.ID, err)
+	}
+	if len(s.Network.Ports) > 0 && !s.Network.Fabric {
+		return fmt.Errorf("Unit %s publishes ports but Titanus Fabric is disabled", s.ID)
 	}
 	return nil
 }
