@@ -264,6 +264,17 @@ func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
 	return state, nil
 }
 
+func (m *Manager) StopLeaseUnit(id string) error {
+	_, err := m.Stop(id, 5*time.Second)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (m *Manager) Inspect(id string) (Spec, State, error) {
 	spec, state, err := m.load(id)
 	if err != nil {
