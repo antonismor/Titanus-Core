@@ -116,6 +116,7 @@ func main() {
 	defer cancel()
 
 	go healthLoop(ctx, store)
+	go runtimeManager.RunHealth(ctx)
 	if api.Authority != nil {
 		go api.Authority.MaintainCRL(ctx)
 	}

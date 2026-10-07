@@ -122,7 +122,7 @@ func (c *Controller) Once() error {
 				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 				continue
 			}
-			if runtimeState.Status == unitruntime.StatusActive {
+			if runtimeState.Status == unitruntime.StatusActive && runtimeState.Ready {
 				_ = c.Store.UpdateAssignmentRuntime(assignment.ID, runtimeState.NetworkAddress, realm.AssignmentActive)
 			} else {
 				_ = c.Store.UpdateAssignmentRuntime(assignment.ID, runtimeState.NetworkAddress, realm.AssignmentStarting)
@@ -179,6 +179,7 @@ func staleAssignments(current, desired []realm.Assignment) []realm.Assignment {
 }
 
 func unitSpec(fleet realm.Fleet, assignment realm.Assignment) unitruntime.Spec {
+	fleet.Template.Health.Normalize("always")
 	return unitruntime.Spec{
 		ID:          assignment.ID,
 		Source:      fleet.Template.Source,
@@ -189,6 +190,7 @@ func unitSpec(fleet realm.Fleet, assignment realm.Assignment) unitruntime.Spec {
 		CPUPercent:  fleet.Template.CPUPercent,
 		PidsMax:     fleet.Template.PidsMax,
 		Security:    fleet.Template.Security,
+		Health:      fleet.Template.Health,
 		Network: unitruntime.NetworkSpec{
 			Fabric: fleet.Template.Fabric,
 			Ports:  append([]fabric.Port(nil), fleet.Template.Ports...),

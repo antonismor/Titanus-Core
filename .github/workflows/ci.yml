@@ -84,6 +84,7 @@ jobs:
           ln -s busybox /tmp/titanus-rootfs/bin/sh
           ln -s busybox /tmp/titanus-rootfs/bin/sleep
           CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/security-probe ./internal/security/testprobe
+          CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/health-app ./internal/unitruntime/testapp
 
       - name: Exercise native Unit runtime
         run: |
@@ -171,8 +172,12 @@ jobs:
       - name: Exercise lifecycle and daemon recovery
         run: sudo env "PATH=$PATH" bash scripts/ci-runtime-lifecycle.sh
 
+      - name: Exercise health checks and restart policy
+        run: sudo env "PATH=$PATH" bash scripts/ci-runtime-health.sh
+
       - name: Runtime diagnostics on failure
         if: failure()
         run: |
           sudo find /tmp/titanus-ci-state/units -name unit.log -exec tail -n 50 {} \; || true
           sudo cat /tmp/titanus-lifecycle-daemon.log || true
+          sudo tail -n 50 /tmp/titanus-health-daemon.log || true

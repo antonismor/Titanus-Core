@@ -34,6 +34,7 @@ type Spec struct {
 	PidsMax     int             `json:"pids_max"`
 	Network     NetworkSpec     `json:"network"`
 	Mounts      []disk.Mount    `json:"mounts,omitempty"`
+	Health      Health          `json:"health"`
 	Security    security.Policy `json:"security"`
 }
 
@@ -48,6 +49,15 @@ const (
 )
 
 type State struct {
+	HealthFailed   bool        `json:"health_failed,omitempty"`
+	DesiredRunning bool        `json:"desired_running"`
+	Ready          bool        `json:"ready"`
+	Live           bool        `json:"live"`
+	Readiness      ProbeResult `json:"readiness"`
+	Liveness       ProbeResult `json:"liveness"`
+	RestartCount   int         `json:"restart_count"`
+	NextStartAt    time.Time   `json:"next_start_at,omitempty"`
+
 	ID             string          `json:"id"`
 	Status         Status          `json:"status"`
 	Process        ProcessIdentity `json:"process"`
@@ -64,6 +74,7 @@ type State struct {
 
 func (s *Spec) Normalize() {
 	s.Security.Normalize()
+	s.Health.Normalize("never")
 	s.ID = strings.TrimSpace(s.ID)
 	s.Source = strings.TrimSpace(s.Source)
 	if strings.TrimSpace(s.Hostname) == "" {
@@ -81,6 +92,9 @@ func (s *Spec) Normalize() {
 }
 
 func (s Spec) Validate() error {
+	if err := s.Health.Validate(); err != nil {
+		return fmt.Errorf("Unit health: %w", err)
+	}
 	if err := s.Security.Validate(); err != nil {
 		return fmt.Errorf("Unit %s security: %w", s.ID, err)
 	}

@@ -895,6 +895,10 @@ func runFleet(args []string) error {
 		uid := fs.Int("uid", 0, "Unit process UID")
 		gid := fs.Int("gid", 0, "Unit process GID")
 		readOnly := fs.Bool("read-only-rootfs", false, "remount Unit root filesystem read-only")
+		healthFile := fs.String("health-config", "", "JSON health configuration file")
+		readiness := fs.String("readiness", "", "HTTP/TCP readiness URL inside the Unit")
+		liveness := fs.String("liveness", "", "HTTP/TCP liveness URL inside the Unit")
+		restart := fs.String("restart", "always", "never, on-failure or always")
 		require := fs.String("require", "", "comma-separated label=value placement requirements")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
@@ -945,6 +949,10 @@ func runFleet(args []string) error {
 				Fabric: *fabricEnabled || len(ports) > 0,
 				Ports:  ports, Mounts: mounts,
 			},
+		}
+		fleet.Template.Health, err = healthFlags(*readiness, *liveness, *restart, *healthFile)
+		if err != nil {
+			return err
 		}
 		fleet.Template.Security = security.Policy{Profile: *profile, RunAsUID: *uid, RunAsGID: *gid, ReadOnlyRootFS: *readOnly}
 		if strings.TrimSpace(*capabilities) != "" {
@@ -1573,6 +1581,10 @@ func runUnit(args []string) error {
 		uid := fs.Int("uid", 0, "process UID inside the Unit")
 		gid := fs.Int("gid", 0, "process GID inside the Unit")
 		readOnly := fs.Bool("read-only-rootfs", false, "remount Unit root filesystem read-only")
+		healthFile := fs.String("health-config", "", "JSON health configuration file")
+		readiness := fs.String("readiness", "", "HTTP/TCP readiness URL inside the Unit")
+		liveness := fs.String("liveness", "", "HTTP/TCP liveness URL inside the Unit")
+		restart := fs.String("restart", "never", "never, on-failure or always")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -1624,6 +1636,10 @@ func runUnit(args []string) error {
 		spec.Security = security.Policy{Profile: *profile, RunAsUID: *uid, RunAsGID: *gid, ReadOnlyRootFS: *readOnly}
 		if strings.TrimSpace(*capabilities) != "" {
 			spec.Security.Capabilities = strings.Split(*capabilities, ",")
+		}
+		spec.Health, err = healthFlags(*readiness, *liveness, *restart, *healthFile)
+		if err != nil {
+			return err
 		}
 		state, err := manager.Create(spec)
 		if err != nil {
@@ -2027,4 +2043,29 @@ Development overrides:
   TITANUS_CGROUP_ROOT
   TITANUS_INIT_BINARY
 `)
+}
+
+func healthFlags(readiness, liveness, restart, file string) (unitruntime.Health, error) {
+	ready, err := unitruntime.ParseProbe(readiness)
+	if err != nil {
+		return unitruntime.Health{}, err
+	}
+	live, err := unitruntime.ParseProbe(liveness)
+	if err != nil {
+		return unitruntime.Health{}, err
+	}
+	health := unitruntime.Health{Readiness: ready, Liveness: live, Restart: restart}
+	if file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return health, err
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(data)))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&health); err != nil {
+			return health, err
+		}
+	}
+	health.Normalize("never")
+	return health, health.Validate()
 }

@@ -65,7 +65,10 @@ func (m *Manager) applyExitRecord(state *State) bool {
 	state.ExitCode = &record.Code
 	state.ExitSignal = record.Signal
 	state.StoppedAt = record.ExitedAt
-	if state.Status != StatusStopped {
+	if state.HealthFailed {
+		state.Status = StatusFailed
+		state.LastError = "liveness probe failed"
+	} else if state.Status != StatusStopped {
 		if record.Code == 0 {
 			state.Status = StatusStopped
 			state.LastError = ""
