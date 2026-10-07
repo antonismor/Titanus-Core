@@ -108,13 +108,14 @@ func main() {
 	}
 	api.Register(mux)
 
-	unixListener, err := unixSocket()
+	socket := envDefault("TITANUS_SOCKET", socketPath)
+	unixListener, err := unixSocketAt(socket)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer func() {
 		_ = unixListener.Close()
-		_ = os.Remove(socketPath)
+		_ = os.Remove(socket)
 	}()
 
 	servers := []*http.Server{newHTTPServer(identity.LocalManagement(mux))}
@@ -220,7 +221,7 @@ func main() {
 		}()
 	}
 
-	log.Printf("Titanus daemon %s Realm=%s listening on unix://%s", version, store.Snapshot().Name, socketPath)
+	log.Printf("Titanus daemon %s Realm=%s listening on unix://%s", version, store.Snapshot().Name, socket)
 
 	select {
 	case <-ctx.Done():
@@ -242,16 +243,18 @@ func main() {
 	log.Print("Titanus daemon stopped")
 }
 
-func unixSocket() (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
+func unixSocket() (net.Listener, error) { return unixSocketAt(socketPath) }
+
+func unixSocketAt(socket string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(socket), 0755); err != nil {
 		return nil, err
 	}
-	_ = os.Remove(socketPath)
-	listener, err := net.Listen("unix", socketPath)
+	_ = os.Remove(socket)
+	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(socketPath, 0660); err != nil {
+	if err := os.Chmod(socket, 0660); err != nil {
 		_ = listener.Close()
 		return nil, err
 	}

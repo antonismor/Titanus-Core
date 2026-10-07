@@ -147,6 +147,10 @@ leader partition/election, minority write rejection without state leakage,
 rejoin, full restart, stale revision rejection, persisted rollout/rollback,
 snapshot transfer to a lagging voter, role/identity rejection and actual mTLS API
 failover. Race checks cover consensus, Store integration and client failover.
-These execute on native AMD64 and ARM64 CI runners. They test separate voter
-instances on one machine; separate-host reboot, WAN faults and production
-installation are not claimed by this test suite.
+These execute on native AMD64 and ARM64 CI runners. A separate integration test
+starts three built production `titanusd` processes with private state directories
+and Unix sockets (`TITANUS_SOCKET`), kills a leader with SIGKILL, verifies API
+failover and acknowledged rollback, then kills/restarts every voter and checks
+minority rejection. This runs with explicit `TITANUS_HA_DAEMON_TEST=1` and an
+absolute `TITANUS_DAEMON_BINARY` on native CI. Separate-host reboot, WAN faults
+and production installation are not claimed by this test suite.
