@@ -31,6 +31,7 @@ type NodeSpec struct {
 	SSHUser       string       `json:"ssh_user"`
 	SSHPort       int          `json:"ssh_port"`
 	Capabilities  []Capability `json:"capabilities"`
+	CephDevices  []string     `json:"ceph_devices,omitempty"`
 }
 
 type CephSpec struct {
@@ -42,6 +43,7 @@ type CephSpec struct {
 	EnableCephFS   bool   `json:"enable_cephfs"`
 	EnableRGW      bool   `json:"enable_rgw"`
 	RequestedTB    int    `json:"requested_usable_tb,omitempty"`
+	Provision      bool   `json:"provision"`
 }
 
 type RealmPlan struct {
@@ -61,6 +63,9 @@ func (p *RealmPlan) Normalize() {
 	for i := range p.Nodes {
 		p.Nodes[i].Name = strings.TrimSpace(p.Nodes[i].Name)
 		p.Nodes[i].SSHUser = strings.TrimSpace(p.Nodes[i].SSHUser)
+		for j := range p.Nodes[i].CephDevices {
+			p.Nodes[i].CephDevices[j] = strings.TrimSpace(p.Nodes[i].CephDevices[j])
+		}
 		if p.Nodes[i].SSHPort == 0 {
 			p.Nodes[i].SSHPort = 22
 		}
@@ -130,6 +135,31 @@ func (p RealmPlan) Validate() error {
 				return fmt.Errorf("IP %s is used by both %s and %s", ip, owner, n.Name)
 			}
 			seenIPs[ip] = n.Name
+		}
+
+		if p.Ceph.Enabled && p.Ceph.Provision {
+			isStorage := false
+			for _, capability := range n.Capabilities {
+				if capability == CapabilityStorage {
+					isStorage = true
+					break
+				}
+			}
+			if isStorage {
+				if len(n.CephDevices) == 0 {
+					return fmt.Errorf("Ceph provisioning is enabled but storage node %s has no selected data devices", n.Name)
+				}
+				seenDevices := map[string]bool{}
+				for _, device := range n.CephDevices {
+					if !strings.HasPrefix(device, "/dev/") || strings.ContainsAny(device, "\r\n\x00") {
+						return fmt.Errorf("node %s has invalid Ceph device %q", n.Name, device)
+					}
+					if seenDevices[device] {
+						return fmt.Errorf("node %s has duplicate Ceph device %s", n.Name, device)
+					}
+					seenDevices[device] = true
+				}
+			}
 		}
 
 		for _, c := range n.Capabilities {
