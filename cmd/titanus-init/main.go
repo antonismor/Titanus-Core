@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 func main() {
@@ -24,8 +26,8 @@ func main() {
 }
 
 func runUnitChild(args []string) error {
-	if len(args) < 5 {
-		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD -- COMMAND [ARGS...]")
+	if len(args) < 9 {
+		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD PROFILE UID GID READONLY -- COMMAND [ARGS...]")
 	}
 	rootfs := filepath.Clean(args[0])
 	hostname := args[1]
@@ -33,10 +35,29 @@ func runUnitChild(args []string) error {
 	if err != nil || readyFD < 3 {
 		return fmt.Errorf("invalid runtime readiness fd %q", args[2])
 	}
-	if args[3] != "--" {
+	uid, err := strconv.Atoi(args[4])
+	if err != nil {
+		return fmt.Errorf("invalid Unit UID %q", args[4])
+	}
+	gid, err := strconv.Atoi(args[5])
+	if err != nil {
+		return fmt.Errorf("invalid Unit GID %q", args[5])
+	}
+	readOnlyRootFS, err := strconv.ParseBool(args[6])
+	if err != nil {
+		return fmt.Errorf("invalid Unit read-only-rootfs value %q", args[6])
+	}
+	securitySpec := security.Spec{
+		Profile: args[3], RunAsUID: uid, RunAsGID: gid, ReadOnlyRootFS: readOnlyRootFS,
+	}
+	securitySpec.Normalize()
+	if err := securitySpec.Validate(); err != nil {
+		return err
+	}
+	if args[7] != "--" {
 		return fmt.Errorf("missing command separator")
 	}
-	command := args[4:]
+	command := args[8:]
 	if len(command) == 0 {
 		return fmt.Errorf("missing Unit command")
 	}
@@ -64,6 +85,9 @@ func runUnitChild(args []string) error {
 	}
 	if err := bringLoopbackUp(); err != nil {
 		return fmt.Errorf("bring loopback up: %w", err)
+	}
+	if err := security.Apply(securitySpec); err != nil {
+		return fmt.Errorf("apply Unit Security Profile: %w", err)
 	}
 
 	return execInside(command)
