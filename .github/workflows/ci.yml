@@ -33,3 +33,64 @@ jobs:
 
       - name: Smoke CLI
         run: ./bin/titanus version
+
+  runtime-smoke:
+    name: Native Unit runtime smoke
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout Titanus
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+
+      - name: Build Titanus
+        run: make build
+
+      - name: Install static BusyBox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y busybox-static
+
+      - name: Build minimal Titanus Source
+        run: |
+          mkdir -p /tmp/titanus-rootfs/bin
+          cp "$(command -v busybox)" /tmp/titanus-rootfs/bin/busybox
+          ln -s busybox /tmp/titanus-rootfs/bin/sh
+          ln -s busybox /tmp/titanus-rootfs/bin/sleep
+
+      - name: Exercise native Unit runtime
+        run: |
+          set -euxo pipefail
+          STATE=/tmp/titanus-ci-state
+          CGROUP=/sys/fs/cgroup/titanus-ci
+          INIT="$GITHUB_WORKSPACE/bin/titanus-init"
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus source import busybox /tmp/titanus-rootfs
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 -- \
+            /bin/sh -c 'echo TITANUS_RUNTIME_OK; sleep 30'
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit start smoke
+
+          sleep 1
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit inspect smoke | tee /tmp/titanus-inspect.json
+          grep -q '"status": "ACTIVE"' /tmp/titanus-inspect.json
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit logs smoke | grep -q TITANUS_RUNTIME_OK
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit stop smoke
+
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit delete smoke
