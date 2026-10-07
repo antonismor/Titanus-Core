@@ -3,7 +3,6 @@
 package security
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -15,8 +14,8 @@ import (
 )
 
 const (
-	prCapBsetDrop    = 24
-	prSetNoNewPrivs  = 38
+	prCapBsetDrop     = 24
+	prSetNoNewPrivs   = 38
 	prSetSeccomp      = 22
 	seccompModeFilter = 2
 
@@ -59,27 +58,55 @@ type capUserData struct {
 	Inheritable uint32
 }
 
-func ApplyProfile(value string) error {
-	name := NormalizeProfile(value)
-	if err := ValidateProfile(name); err != nil {
+func Apply(spec Spec) error {
+	spec.Normalize()
+	if err := spec.Validate(); err != nil {
 		return err
 	}
-	if name == ProfileUnconfined {
-		return nil
+	if spec.ReadOnlyRootFS {
+		if err := syscall.Mount("", "/", "", uintptr(syscall.MS_REMOUNT|syscall.MS_RDONLY), ""); err != nil {
+			return fmt.Errorf("remount Unit rootfs read-only: %w", err)
+		}
 	}
-	if err := dropCapabilityBoundingSet(); err != nil {
-		return fmt.Errorf("drop capability bounding set: %w", err)
+
+	if spec.Profile == ProfileRestricted {
+		if err := dropCapabilityBoundingSet(); err != nil {
+			return fmt.Errorf("drop capability bounding set: %w", err)
+		}
+		if err := prctl(prSetNoNewPrivs, 1, 0, 0, 0); err != nil {
+			return fmt.Errorf("PR_SET_NO_NEW_PRIVS: %w", err)
+		}
+		if err := installRestrictedSeccomp(); err != nil {
+			return fmt.Errorf("install seccomp filter: %w", err)
+		}
 	}
-	if err := clearProcessCapabilities(); err != nil {
-		return fmt.Errorf("clear process capabilities: %w", err)
+
+	if spec.RunAsGID != 0 || spec.RunAsUID != 0 {
+		if err := syscall.Setgroups([]int{}); err != nil {
+			return fmt.Errorf("clear supplementary groups: %w", err)
+		}
 	}
-	if err := prctl(prSetNoNewPrivs, 1, 0, 0, 0); err != nil {
-		return fmt.Errorf("PR_SET_NO_NEW_PRIVS: %w", err)
+	if spec.RunAsGID != 0 {
+		if err := syscall.Setgid(spec.RunAsGID); err != nil {
+			return fmt.Errorf("setgid(%d): %w", spec.RunAsGID, err)
+		}
 	}
-	if err := installRestrictedSeccomp(); err != nil {
-		return fmt.Errorf("install seccomp filter: %w", err)
+	if spec.RunAsUID != 0 {
+		if err := syscall.Setuid(spec.RunAsUID); err != nil {
+			return fmt.Errorf("setuid(%d): %w", spec.RunAsUID, err)
+		}
+	}
+
+	if spec.Profile == ProfileRestricted {
+		if err := clearProcessCapabilities(); err != nil {
+			return fmt.Errorf("clear process capabilities: %w", err)
+		}
 	}
 	return nil
+}
+
+func ApplyProfile(value string) error {
+	return Apply(Spec{Profile: value})
 }
 
 func dropCapabilityBoundingSet() error {
@@ -202,11 +229,4 @@ func prctl(option, arg2, arg3, arg4, arg5 uintptr) error {
 		return errno
 	}
 	return nil
-}
-
-func NativeEndian() binary.ByteOrder {
-	if uint16(1) == *(*uint16)(unsafe.Pointer(&[2]byte{1, 0}[0])) {
-		return binary.LittleEndian
-	}
-	return binary.BigEndian
 }
