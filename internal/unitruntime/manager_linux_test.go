@@ -1,11 +1,61 @@
 package unitruntime
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestStartupRequiresSuccessfulExecMarker(t *testing.T) {
+	for _, payload := range []string{"READY\n", "", "ERROR: denied\n", "READY\nERROR: exec failed\n"} {
+		t.Run(fmt.Sprintf("%q", payload), func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			_, _ = w.Write([]byte(payload))
+			_ = w.Close()
+			err = awaitStartup(r, time.Second)
+			if (err == nil) != (payload == "READY\n") {
+				t.Fatalf("payload %q: %v", payload, err)
+			}
+		})
+	}
+}
+
+func TestStartupTimeout(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if err := awaitStartup(r, 20*time.Millisecond); err == nil {
+		t.Fatal("startup must time out")
+	}
+}
+
+func TestLegacySpecGetsHardenedDefaults(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sources", "busybox", "rootfs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(Config{StateRoot: root})
+	if _, err := m.Create(Spec{ID: "legacy", Source: "busybox", Command: []string{"/bin/sh"}}); err != nil {
+		t.Fatal(err)
+	}
+	s, _, err := m.Inspect("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Security.NoNewPrivileges == nil || !*s.Security.NoNewPrivileges || len(s.Security.Capabilities) != 0 {
+		t.Fatalf("unsafe persisted policy: %+v", s.Security)
+	}
+}
 
 func TestPrepareFabricResolverReplacesSourceResolverSafely(t *testing.T) {
 	rootfs := t.TempDir()

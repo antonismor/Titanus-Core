@@ -22,6 +22,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/security"
 	"github.com/antonismor/Titanus-Core/internal/setup"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -885,6 +886,7 @@ func runFleet(args []string) error {
 		fabricEnabled := fs.Bool("fabric", false, "attach Units to Titanus Fabric")
 		publish := fs.String("publish", "", "comma-separated HOST:UNIT[/tcp|udp]")
 		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro]")
+		capabilities := fs.String("capabilities", "", "comma-separated application capabilities (default: none)")
 		spread := fs.String("spread", "", "label key used to spread replicas")
 		require := fs.String("require", "", "comma-separated label=value placement requirements")
 		if err := fs.Parse(args[2:]); err != nil {
@@ -934,8 +936,15 @@ func runFleet(args []string) error {
 				Source: *sourceName, Command: fs.Args(),
 				MemoryBytes: memBytes, CPUPercent: *cpu, PidsMax: *pids,
 				Fabric: *fabricEnabled || len(ports) > 0,
-				Ports: ports, Mounts: mounts,
+				Ports:  ports, Mounts: mounts,
 			},
+		}
+		if strings.TrimSpace(*capabilities) != "" {
+			fleet.Template.Security = security.Policy{Capabilities: strings.Split(*capabilities, ",")}
+		}
+		fleet.Template.Security.Normalize()
+		if err := fleet.Template.Security.Validate(); err != nil {
+			return err
 		}
 		result, err := client.CreateFleet(fleet)
 		if err != nil {
@@ -1184,9 +1193,9 @@ func runPolicy(args []string) error {
 			}
 			rule := realm.NetworkPolicyRule{
 				FromFleet: strings.TrimSpace(*fromFleet),
-				FromCIDR: strings.TrimSpace(*fromCIDR),
-				Protocol: strings.TrimSpace(*protocol),
-				Ports: ports,
+				FromCIDR:  strings.TrimSpace(*fromCIDR),
+				Protocol:  strings.TrimSpace(*protocol),
+				Ports:     ports,
 			}
 			if *allowAny {
 				rule.FromFleet = ""
@@ -1205,10 +1214,10 @@ func runPolicy(args []string) error {
 				return fmt.Errorf("egress requires --to-fleet, --to-cidr or --allow-any")
 			}
 			rule := realm.NetworkPolicyEgressRule{
-				ToFleet: strings.TrimSpace(*toFleet),
-				ToCIDR: strings.TrimSpace(*toCIDR),
+				ToFleet:  strings.TrimSpace(*toFleet),
+				ToCIDR:   strings.TrimSpace(*toCIDR),
 				Protocol: strings.TrimSpace(*protocol),
-				Ports: ports,
+				Ports:    ports,
 			}
 			if *allowAny {
 				rule.ToFleet = ""
@@ -1551,6 +1560,7 @@ func runUnit(args []string) error {
 		fabricEnabled := fs.Bool("fabric", false, "attach Unit to Titanus Fabric")
 		publish := fs.String("publish", "", "comma-separated HOST:UNIT[/tcp|udp] mappings")
 		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro] mounts")
+		capabilities := fs.String("capabilities", "", "comma-separated application capabilities (default: none)")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -1598,6 +1608,9 @@ func runUnit(args []string) error {
 				Ports:  ports,
 			},
 			Mounts: mounts,
+		}
+		if strings.TrimSpace(*capabilities) != "" {
+			spec.Security = security.Policy{Capabilities: strings.Split(*capabilities, ",")}
 		}
 		state, err := manager.Create(spec)
 		if err != nil {

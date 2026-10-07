@@ -1,8 +1,10 @@
 package unitruntime
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -131,6 +133,16 @@ func (m *Manager) Start(id string) (State, error) {
 		state.Status = StatusActive
 		return state, nil
 	}
+	// Older persisted Units receive the same hardened defaults on their next
+	// start. Already running workloads must be stopped before applying changes.
+	spec.Normalize()
+	if err := spec.Validate(); err != nil {
+		return m.fail(state, err)
+	}
+	policyJSON, err := json.Marshal(spec.Security)
+	if err != nil {
+		return m.fail(state, err)
+	}
 
 	state.Status = StatusStarting
 	state.LastError = ""
@@ -166,13 +178,22 @@ func (m *Manager) Start(id string) (State, error) {
 		return m.fail(state, fmt.Errorf("create runtime readiness pipe: %w", err))
 	}
 
-	args := []string{"--unit-child", rootfs, spec.Hostname, "3", "--"}
+	statusRead, statusWrite, err := os.Pipe()
+	if err != nil {
+		_ = readyRead.Close()
+		_ = readyWrite.Close()
+		_ = logFile.Close()
+		m.cleanupAfterStop(id)
+		return m.fail(state, fmt.Errorf("create startup status pipe: %w", err))
+	}
+	defer statusRead.Close()
+	args := []string{"--unit-child", rootfs, spec.Hostname, "3", string(policyJSON), "4", "--"}
 	args = append(args, spec.Command...)
 	cmd := exec.Command(m.cfg.InitBinary, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(), spec.Environment...)
-	cmd.ExtraFiles = []*os.File{readyRead}
+	cmd.ExtraFiles = []*os.File{readyRead, statusWrite}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
@@ -183,6 +204,7 @@ func (m *Manager) Start(id string) (State, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = statusWrite.Close()
 		_ = readyRead.Close()
 		_ = readyWrite.Close()
 		_ = logFile.Close()
@@ -190,11 +212,13 @@ func (m *Manager) Start(id string) (State, error) {
 		return m.fail(state, fmt.Errorf("start titanus-init: %w", err))
 	}
 	_ = readyRead.Close()
+	_ = statusWrite.Close()
 	pid := cmd.Process.Pid
 
 	failStarted := func(cause error) (State, error) {
 		_ = readyWrite.Close()
 		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = cmd.Wait()
 		_ = logFile.Close()
 		_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
 		m.cleanupAfterStop(id)
@@ -225,6 +249,9 @@ func (m *Manager) Start(id string) (State, error) {
 		return failStarted(fmt.Errorf("release Unit startup barrier: %w", err))
 	}
 	_ = readyWrite.Close()
+	if err := awaitStartup(statusRead, 10*time.Second); err != nil {
+		return failStarted(fmt.Errorf("Unit initialization: %w", err))
+	}
 
 	state.PID = pid
 	state.Status = StatusActive
@@ -236,6 +263,22 @@ func (m *Manager) Start(id string) (State, error) {
 	_ = logFile.Close()
 	_ = cmd.Process.Release()
 	return state, nil
+}
+
+// A CLOEXEC status pipe closes on successful exec. A pre-exec marker proves
+// setup/hardening completed; errors, premature EOF and timeouts fail closed.
+func awaitStartup(file *os.File, timeout time.Duration) error {
+	if err := file.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 4096))
+	if err != nil {
+		return fmt.Errorf("wait for workload exec: %w", err)
+	}
+	if string(data) != "READY\n" {
+		return fmt.Errorf("workload did not exec: %s", strings.TrimSpace(string(data)))
+	}
+	return nil
 }
 
 func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {

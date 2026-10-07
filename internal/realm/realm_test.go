@@ -7,7 +7,33 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/security"
 )
+
+func TestFleetSecurityValidationAndPersistence(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(root, "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fleet := Fleet{Name: "web", Instances: 1, Template: UnitTemplate{Source: "web", Command: []string{"/bin/web"}}}
+	fleet.Template.Security = security.Policy{Capabilities: []string{"SYS_ADMIN"}}
+	if err := store.PutFleet(fleet); err == nil {
+		t.Fatal("unsafe Fleet capability accepted")
+	}
+	fleet.Template.Security = security.Policy{Capabilities: []string{"NET_BIND_SERVICE"}}
+	if err := store.PutFleet(fleet); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root, "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := reopened.Snapshot().Fleets["web"].Template.Security
+	if p.Seccomp != security.DefaultProfile || p.NoNewPrivileges == nil || !*p.NoNewPrivileges || len(p.Capabilities) != 1 || p.Capabilities[0] != "CAP_NET_BIND_SERVICE" {
+		t.Fatalf("lost policy: %+v", p)
+	}
+}
 
 func TestPlacementSpreadsFleet(t *testing.T) {
 	state := State{
@@ -52,7 +78,6 @@ func TestHealthTransitions(t *testing.T) {
 		t.Fatalf("unexpected transition %#v", changed)
 	}
 }
-
 
 func TestRouteGetsStableUniqueServiceAddress(t *testing.T) {
 	store, err := Open(t.TempDir(), "LAB")
@@ -134,7 +159,6 @@ func TestRealmNetworkRejectsOverlappingFabricAndServiceCIDRs(t *testing.T) {
 	}
 }
 
-
 func TestOpenMigratesLegacyRoutesToServiceCIDR(t *testing.T) {
 	root := t.TempDir()
 	store, err := Open(root, "LAB")
@@ -179,7 +203,6 @@ func TestOpenMigratesLegacyRoutesToServiceCIDR(t *testing.T) {
 		t.Fatalf("expected migrated Service IP %s, got %s", route.ServiceIP, migrated.ServiceIP)
 	}
 }
-
 
 func TestNetworkPolicyValidatesAndPersistsRules(t *testing.T) {
 	store, err := Open(t.TempDir(), "LAB")
@@ -330,4 +353,3 @@ func TestFleetDeleteBlockedByEgressPolicyReference(t *testing.T) {
 		t.Fatal("expected egress destination Fleet deletion to be blocked")
 	}
 }
-

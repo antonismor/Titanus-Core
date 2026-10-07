@@ -2,14 +2,18 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
+
+	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 func main() {
@@ -23,20 +27,42 @@ func main() {
 	runProcessSupervisor(os.Args[1:])
 }
 
-func runUnitChild(args []string) error {
-	if len(args) < 5 {
-		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD -- COMMAND [ARGS...]")
+func runUnitChild(args []string) (result error) {
+	if len(args) < 7 {
+		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD SECURITY_JSON STATUS_FD -- COMMAND [ARGS...]")
 	}
+	statusFD, err := strconv.Atoi(args[4])
+	if err != nil || statusFD < 3 {
+		return fmt.Errorf("invalid startup status fd")
+	}
+	status := os.NewFile(uintptr(statusFD), "titanus-startup-status")
+	syscall.CloseOnExec(statusFD)
+	defer func() {
+		if result != nil {
+			_, _ = fmt.Fprintln(status, "ERROR:", result)
+		}
+		_ = status.Close()
+	}()
+	var policy security.Policy
+	if err := json.Unmarshal([]byte(args[3]), &policy); err != nil {
+		return fmt.Errorf("decode security policy: %w", err)
+	}
+	policy.Normalize()
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	runtime.LockOSThread()
+	// Do not unlock after security changes: this thread must execute workload.
 	rootfs := filepath.Clean(args[0])
 	hostname := args[1]
 	readyFD, err := strconv.Atoi(args[2])
 	if err != nil || readyFD < 3 {
 		return fmt.Errorf("invalid runtime readiness fd %q", args[2])
 	}
-	if args[3] != "--" {
+	if args[5] != "--" {
 		return fmt.Errorf("missing command separator")
 	}
-	command := args[4:]
+	command := args[6:]
 	if len(command) == 0 {
 		return fmt.Errorf("missing Unit command")
 	}
@@ -66,6 +92,12 @@ func runUnitChild(args []string) error {
 		return fmt.Errorf("bring loopback up: %w", err)
 	}
 
+	if err := security.Apply(policy); err != nil {
+		return fmt.Errorf("workload security: %w", err)
+	}
+	if _, err := status.Write([]byte("READY\n")); err != nil {
+		return err
+	}
 	return execInside(command)
 }
 

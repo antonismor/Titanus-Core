@@ -188,6 +188,7 @@ func unitSpec(fleet realm.Fleet, assignment realm.Assignment) unitruntime.Spec {
 		MemoryBytes: fleet.Template.MemoryBytes,
 		CPUPercent:  fleet.Template.CPUPercent,
 		PidsMax:     fleet.Template.PidsMax,
+		Security:    fleet.Template.Security,
 		Network: unitruntime.NetworkSpec{
 			Fabric: fleet.Template.Fabric,
 			Ports:  append([]fabric.Port(nil), fleet.Template.Ports...),

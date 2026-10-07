@@ -28,6 +28,17 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race checks
+        run: go test -race ./internal/security ./internal/unitruntime ./internal/realm ./internal/reconcile
+
+      - name: Cross-build native ARM64 runtime
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/titanus-init-arm64 ./cmd/titanus-init
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/titanus-arm64 ./cmd/titanus
+
       - name: Build
         run: make build
 
@@ -59,12 +70,16 @@ jobs:
       - name: Validate Fabric nftables rules
         run: sudo env "PATH=$PATH" go test ./internal/fabric -run 'TestRendered(NAT|Policy)RulesPassNftCheck' -v
 
+      - name: Validate kernel security enforcement
+        run: sudo env "PATH=$PATH" TITANUS_SECURITY_KERNEL_TEST=1 go test ./internal/security -run TestKernelSecurity -v
+
       - name: Build minimal Titanus Source
         run: |
           mkdir -p /tmp/titanus-rootfs/bin
           cp "$(command -v busybox)" /tmp/titanus-rootfs/bin/busybox
           ln -s busybox /tmp/titanus-rootfs/bin/sh
           ln -s busybox /tmp/titanus-rootfs/bin/sleep
+          CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/security-probe ./internal/security/testprobe
 
       - name: Exercise native Unit runtime
         run: |
@@ -84,7 +99,7 @@ jobs:
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit create smoke --source busybox --memory 64M --cpu 50 --pids 64 --fabric \
             --mount smoke-data:/data -- \
-            /bin/sh -c 'echo TITANUS_RUNTIME_OK; echo PERSISTENT_OK > /data/proof; sleep 30'
+            /bin/sh -ec '/bin/security-probe verify 0; echo TITANUS_RUNTIME_OK; echo PERSISTENT_OK > /data/proof; sleep 30'
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit start smoke
@@ -95,6 +110,13 @@ jobs:
             ./bin/titanus unit inspect smoke | tee /tmp/titanus-inspect.json
           grep -q '"status": "ACTIVE"' /tmp/titanus-inspect.json
           grep -q '"network_address": "10.249.0.10"' /tmp/titanus-inspect.json
+          jq -e '.spec.security.no_new_privs == true and .spec.security.seccomp == "titanus-default-v1"' /tmp/titanus-inspect.json
+          PID=$(jq -r '.state.pid' /tmp/titanus-inspect.json)
+          sudo grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/$PID/status"
+          sudo grep -Eq '^Seccomp:[[:space:]]+2$' "/proc/$PID/status"
+          for SET in CapInh CapPrm CapEff CapBnd CapAmb; do
+            sudo grep -Eq "^$SET:[[:space:]]+0000000000000000$" "/proc/$PID/status"
+          done
 
           sudo nsenter -t "$(jq -r '.state.pid' /tmp/titanus-inspect.json)" -n ip addr show eth0 | grep -q '10.249.0.10/24'
           sudo grep -q 'search titanus' "$STATE/units/smoke/rootfs/etc/resolv.conf"
@@ -102,6 +124,7 @@ jobs:
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit logs smoke | grep -q TITANUS_RUNTIME_OK
+          sudo env TITANUS_STATE_ROOT="$STATE" ./bin/titanus unit logs smoke | grep -q TITANUS_SECURITY_OK
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit stop smoke
@@ -110,3 +133,16 @@ jobs:
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit delete smoke
+
+          # Successful exec is required before ACTIVE; setup and exec errors
+          # fail closed and clean up the already-attached Fabric and cgroup.
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit create bad-exec --source busybox --fabric -- /bin/missing-command
+          if sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit start bad-exec; then
+            echo "Unexpected successful start"; exit 1
+          fi
+          sudo env TITANUS_STATE_ROOT="$STATE" ./bin/titanus unit inspect bad-exec | jq -e '.state.status == "FAILED" and (.state.pid // 0) == 0'
+          test ! -d "$CGROUP/bad-exec"
+          sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
+            ./bin/titanus unit delete bad-exec
