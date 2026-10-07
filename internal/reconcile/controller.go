@@ -1,0 +1,123 @@
+package reconcile
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"time"
+
+	"github.com/antonismor/Titanus-Core/internal/disk"
+	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/unitruntime"
+)
+
+type NodeRuntime interface {
+	EnsureUnit(address string, spec unitruntime.Spec) (unitruntime.State, error)
+	StartUnit(address, id string) (unitruntime.State, error)
+	StopUnit(address, id string) (unitruntime.State, error)
+	DeleteUnit(address, id string) error
+}
+
+type Controller struct {
+	Store    *realm.Store
+	Nodes    NodeRuntime
+	Interval time.Duration
+}
+
+func (c *Controller) Run(ctx context.Context) {
+	if c.Interval <= 0 {
+		c.Interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(c.Interval)
+	defer ticker.Stop()
+	for {
+		_ = c.Once()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Controller) Once() error {
+	if c.Store == nil || c.Nodes == nil {
+		return fmt.Errorf("Realm reconciler is not configured")
+	}
+	state := c.Store.Snapshot()
+	engine := realm.NewPlacementEngine()
+
+	for _, fleet := range state.Fleets {
+		assignments, err := engine.Reconcile(state, fleet)
+		if err != nil {
+			return err
+		}
+		current := assignmentsForFleet(state, fleet.Name)
+		if !reflect.DeepEqual(normalizeAssignments(current), normalizeAssignments(assignments)) {
+			if err := c.Store.SetAssignments(fleet.Name, assignments); err != nil {
+				return err
+			}
+			state = c.Store.Snapshot()
+		}
+
+		for _, assignment := range assignments {
+			node, ok := state.Nodes[assignment.NodeID]
+			if !ok || node.State != realm.NodeReady {
+				continue
+			}
+			spec := unitSpec(fleet, assignment)
+			if _, err := c.Nodes.EnsureUnit(node.Address, spec); err != nil {
+				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+				continue
+			}
+			runtimeState, err := c.Nodes.StartUnit(node.Address, assignment.ID)
+			if err != nil {
+				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+				continue
+			}
+			if runtimeState.Status == unitruntime.StatusActive {
+				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentActive)
+			} else {
+				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentStarting)
+			}
+		}
+	}
+	return nil
+}
+
+func unitSpec(fleet realm.Fleet, assignment realm.Assignment) unitruntime.Spec {
+	return unitruntime.Spec{
+		ID:          assignment.ID,
+		Source:      fleet.Template.Source,
+		Hostname:    assignment.ID,
+		Command:     append([]string(nil), fleet.Template.Command...),
+		Environment: append([]string(nil), fleet.Template.Environment...),
+		MemoryBytes: fleet.Template.MemoryBytes,
+		CPUPercent:  fleet.Template.CPUPercent,
+		PidsMax:     fleet.Template.PidsMax,
+		Network: unitruntime.NetworkSpec{
+			Fabric: fleet.Template.Fabric,
+			Ports:  append([]fabric.Port(nil), fleet.Template.Ports...),
+		},
+		Mounts: append([]disk.Mount(nil), fleet.Template.Mounts...),
+	}
+}
+
+func assignmentsForFleet(state realm.State, name string) []realm.Assignment {
+	out := make([]realm.Assignment, 0)
+	for _, assignment := range state.Assignments {
+		if assignment.Fleet == name {
+			out = append(out, assignment)
+		}
+	}
+	return out
+}
+
+func normalizeAssignments(items []realm.Assignment) map[string]string {
+	out := map[string]string{}
+	for _, item := range items {
+		out[item.ID] = item.NodeID + ":" + string(item.State)
+	}
+	return out
+}
