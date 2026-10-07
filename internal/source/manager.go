@@ -159,3 +159,42 @@ func preserveOwner(path string, info os.FileInfo) error {
 	}
 	return os.Chown(path, int(st.Uid), int(st.Gid))
 }
+
+// CopyMapped creates a private shifted lower layer without changing a shared
+// Source. Symlinks are never followed; special files and unmapped owners fail.
+func CopyMapped(src, dst string, base, size int) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+	if err := copyTree(src, dst); err != nil {
+		return err
+	}
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("missing Linux ownership")
+		}
+		if uint64(st.Uid) >= uint64(size) || uint64(st.Gid) >= uint64(size) {
+			return fmt.Errorf("Source owner is outside mapping at %s", path)
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if err := os.Lchown(target, base+int(st.Uid), base+int(st.Gid)); err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return os.Chmod(target, info.Mode().Perm()|info.Mode()&(os.ModeSticky|os.ModeSetuid|os.ModeSetgid))
+		}
+		return nil
+	})
+}

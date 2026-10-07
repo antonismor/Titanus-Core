@@ -292,3 +292,13 @@ precise limits: 3/5 static voters, a 512 KiB Realm entry cap, Sources pre-staged
 all controllers, designated-primary PKI signing and separate storage fencing.
 This does not mark the remaining isolation, storage, observability, UI and release
 milestones as complete.
+
+## Mandatory native Unit isolation
+
+Newly started Units use separate mapped UID/GID ranges, an eBPF cgroup v2 device
+allowlist, read-only/masked sensitive proc paths and a required Landlock LSM policy.
+Missing kernel enforcement aborts startup. Native AMD64/ARM64 CI checks real denied
+access, descendant inheritance and restart alongside the existing runtime tests.
+See [Unit isolation](docs/ISOLATION.md) for dedicated-node UID reservations,
+Landlock ABI >=3, legacy layer migration, writable Disk ownership and LSM scope.
+Storage lifecycle/fencing, observability, UI and release remain open in issue #8.

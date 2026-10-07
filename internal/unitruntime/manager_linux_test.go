@@ -93,3 +93,22 @@ func TestPrepareFabricResolverRejectsIPv6Gateway(t *testing.T) {
 		t.Fatal("expected IPv6 gateway to be rejected by Fabric v1 resolver")
 	}
 }
+
+func TestResolverRejectsSourceEtcSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	path := filepath.Join(outside, "resolv.conf")
+	if err := os.WriteFile(path, []byte("host resolver"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "etc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareFabricResolver(root, "10.249.0.1/24"); err == nil {
+		t.Fatal("host resolver escape accepted")
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "host resolver" {
+		t.Fatal("host resolver modified")
+	}
+}

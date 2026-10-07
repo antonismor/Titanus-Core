@@ -36,3 +36,11 @@ func TestLocalDiskLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMountsRejectProtectedRuntimePaths(t *testing.T) {
+	for _, target := range []string{"/dev", "/dev/disk", "/proc", "/sys", "/.titanus-oldroot", "/data/../proc"} {
+		if err := ValidateMounts([]Mount{{Disk: "data", Target: target}}); err == nil {
+			t.Fatalf("accepted %s", target)
+		}
+	}
+}

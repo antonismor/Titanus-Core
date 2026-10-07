@@ -90,14 +90,11 @@ calls are outside the allowlist. `clone` allows ordinary processes/threads but
 rejects namespace flags. `clone3` returns ENOSYS because classic BPF cannot
 inspect its pointer-based flags; libc may fall back to checked `clone`.
 
-The profile is an initial general workload policy, not a complete sandbox.
-Allowed ioctl/prctl operations still depend on kernel privilege checks. Units
-default to UID 0 and can explicitly select a non-root identity, without user
-namespaces. Device cgroup filtering, LSM policy and proc masking remain separate
-milestones.
-ARM64 is cross-built and its filter logic tested; privileged runtime smoke
-currently runs on AMD64. Workloads needing additional syscalls require a reviewed
-profile update, rather than disabling enforcement.
+Mapped user namespaces, mandatory cgroup v2 device filtering, protected proc and
+fail-closed Landlock now extend this profile. See [ISOLATION.md](ISOLATION.md) for
+kernel requirements, mapped Disk ownership, legacy upper-layer migration and
+precise LSM limits. Privileged native runtime CI executes on AMD64 and ARM64.
+Workloads needing additional syscalls require a reviewed profile update.
 
 ## Validation
 

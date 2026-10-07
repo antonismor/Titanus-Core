@@ -14,6 +14,8 @@ cat > /tmp/titanus-health.json <<'JSON'
 {"readiness":{"protocol":"http","port":8080,"path":"/ready","interval_seconds":1,"failure_threshold":1},"liveness":{"protocol":"http","port":8080,"path":"/live","interval_seconds":1,"failure_threshold":1},"restart":"on-failure","initial_backoff_seconds":2,"max_backoff_seconds":8,"max_restarts":3}
 JSON
 ./bin/titanus disk create health-data --provider local --size 64M
+# Test fixture only; production data must have the mapped writer ownership.
+chmod 0777 "$TITANUS_STATE_ROOT/disks/health-data/data"
 unit create health-smoke --source busybox --memory 64M --pids 64 --mount health-data:/data \
   --health-config /tmp/titanus-health.json -- /bin/health-app
 unit start health-smoke

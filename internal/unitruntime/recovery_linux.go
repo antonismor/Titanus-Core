@@ -96,8 +96,14 @@ func (m *Manager) Recover() error {
 		if !entry.IsDir() {
 			continue
 		}
-		if _, _, err := m.Inspect(entry.Name()); err != nil {
+		_, state, err := m.Inspect(entry.Name())
+		if err != nil {
 			return fmt.Errorf("recover Unit %s: %w", entry.Name(), err)
+		}
+		// ACTIVE has completed pivot/exec. Remove any parent export left by a
+		// daemon crash after startup; failed/stopped exports are equally stale.
+		if state.Status != StatusStarting {
+			cleanupRootAccess(state.RunID)
 		}
 	}
 	return nil

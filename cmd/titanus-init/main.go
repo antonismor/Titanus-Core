@@ -100,6 +100,7 @@ func runUnitChild(args []string) (result error) {
 	runtime.LockOSThread()
 	// Do not unlock after security changes: this thread must execute workload.
 	rootfs := filepath.Clean(args[0])
+	syscall.CloseOnExec(5)
 	hostname := args[1]
 	readyFD, err := strconv.Atoi(args[2])
 	if err != nil || readyFD < 3 {
@@ -119,16 +120,48 @@ func runUnitChild(args []string) (result error) {
 	if err := syscall.Mount("", "/", "", uintptr(syscall.MS_REC|syscall.MS_PRIVATE), ""); err != nil {
 		return fmt.Errorf("make mount namespace private: %w", err)
 	}
+	// The parent exports only this rootfs through a temporary mapped-owner
+	// access path. Resolve it in this mount namespace; a host-opened directory
+	// descriptor would still reference the original host mount tree.
+	if err := syscall.Chdir(rootfs); err != nil {
+		return fmt.Errorf("enter mapped rootfs: %w", err)
+	}
+	// Bind onto a child mountpoint and then resolve that path. A descriptor's
+	// cwd still refers to the inherited locked mount after a self-bind on '.'.
+	// The new child bind is owned by this namespace and can be pivoted safely.
+	const stage = ".titanus-newroot"
+	if info, e := os.Lstat(stage); e == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("reserved root staging path is not a directory")
+		}
+		if e := os.Remove(stage); e != nil {
+			return fmt.Errorf("reserved root staging path is not empty: %w", e)
+		}
+	} else if !os.IsNotExist(e) {
+		return e
+	}
+	if e := os.Mkdir(stage, 0700); e != nil {
+		return e
+	}
+	rootfs = stage
+	if err := syscall.Mount(".", rootfs, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("bind mapped root: %w", err)
+	}
 	if err := syscall.Sethostname([]byte(hostname)); err != nil {
 		return fmt.Errorf("set hostname: %w", err)
+	}
+	// A user-namespace proc mount must be created while the inherited full
+	// proc is still visible; mounting it after detaching the old root is denied.
+	if err := mountProc(rootfs); err != nil {
+		return err
+	}
+	if err := mountDevices(rootfs); err != nil {
+		return err
 	}
 	if err := pivotInto(rootfs); err != nil {
 		return err
 	}
-	if err := mountProc(); err != nil {
-		return err
-	}
-	if err := mountDevices(); err != nil {
+	if err := protectProc(); err != nil {
 		return err
 	}
 	if err := mountTmp(); err != nil {
@@ -138,6 +171,12 @@ func runUnitChild(args []string) (result error) {
 		return fmt.Errorf("bring loopback up: %w", err)
 	}
 
+	if err := security.SealRootFS(policy); err != nil {
+		return fmt.Errorf("workload rootfs: %w", err)
+	}
+	if err := security.ApplyLandlock(policy, int(executable.Fd())); err != nil {
+		return fmt.Errorf("workload LSM: %w", err)
+	}
 	if err := security.Apply(policy); err != nil {
 		return fmt.Errorf("workload security: %w", err)
 	}
@@ -187,61 +226,77 @@ func pivotInto(rootfs string) error {
 	if err := os.Remove("/.titanus-oldroot"); err != nil {
 		return fmt.Errorf("remove old-root directory: %w", err)
 	}
+	if err := os.Remove("/.titanus-newroot"); err != nil {
+		return fmt.Errorf("remove root staging directory: %w", err)
+	}
 	return nil
 }
 
-func mountProc() error {
-	if err := os.MkdirAll("/proc", 0555); err != nil {
-		return err
+func mountProc(rootfs string) error {
+	target := filepath.Join(rootfs, "proc")
+	if info, e := os.Lstat(target); e == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("Source proc path must be a directory")
+		}
+	} else if os.IsNotExist(e) {
+		if e := os.Mkdir(target, 0555); e != nil {
+			return e
+		}
+	} else {
+		return e
 	}
-	if err := syscall.Mount("proc", "/proc", "proc", uintptr(syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC), ""); err != nil {
+	if err := syscall.Mount("proc", target, "proc", uintptr(syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC), ""); err != nil {
 		return fmt.Errorf("mount /proc: %w", err)
 	}
 	return nil
 }
 
-func mountDevices() error {
-	if err := os.MkdirAll("/dev", 0755); err != nil {
+func mountDevices(rootfs string) error {
+	directory := filepath.Join(rootfs, "dev")
+	if info, err := os.Lstat(directory); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("Source dev path must be a directory")
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.Mkdir(directory, 0755); err != nil {
+			return err
+		}
+	} else {
 		return err
 	}
-	if err := syscall.Mount("tmpfs", "/dev", "tmpfs", uintptr(syscall.MS_NOSUID), "mode=755,size=16m"); err != nil {
+	if err := syscall.Mount("tmpfs", directory, "tmpfs", syscall.MS_NOSUID, "mode=755,size=16m"); err != nil {
 		return fmt.Errorf("mount /dev tmpfs: %w", err)
 	}
-
-	devices := []struct {
-		path  string
-		major int
-		minor int
-		mode  uint32
-	}{
-		{"/dev/null", 1, 3, 0666},
-		{"/dev/zero", 1, 5, 0666},
-		{"/dev/random", 1, 8, 0666},
-		{"/dev/urandom", 1, 9, 0666},
-		{"/dev/tty", 5, 0, 0666},
-	}
-	for _, device := range devices {
-		mode := uint32(syscall.S_IFCHR) | device.mode
-		if err := syscall.Mknod(device.path, mode, makeDevice(device.major, device.minor)); err != nil {
-			return fmt.Errorf("create %s: %w", device.path, err)
+	// Bind while source devices are attached in this mount namespace.
+	// Detached source descriptors cannot be bound after pivot_root.
+	for _, name := range []string{"null", "zero", "full", "random", "urandom", "tty"} {
+		target := filepath.Join(directory, name)
+		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+		if err != nil {
+			return err
+		}
+		_ = file.Close()
+		if err := syscall.Mount("/dev/"+name, target, "", syscall.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind safe device %s: %w", name, err)
+		}
+		if err := syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_NOSUID|syscall.MS_NOEXEC, ""); err != nil {
+			return err
 		}
 	}
-
-	if err := os.MkdirAll("/dev/pts", 0755); err != nil {
+	pts := filepath.Join(directory, "pts")
+	if err := os.Mkdir(pts, 0755); err != nil {
 		return err
 	}
-	if err := syscall.Mount("devpts", "/dev/pts", "devpts", uintptr(syscall.MS_NOSUID|syscall.MS_NOEXEC), "newinstance,ptmxmode=0666,mode=0620"); err == nil {
-		_ = os.Remove("/dev/ptmx")
-		_ = os.Symlink("pts/ptmx", "/dev/ptmx")
+	if err := syscall.Mount("devpts", pts, "devpts", syscall.MS_NOSUID|syscall.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620,max=256"); err != nil {
+		return fmt.Errorf("mount private devpts: %w", err)
 	}
-
-	for name, target := range map[string]string{
-		"/dev/fd":     "/proc/self/fd",
-		"/dev/stdin":  "/proc/self/fd/0",
-		"/dev/stdout": "/proc/self/fd/1",
-		"/dev/stderr": "/proc/self/fd/2",
-	} {
-		_ = os.Symlink(target, name)
+	if err := os.Symlink("pts/ptmx", filepath.Join(directory, "ptmx")); err != nil {
+		return err
+	}
+	for name, target := range map[string]string{"fd": "/proc/self/fd", "stdin": "/proc/self/fd/0", "stdout": "/proc/self/fd/1", "stderr": "/proc/self/fd/2"} {
+		if err := os.Symlink(target, filepath.Join(directory, name)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

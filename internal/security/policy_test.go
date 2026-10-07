@@ -52,3 +52,20 @@ func TestExplicitCapabilityNormalization(t *testing.T) {
 		t.Fatalf("wrong capability mask: %x", p.capabilityMask())
 	}
 }
+
+func TestEmptyLSMWritesSurvivePersistence(t *testing.T) {
+	p := Policy{LSMWritePaths: []string{}}
+	p.Normalize()
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Policy
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	restored.Normalize()
+	if len(restored.LSMWritePaths) != 0 {
+		t.Fatal("empty LSM policy gained write access")
+	}
+}

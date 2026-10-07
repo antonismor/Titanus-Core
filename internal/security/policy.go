@@ -3,6 +3,7 @@ package security
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -12,6 +13,10 @@ const DefaultProfile = "titanus-default-v1"
 // Policy has no privileged bypass. A missing policy is hardened on first start.
 // Pointer semantics distinguish an omitted no_new_privs from an explicit false.
 type Policy struct {
+	LSM             string   `json:"lsm"`
+	LSMWritePaths   []string `json:"lsm_write_paths"`
+	UserNamespace   string   `json:"user_namespace"`
+	Devices         string   `json:"devices"`
 	Profile         string   `json:"profile,omitempty"`
 	RunAsUID        int      `json:"run_as_uid,omitempty"`
 	RunAsGID        int      `json:"run_as_gid,omitempty"`
@@ -32,6 +37,19 @@ var applicationCaps = map[string]uint{
 
 func (p *Policy) Normalize() {
 	p.Profile = NormalizeProfile(p.Profile)
+	if p.UserNamespace == "" {
+		p.UserNamespace = "mapped-v1"
+	}
+	if p.Devices == "" {
+		p.Devices = "safe-v1"
+	}
+	if p.LSM == "" {
+		p.LSM = "landlock-v1"
+	}
+	if p.LSMWritePaths == nil {
+		p.LSMWritePaths = []string{"/tmp"}
+	}
+	p.LSMWritePaths = append([]string{}, p.LSMWritePaths...)
 	p.Capabilities = append([]string(nil), p.Capabilities...)
 	if p.Seccomp == "" {
 		p.Seccomp = DefaultProfile
@@ -55,6 +73,27 @@ func (p *Policy) Normalize() {
 
 func (p Policy) Validate() error {
 	p.Normalize()
+	if p.UserNamespace != "mapped-v1" || p.Devices != "safe-v1" || p.LSM != "landlock-v1" {
+		return fmt.Errorf("mapped-v1 user namespace, safe-v1 devices and landlock-v1 LSM are mandatory")
+	}
+	if p.RunAsUID >= 65536 || p.RunAsGID >= 65536 {
+		return fmt.Errorf("workload UID/GID must fit the 65536-ID mapping")
+	}
+	seenPaths := map[string]bool{}
+	for _, path := range p.LSMWritePaths {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" || strings.ContainsAny(path, "\x00\n") {
+			return fmt.Errorf("invalid LSM writable path %q", path)
+		}
+		for _, protected := range []string{"/proc", "/sys", "/dev", "/.titanus-oldroot", "/.titanus-newroot"} {
+			if path == protected || strings.HasPrefix(path, protected+"/") {
+				return fmt.Errorf("protected LSM path %q", path)
+			}
+		}
+		if seenPaths[path] {
+			return fmt.Errorf("duplicate LSM writable path %q", path)
+		}
+		seenPaths[path] = true
+	}
 	if err := ValidateProfile(p.Profile); err != nil {
 		return err
 	}

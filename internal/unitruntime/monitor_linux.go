@@ -11,9 +11,10 @@ import (
 )
 
 type MonitorConfig struct {
-	Args     []string `json:"args"`
-	ExitPath string   `json:"exit_path"`
-	RunID    string   `json:"run_id"`
+	Mapping  IDMapping `json:"mapping"`
+	Args     []string  `json:"args"`
+	ExitPath string    `json:"exit_path"`
+	RunID    string    `json:"run_id"`
 }
 
 type ExitRecord struct {
@@ -49,12 +50,24 @@ func RunMonitor(encoded string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(binary, cfg.Args...)
+	if cfg.Mapping.Base < 1048576 || cfg.Mapping.Size != mappingSize {
+		return fmt.Errorf("invalid mandatory UID/GID mapping")
+	}
+	executable, err := os.Open(binary)
+	if err != nil {
+		return err
+	}
+	defer executable.Close()
+	cmd := exec.Command("/proc/self/fd/5", cfg.Args...)
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.ExtraFiles = []*os.File{ready, status}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET, Setsid: true}
+	cmd.ExtraFiles = []*os.File{ready, status, executable}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET, Setsid: true,
+		Credential:                 &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: true},
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: cfg.Mapping.Base, Size: mappingSize}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: cfg.Mapping.Base, Size: mappingSize}},
+		GidMappingsEnableSetgroups: true}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
