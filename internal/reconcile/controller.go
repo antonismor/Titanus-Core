@@ -54,6 +54,11 @@ func (c *Controller) Once() error {
 	state := c.Store.Snapshot()
 	engine := realm.NewPlacementEngine()
 
+	if err := c.cleanupDeletedFleets(state); err != nil {
+		return err
+	}
+	state = c.Store.Snapshot()
+
 	for _, fleet := range state.Fleets {
 		assignments, err := engine.Reconcile(state, fleet)
 		if err != nil {
@@ -61,10 +66,14 @@ func (c *Controller) Once() error {
 		}
 		current := assignmentsForFleet(state, fleet.Name)
 		if !reflect.DeepEqual(normalizeAssignments(current), normalizeAssignments(assignments)) {
+			for _, stale := range staleAssignments(current, assignments) {
+				c.cleanupAssignment(state, stale)
+			}
 			if err := c.Store.SetAssignments(fleet.Name, assignments); err != nil {
 				return err
 			}
 			state = c.Store.Snapshot()
+			assignments = assignmentsForFleet(state, fleet.Name)
 		}
 
 		for _, assignment := range assignments {
@@ -121,6 +130,52 @@ func (c *Controller) Once() error {
 		}
 	}
 	return nil
+}
+
+func (c *Controller) cleanupDeletedFleets(state realm.State) error {
+	groups := map[string][]realm.Assignment{}
+	for _, assignment := range state.Assignments {
+		if _, exists := state.Fleets[assignment.Fleet]; !exists {
+			groups[assignment.Fleet] = append(groups[assignment.Fleet], assignment)
+		}
+	}
+	for fleetName, assignments := range groups {
+		for _, assignment := range assignments {
+			c.cleanupAssignment(state, assignment)
+		}
+		if err := c.Store.SetAssignments(fleetName, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assignment) {
+	node, ok := state.Nodes[assignment.NodeID]
+	if !ok || node.State == realm.NodeUnreachable || node.Address == "" {
+		return
+	}
+	if _, err := c.Nodes.StopUnit(node.Address, assignment.ID); err != nil {
+		return
+	}
+	if assignment.LeaseToken != "" {
+		_ = c.Nodes.RevokeLease(node.Address, assignment.ID, assignment.LeaseToken)
+	}
+	_ = c.Nodes.DeleteUnit(node.Address, assignment.ID)
+}
+
+func staleAssignments(current, desired []realm.Assignment) []realm.Assignment {
+	wanted := map[string]string{}
+	for _, assignment := range desired {
+		wanted[assignment.ID] = assignment.NodeID
+	}
+	stale := make([]realm.Assignment, 0)
+	for _, assignment := range current {
+		if nodeID, ok := wanted[assignment.ID]; !ok || nodeID != assignment.NodeID {
+			stale = append(stale, assignment)
+		}
+	}
+	return stale
 }
 
 func unitSpec(fleet realm.Fleet, assignment realm.Assignment) unitruntime.Spec {
