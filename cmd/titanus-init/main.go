@@ -12,11 +12,37 @@ import (
 	"runtime"
 	"strconv"
 	"syscall"
+	"time"
+
+	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 
 	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--unit-monitor" {
+		if err := unitruntime.RunMonitor(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, "titanus-monitor:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) >= 5 && os.Args[1] == "--supervise" {
+		fd, err := strconv.Atoi(os.Args[2])
+		if err != nil || fd < 3 || os.Args[3] != "--" {
+			os.Exit(64)
+		}
+		status := os.NewFile(uintptr(fd), "startup-status")
+		syscall.CloseOnExec(fd)
+		code, err := supervise(os.Args[4:], status)
+		if err != nil {
+			fmt.Fprintln(status, "ERROR:", err)
+			fmt.Fprintln(os.Stderr, err)
+			code = 1
+		}
+		_ = status.Close()
+		os.Exit(code)
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "--unit-child" {
 		if err := runUnitChild(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "titanus-init:", err)
@@ -51,6 +77,13 @@ func runUnitChild(args []string) (result error) {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
+	// Keep an executable descriptor across pivot_root. Re-exec after applying
+	// thread credentials gives every supervisor thread the restricted identity.
+	executable, err := os.Open("/proc/self/exe")
+	if err != nil {
+		return err
+	}
+	defer executable.Close()
 	runtime.LockOSThread()
 	// Do not unlock after security changes: this thread must execute workload.
 	rootfs := filepath.Clean(args[0])
@@ -95,10 +128,13 @@ func runUnitChild(args []string) (result error) {
 	if err := security.Apply(policy); err != nil {
 		return fmt.Errorf("workload security: %w", err)
 	}
-	if _, err := status.Write([]byte("READY\n")); err != nil {
-		return err
+	// Keep only the status pipe across re-exec; it closes after workload Start
+	// confirms exec. No host state descriptors enter the namespace.
+	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(statusFD), syscall.F_SETFD, 0); errno != 0 {
+		return errno
 	}
-	return execInside(command)
+	argv := append([]string{"titanus-init", "--supervise", strconv.Itoa(statusFD), "--"}, command...)
+	return syscall.Exec(fmt.Sprintf("/proc/self/fd/%d", executable.Fd()), argv, os.Environ())
 }
 
 func waitForRuntime(fd int) error {
@@ -270,48 +306,74 @@ func execInside(command []string) error {
 	return syscall.Exec(path, command, os.Environ())
 }
 
-func runProcessSupervisor(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: titanus-init <command> [args...]")
-		os.Exit(64)
+// supervise owns all wait4 calls, including adopted orphans. os/exec.Wait
+// must not race with a namespace-wide reaper.
+func supervise(args []string, status *os.File) (int, error) {
+	if len(args) == 0 {
+		return 64, fmt.Errorf("missing command")
 	}
-
+	// Also behave as a subreaper when used outside a PID namespace.
+	if _, _, errno := syscall.Syscall6(syscall.SYS_PRCTL, 36, 1, 0, 0, 0, 0); errno != 0 {
+		return 1, errno
+	}
+	signals := make(chan os.Signal, 32)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGCHLD)
+	defer signal.Stop(signals)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "titanus-init:", err)
-		os.Exit(1)
+		return 1, err
 	}
-
-	signals := make(chan os.Signal, 16)
-	signal.Notify(signals)
-	go func() {
-		for sig := range signals {
-			if s, ok := sig.(syscall.Signal); ok {
+	defer cmd.Process.Release()
+	if status != nil {
+		if _, err := status.Write([]byte("READY\n")); err != nil {
+			_ = cmd.Process.Kill()
+			return 1, err
+		}
+		_ = status.Close()
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var wait syscall.WaitStatus
+		for {
+			pid, err := syscall.Wait4(-1, &wait, syscall.WNOHANG, nil)
+			if err == syscall.EINTR {
+				continue
+			}
+			if err != nil && err != syscall.ECHILD {
+				return 1, err
+			}
+			if pid <= 0 {
+				break
+			}
+			if pid == cmd.Process.Pid {
+				// Kill the remaining process group; exiting namespace PID 1 also kills
+				// descendants that created their own process groups or sessions.
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				if wait.Signaled() {
+					return 128 + int(wait.Signal()), nil
+				}
+				return wait.ExitStatus(), nil
+			}
+		}
+		select {
+		case sig := <-signals:
+			if s, ok := sig.(syscall.Signal); ok && s != syscall.SIGCHLD {
 				_ = syscall.Kill(-cmd.Process.Pid, s)
 			}
-		}
-	}()
-
-	err := cmd.Wait()
-	signal.Stop(signals)
-	close(signals)
-
-	if err == nil {
-		return
-	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-			if status.Signaled() {
-				os.Exit(128 + int(status.Signal()))
-			}
-			os.Exit(status.ExitStatus())
+		case <-ticker.C:
 		}
 	}
-	fmt.Fprintln(os.Stderr, "titanus-init:", err)
-	os.Exit(1)
+}
+
+func runProcessSupervisor(args []string) {
+	code, err := supervise(args, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "titanus-init:", err)
+	}
+	os.Exit(code)
 }

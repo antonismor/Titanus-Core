@@ -15,12 +15,12 @@ import (
 )
 
 type RealmDeployOptions struct {
-	BinDir         string
-	PKIDir         string
-	NodePrefix     int
-	VXLANID        int
-	ClusterPort    int
-	StartServices  bool
+	BinDir        string
+	PKIDir        string
+	NodePrefix    int
+	VXLANID       int
+	ClusterPort   int
+	StartServices bool
 }
 
 type RealmNodeResult struct {
@@ -374,6 +374,7 @@ const realmDaemonService = "[Unit]\n" +
 	"EnvironmentFile=/etc/titanus/daemon.env\n" +
 	"ExecStart=/usr/local/sbin/titanusd\n" +
 	"Restart=always\n" +
+	"KillMode=process\n" +
 	"RestartSec=3\n" +
 	"RuntimeDirectory=titanus\n" +
 	"RuntimeDirectoryMode=0755\n" +

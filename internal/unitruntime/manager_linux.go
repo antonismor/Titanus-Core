@@ -1,6 +1,8 @@
 package unitruntime
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,6 +123,11 @@ func (m *Manager) Ensure(spec Spec) (State, error) {
 }
 
 func (m *Manager) Start(id string) (State, error) {
+	unlock, lockErr := m.lock()
+	if lockErr != nil {
+		return State{}, lockErr
+	}
+	defer unlock()
 	if os.Geteuid() != 0 {
 		return State{}, fmt.Errorf("starting a Unit currently requires root")
 	}
@@ -129,9 +136,21 @@ func (m *Manager) Start(id string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	if state.PID > 0 && processAlive(state.PID) {
+	if state.PID > 0 && state.Process.StartTicks == 0 && m.belongsToUnit(id, state.PID) {
+		state.Process, _ = readProcessIdentity(state.PID)
+	}
+	if processMatches(state) {
+		if err := m.saveState(state); err != nil {
+			return State{}, err
+		}
 		state.Status = StatusActive
 		return state, nil
+	}
+	if state.Status == StatusActive || state.Status == StatusStarting {
+		if spec.Network.Fabric {
+			_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
+		}
+		m.cleanupAfterStop(id)
 	}
 	// Older persisted Units receive the same hardened defaults on their next
 	// start. Already running workloads must be stopped before applying changes.
@@ -144,6 +163,16 @@ func (m *Manager) Start(id string) (State, error) {
 		return m.fail(state, err)
 	}
 
+	var token [24]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return State{}, err
+	}
+	state.RunID = hex.EncodeToString(token[:])
+	state.ExitCode = nil
+	state.ExitSignal = 0
+	state.Process = ProcessIdentity{}
+	state.PID = 0
+	state.NetworkAddress = ""
 	state.Status = StatusStarting
 	state.LastError = ""
 	if err := m.saveState(state); err != nil {
@@ -189,21 +218,30 @@ func (m *Manager) Start(id string) (State, error) {
 	defer statusRead.Close()
 	args := []string{"--unit-child", rootfs, spec.Hostname, "3", string(policyJSON), "4", "--"}
 	args = append(args, spec.Command...)
-	cmd := exec.Command(m.cfg.InitBinary, args...)
+	controlRead, controlWrite, err := os.Pipe()
+	if err != nil {
+		_ = readyRead.Close()
+		_ = readyWrite.Close()
+		_ = statusWrite.Close()
+		_ = logFile.Close()
+		m.cleanupAfterStop(id)
+		return m.fail(state, err)
+	}
+	defer controlRead.Close()
+	monitorJSON, err := json.Marshal(MonitorConfig{Args: args, ExitPath: filepath.Join(m.unitDir(id), "exit.json"), RunID: state.RunID})
+	if err != nil {
+		_ = controlWrite.Close()
+		return m.fail(state, err)
+	}
+	cmd := exec.Command(m.cfg.InitBinary, "--unit-monitor", string(monitorJSON))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(), spec.Environment...)
-	cmd.ExtraFiles = []*os.File{readyRead, statusWrite}
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS |
-			syscall.CLONE_NEWPID |
-			syscall.CLONE_NEWNS |
-			syscall.CLONE_NEWIPC |
-			syscall.CLONE_NEWNET,
-		Setsid: true,
-	}
+	cmd.ExtraFiles = []*os.File{readyRead, statusWrite, controlWrite}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
+		_ = controlWrite.Close()
 		_ = statusWrite.Close()
 		_ = readyRead.Close()
 		_ = readyWrite.Close()
@@ -213,11 +251,30 @@ func (m *Manager) Start(id string) (State, error) {
 	}
 	_ = readyRead.Close()
 	_ = statusWrite.Close()
-	pid := cmd.Process.Pid
+	_ = controlWrite.Close()
+	pid, controlErr := awaitMonitorPID(controlRead, 10*time.Second)
+	if controlErr != nil {
+		_ = readyWrite.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = logFile.Close()
+		m.cleanupAfterStop(id)
+		return m.fail(state, controlErr)
+	}
+	identity, identityErr := readProcessIdentity(pid)
+	if identityErr != nil {
+		_ = readyWrite.Close()
+		_ = cmd.Wait()
+		_ = logFile.Close()
+		m.cleanupAfterStop(id)
+		return m.fail(state, identityErr)
+	}
+	state.PID = pid
+	state.Process = identity
 
 	failStarted := func(cause error) (State, error) {
 		_ = readyWrite.Close()
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = signalProcess(state, syscall.SIGKILL)
 		_ = cmd.Wait()
 		_ = logFile.Close()
 		_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
@@ -261,12 +318,12 @@ func (m *Manager) Start(id string) (State, error) {
 	}
 
 	_ = logFile.Close()
-	_ = cmd.Process.Release()
+	go func() { _ = cmd.Wait() }()
 	return state, nil
 }
 
-// A CLOEXEC status pipe closes on successful exec. A pre-exec marker proves
-// setup/hardening completed; errors, premature EOF and timeouts fail closed.
+// The restricted supervisor closes this pipe only after Start confirms the
+// workload exec. Errors, premature EOF and timeouts fail closed.
 func awaitStartup(file *os.File, timeout time.Duration) error {
 	if err := file.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return err
@@ -282,6 +339,11 @@ func awaitStartup(file *os.File, timeout time.Duration) error {
 }
 
 func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
+	unlock, lockErr := m.lock()
+	if lockErr != nil {
+		return State{}, lockErr
+	}
+	defer unlock()
 	_, state, err := m.load(id)
 	if err != nil {
 		return State{}, err
@@ -290,20 +352,37 @@ func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
 		timeout = 5 * time.Second
 	}
 
-	if state.PID > 0 && processAlive(state.PID) {
-		_ = syscall.Kill(state.PID, syscall.SIGTERM)
+	if processMatches(state) {
+		if err := signalProcess(state, syscall.SIGTERM); err != nil && processMatches(state) {
+			return State{}, err
+		}
 		deadline := time.Now().Add(timeout)
-		for processAlive(state.PID) && time.Now().Before(deadline) {
+		for processMatches(state) && time.Now().Before(deadline) {
 			time.Sleep(100 * time.Millisecond)
 		}
-		if processAlive(state.PID) {
+		if processMatches(state) {
 			_ = os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.kill"), []byte("1"), 0644)
-			_ = syscall.Kill(state.PID, syscall.SIGKILL)
+			if err := signalProcess(state, syscall.SIGKILL); err != nil && processMatches(state) {
+				return State{}, err
+			}
+			deadline = time.Now().Add(5 * time.Second)
+			for processMatches(state) && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if processMatches(state) {
+				return State{}, fmt.Errorf("Unit did not terminate; resources retained")
+			}
 		}
 	}
 
 	if spec, _, loadErr := m.load(id); loadErr == nil && spec.Network.Fabric {
 		_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
+	}
+	if state.RunID != "" {
+		deadline := time.Now().Add(2 * time.Second)
+		for !m.applyExitRecord(&state) && state.ExitCode == nil && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 	m.cleanupAfterStop(id)
 	state.PID = 0
@@ -328,29 +407,61 @@ func (m *Manager) StopLeaseUnit(id string) error {
 }
 
 func (m *Manager) Inspect(id string) (Spec, State, error) {
+	unlock, lockErr := m.lock()
+	if lockErr != nil {
+		return Spec{}, State{}, lockErr
+	}
+	defer unlock()
 	spec, state, err := m.load(id)
 	if err != nil {
 		return Spec{}, State{}, err
 	}
 	if state.PID > 0 {
-		if processAlive(state.PID) {
+		// Legacy Units can only be adopted when their PID belongs to this Unit's
+		// private cgroup. A numeric PID alone never authorizes a signal.
+		if state.Process.StartTicks == 0 && m.belongsToUnit(id, state.PID) {
+			if identity, err := readProcessIdentity(state.PID); err == nil {
+				state.Process = identity
+				if err := m.saveState(state); err != nil {
+					return Spec{}, State{}, err
+				}
+			}
+		}
+		if processMatches(state) {
 			state.Status = StatusActive
 		} else if state.Status == StatusActive || state.Status == StatusStarting {
 			state.Status = StatusFailed
-			state.LastError = "Unit process is no longer running"
+			state.LastError = "Unit process is no longer running or its identity changed"
+			m.applyExitRecord(&state)
 			state.PID = 0
-			_ = m.saveState(state)
+			if spec.Network.Fabric {
+				_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
+			}
+			m.cleanupAfterStop(id)
+			if err := m.saveState(state); err != nil {
+				return Spec{}, State{}, err
+			}
+		}
+	}
+	if state.PID == 0 && m.applyExitRecord(&state) {
+		if err := m.saveState(state); err != nil {
+			return Spec{}, State{}, err
 		}
 	}
 	return spec, state, nil
 }
 
 func (m *Manager) Delete(id string) error {
+	unlock, lockErr := m.lock()
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	_, state, err := m.load(id)
 	if err != nil {
 		return err
 	}
-	if state.PID > 0 && processAlive(state.PID) {
+	if processMatches(state) {
 		return fmt.Errorf("Unit %s is ACTIVE; stop it before deletion", id)
 	}
 	spec, _, specErr := m.load(id)
@@ -563,8 +674,8 @@ func (m *Manager) cleanupAfterStop(id string) {
 	if spec, _, err := m.load(id); err == nil {
 		m.cleanupDiskMounts(spec)
 	}
-	_ = m.unmountRootfs(id)
 	_ = os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.kill"), []byte("1"), 0644)
+	_ = m.unmountRootfs(id)
 	_ = os.Remove(m.cgroupDir(id))
 }
 
@@ -572,7 +683,9 @@ func (m *Manager) fail(state State, cause error) (State, error) {
 	state.Status = StatusFailed
 	state.PID = 0
 	state.LastError = cause.Error()
-	_ = m.saveState(state)
+	if err := m.saveState(state); err != nil {
+		return state, errors.Join(cause, err)
+	}
 	return state, cause
 }
 
@@ -605,14 +718,6 @@ func (m *Manager) sourceRoot(name string) string {
 
 func (m *Manager) cgroupDir(id string) string {
 	return filepath.Join(m.cfg.CgroupRoot, id)
-}
-
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func mounted(target string) bool {

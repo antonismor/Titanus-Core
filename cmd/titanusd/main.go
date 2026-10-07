@@ -67,7 +67,13 @@ func main() {
 	}
 	sourceManager := source.NewManager(stateRoot)
 	runtimeManager := unitruntime.NewManager(runtimeConfig)
-	leaseManager := lease.NewManager(runtimeManager)
+	if err := runtimeManager.Recover(); err != nil {
+		log.Fatalf("runtime recovery: %v", err)
+	}
+	leaseManager, err := lease.Open(stateRoot, runtimeManager)
+	if err != nil {
+		log.Fatalf("lease recovery: %v", err)
+	}
 	defer leaseManager.Close()
 	controlapi.New(store, runtimeManager, sourceManager, leaseManager).Register(mux)
 
