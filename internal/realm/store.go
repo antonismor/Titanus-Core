@@ -234,6 +234,15 @@ func (s *Store) ConfigureNetwork(network RealmNetwork) error {
 	if cidrsOverlap(fabricNet, serviceNet) {
 		return fmt.Errorf("Realm Fabric CIDR %s overlaps Service CIDR %s", network.FabricCIDR, network.ServiceCIDR)
 	}
+	for name, route := range s.data.Routes {
+		if strings.TrimSpace(route.ServiceIP) == "" {
+			continue
+		}
+		ip := net.ParseIP(route.ServiceIP)
+		if ip == nil || ip.To4() == nil || !serviceNet.Contains(ip.To4()) {
+			return fmt.Errorf("Route %s service IP %s is outside requested Service CIDR %s", name, route.ServiceIP, network.ServiceCIDR)
+		}
+	}
 	s.data.Network = network
 	return s.commitLocked()
 }
@@ -637,6 +646,30 @@ func (s *Store) load(realmName string) error {
 	}
 	if s.data.Name == "" {
 		s.data.Name = realmName
+	}
+	if s.data.Network.ServiceCIDR != "" {
+		names := make([]string, 0, len(s.data.Routes))
+		for name := range s.data.Routes {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		changed := false
+		for _, name := range names {
+			route := s.data.Routes[name]
+			if strings.TrimSpace(route.ServiceIP) != "" {
+				continue
+			}
+			serviceIP, err := s.allocateServiceIPLocked(name)
+			if err != nil {
+				return fmt.Errorf("migrate Route %s Service IP: %w", name, err)
+			}
+			route.ServiceIP = serviceIP
+			s.data.Routes[name] = route
+			changed = true
+		}
+		if changed {
+			return s.commitLocked()
+		}
 	}
 	return nil
 }
