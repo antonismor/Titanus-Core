@@ -6,6 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/titanus/daemon.env
 ExecStart=/usr/local/sbin/titanusd
 Restart=on-failure
 RestartSec=3
