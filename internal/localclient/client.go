@@ -36,6 +36,28 @@ func New(socketPath string) *Client {
 	}
 }
 
+func (c *Client) ListRoutes() ([]realm.Route, error) {
+	var routes []realm.Route
+	err := c.do(http.MethodGet, "/v1/realm/routes", nil, &routes)
+	return routes, err
+}
+
+func (c *Client) CreateRoute(route realm.Route) (realm.Route, error) {
+	var stored realm.Route
+	err := c.do(http.MethodPost, "/v1/realm/routes", route, &stored)
+	return stored, err
+}
+
+func (c *Client) RouteStatus(name string) (realm.Route, error) {
+	var route realm.Route
+	err := c.do(http.MethodGet, "/v1/realm/routes/"+url.PathEscape(name), nil, &route)
+	return route, err
+}
+
+func (c *Client) DeleteRoute(name string) error {
+	return c.do(http.MethodDelete, "/v1/realm/routes/"+url.PathEscape(name), nil, nil)
+}
+
 func (c *Client) ListFleets() ([]realm.Fleet, error) {
 	var fleets []realm.Fleet
 	err := c.do(http.MethodGet, "/v1/realm/fleets", nil, &fleets)
