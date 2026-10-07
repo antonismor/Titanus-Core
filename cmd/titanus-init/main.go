@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 )
 
@@ -23,17 +24,24 @@ func main() {
 }
 
 func runUnitChild(args []string) error {
-	if len(args) < 4 {
-		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME -- COMMAND [ARGS...]")
+	if len(args) < 5 {
+		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD -- COMMAND [ARGS...]")
 	}
 	rootfs := filepath.Clean(args[0])
 	hostname := args[1]
-	if args[2] != "--" {
+	readyFD, err := strconv.Atoi(args[2])
+	if err != nil || readyFD < 3 {
+		return fmt.Errorf("invalid runtime readiness fd %q", args[2])
+	}
+	if args[3] != "--" {
 		return fmt.Errorf("missing command separator")
 	}
-	command := args[3:]
+	command := args[4:]
 	if len(command) == 0 {
 		return fmt.Errorf("missing Unit command")
+	}
+	if err := waitForRuntime(readyFD); err != nil {
+		return err
 	}
 
 	if err := syscall.Mount("", "/", "", uintptr(syscall.MS_REC|syscall.MS_PRIVATE), ""); err != nil {
@@ -59,6 +67,23 @@ func runUnitChild(args []string) error {
 	}
 
 	return execInside(command)
+}
+
+func waitForRuntime(fd int) error {
+	file := os.NewFile(uintptr(fd), "titanus-runtime-ready")
+	if file == nil {
+		return fmt.Errorf("open runtime readiness fd")
+	}
+	defer file.Close()
+	var signal [1]byte
+	n, err := file.Read(signal[:])
+	if err != nil {
+		return fmt.Errorf("wait for runtime readiness: %w", err)
+	}
+	if n != 1 || signal[0] != 1 {
+		return fmt.Errorf("invalid runtime readiness signal")
+	}
+	return nil
 }
 
 func pivotInto(rootfs string) error {
