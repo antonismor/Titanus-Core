@@ -13,6 +13,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/ansi"
 	"github.com/antonismor/Titanus-Core/internal/deploy"
+	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
@@ -44,6 +45,8 @@ func dispatch(args []string) error {
 		return runSetup()
 	case "source":
 		return runSource(args[1:])
+	case "fabric":
+		return runFabric(args[1:])
 	case "unit":
 		return runUnit(args[1:])
 	case "version", "--version", "-v":
@@ -132,11 +135,16 @@ func menu() error {
 				pause(reader)
 			}
 		case "6":
-			if err := unitMenu(reader); err != nil {
+			if err := fabricMenu(reader); err != nil {
 				ansi.Error(err.Error())
 				pause(reader)
 			}
 		case "7":
+			if err := unitMenu(reader); err != nil {
+				ansi.Error(err.Error())
+				pause(reader)
+			}
+		case "8":
 			fmt.Println("Titanus Core", version)
 			pause(reader)
 		case "0":
@@ -189,6 +197,99 @@ func sourceMenu(reader *bufio.Reader) error {
 			ansi.Warn("Unknown selection")
 			pause(reader)
 		}
+	}
+}
+
+func fabricMenu(reader *bufio.Reader) error {
+	for {
+		ansi.Clear()
+		ansi.Banner()
+		fmt.Println(ansi.Paint(ansi.Bold+ansi.White, "Titanus Fabric"))
+		fmt.Println()
+		fmt.Println("  1) Initialize / update local Fabric")
+		fmt.Println("  2) Show Fabric status")
+		fmt.Println("  3) Show Unit allocations")
+		fmt.Println("  0) Back")
+		fmt.Print("\nSelect: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "1":
+			cidr, err := promptDefault(reader, "Unit CIDR", "10.240.0.0/16")
+			if err != nil {
+				return err
+			}
+			bridge, err := promptDefault(reader, "Bridge name", "titanus0")
+			if err != nil {
+				return err
+			}
+			if err := runFabric([]string{"init", "--cidr", cidr, "--bridge", bridge}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "2":
+			if err := runFabric([]string{"status"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "3":
+			if err := runFabric([]string{"allocations"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "0":
+			return nil
+		default:
+			ansi.Warn("Unknown selection")
+			pause(reader)
+		}
+	}
+}
+
+func runFabric(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: titanus fabric <init|status|allocations>")
+	}
+	manager := fabric.NewManager(stateRoot())
+	switch args[0] {
+	case "init":
+		fs := flag.NewFlagSet("fabric init", flag.ContinueOnError)
+		cidr := fs.String("cidr", "10.240.0.0/16", "Unit address range")
+		bridge := fs.String("bridge", "titanus0", "Linux bridge name")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg, err := manager.Init(*cidr, *bridge)
+		if err != nil {
+			return err
+		}
+		ansi.OK(fmt.Sprintf("Fabric ready: bridge=%s cidr=%s gateway=%s", cfg.Bridge, cfg.CIDR, cfg.Gateway))
+		return nil
+	case "status":
+		cfg, err := manager.Config()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Bridge:  %s\nCIDR:    %s\nGateway: %s\n", cfg.Bridge, cfg.CIDR, cfg.Gateway)
+		return nil
+	case "allocations":
+		items, err := manager.Allocations()
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			fmt.Println("No Fabric allocations.")
+			return nil
+		}
+		fmt.Printf("%-24s %-16s %-12s %-8s\n", "UNIT", "ADDRESS", "HOST-IF", "ACTIVE")
+		for _, item := range items {
+			fmt.Printf("%-24s %-16s %-12s %-8t\n", item.UnitID, item.Address, item.HostIf, item.Active)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown Fabric action %q", args[0])
 	}
 }
 
@@ -342,6 +443,8 @@ func runUnit(args []string) error {
 		memory := fs.String("memory", "512M", "memory limit")
 		cpu := fs.Int("cpu", 100, "CPU percentage, 100 = one logical CPU")
 		pids := fs.Int("pids", 256, "maximum process count")
+		fabricEnabled := fs.Bool("fabric", false, "attach Unit to Titanus Fabric")
+		publish := fs.String("publish", "", "comma-separated HOST:UNIT[/tcp|udp] mappings")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -356,6 +459,16 @@ func runUnit(args []string) error {
 		if err != nil {
 			return err
 		}
+		var ports []fabric.Port
+		if strings.TrimSpace(*publish) != "" {
+			for _, raw := range strings.Split(*publish, ",") {
+				port, err := fabric.ParsePort(strings.TrimSpace(raw))
+				if err != nil {
+					return err
+				}
+				ports = append(ports, port)
+			}
+		}
 		spec := unitruntime.Spec{
 			ID:          id,
 			Source:      *sourceName,
@@ -364,6 +477,10 @@ func runUnit(args []string) error {
 			MemoryBytes: memoryBytes,
 			CPUPercent:  *cpu,
 			PidsMax:     *pids,
+			Network: unitruntime.NetworkSpec{
+				Fabric: *fabricEnabled || len(ports) > 0,
+				Ports:  ports,
+			},
 		}
 		state, err := manager.Create(spec)
 		if err != nil {
@@ -419,13 +536,13 @@ func runUnit(args []string) error {
 			fmt.Println("No Titanus Units.")
 			return nil
 		}
-		fmt.Printf("%-24s %-12s %-10s\n", "UNIT", "STATUS", "PID")
+		fmt.Printf("%-24s %-12s %-10s %-16s\n", "UNIT", "STATUS", "PID", "ADDRESS")
 		for _, state := range states {
 			pid := "-"
 			if state.PID > 0 {
 				pid = strconv.Itoa(state.PID)
 			}
-			fmt.Printf("%-24s %-12s %-10s\n", state.ID, state.Status, pid)
+			fmt.Printf("%-24s %-12s %-10s %-16s\n", state.ID, state.Status, pid, state.NetworkAddress)
 		}
 		return nil
 
@@ -627,6 +744,10 @@ Usage:
   titanus source list                          List Sources
   titanus source import NAME ROOTFS            Import a rootfs directory
 
+  titanus fabric init [--cidr CIDR] [--bridge NAME]
+  titanus fabric status
+  titanus fabric allocations
+
   titanus unit create ID --source SOURCE [options] -- COMMAND [ARGS...]
   titanus unit start ID
   titanus unit stop ID
@@ -646,6 +767,8 @@ Unit create options:
   --memory SIZE        Memory limit, e.g. 512M, 2G (default: 512M)
   --cpu PERCENT        100 = one logical CPU (default: 100)
   --pids COUNT         Maximum process count (default: 256)
+  --fabric             Attach Unit to Titanus Fabric
+  --publish MAPS       Comma-separated HOST:UNIT[/tcp|udp] mappings
 
 Development overrides:
   TITANUS_STATE_ROOT
