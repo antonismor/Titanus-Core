@@ -27,7 +27,10 @@ func TestDeviceBytecode(t *testing.T) {
 			r := i.Regs & 15
 			switch i.Code {
 			case 0x61:
-				regs[r] = ctx[i.Imm/4]
+				if i.Imm != 0 {
+					t.Fatal("LDX reserved immediate must be zero")
+				}
+				regs[r] = ctx[i.Off/4]
 			case 0x57:
 				regs[r] &= i.Imm
 			case 0x77:

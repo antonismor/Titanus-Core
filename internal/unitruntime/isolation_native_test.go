@@ -134,7 +134,7 @@ func TestNativeIsolation(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = m.Delete(spec.ID) })
 		state, e := m.Start(spec.ID)
-		if e == nil || state.Status != StatusFailed || state.PID != 0 {
+		if e == nil || state.Status != StatusFailed || state.PID != 0 || !strings.Contains(state.LastError, "workload LSM") {
 			t.Fatalf("LSM failure accepted: %+v %v", state, e)
 		}
 		logs, _ := os.ReadFile(filepath.Join(m.unitDir(spec.ID), "logs", "unit.log"))

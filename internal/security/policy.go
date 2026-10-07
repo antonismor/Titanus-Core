@@ -14,7 +14,7 @@ const DefaultProfile = "titanus-default-v1"
 // Pointer semantics distinguish an omitted no_new_privs from an explicit false.
 type Policy struct {
 	LSM             string   `json:"lsm"`
-	LSMWritePaths   []string `json:"lsm_write_paths,omitempty"`
+	LSMWritePaths   []string `json:"lsm_write_paths"`
 	UserNamespace   string   `json:"user_namespace"`
 	Devices         string   `json:"devices"`
 	Profile         string   `json:"profile,omitempty"`

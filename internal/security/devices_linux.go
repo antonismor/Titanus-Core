@@ -3,6 +3,7 @@
 package security
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -29,8 +30,8 @@ func deviceProgram() []deviceInsn {
 		{0x77, 0x02, 0, 16},
 		{0x57, 0x02, 0, 1},
 		{0x55, 0x02, 0, 0}, // no MKNOD
-		{0x61, 0x12, 0, 4}, // major
-		{0x61, 0x13, 0, 8}, // minor
+		{0x61, 0x12, 4, 0}, // major
+		{0x61, 0x13, 8, 0}, // minor
 	}
 	type pair struct{ major, minor int32 }
 	for _, d := range []pair{{1, 3}, {1, 5}, {1, 7}, {1, 8}, {1, 9}, {5, 0}, {5, 2}} {
@@ -78,6 +79,7 @@ func EnforceDevices(cgroup string) error {
 	binary.LittleEndian.PutUint32(attr[4:], uint32(len(insns)))
 	binary.LittleEndian.PutUint64(attr[8:], uint64(uintptr(unsafe.Pointer(&insns[0]))))
 	binary.LittleEndian.PutUint64(attr[16:], uint64(uintptr(unsafe.Pointer(&license[0]))))
+	binary.LittleEndian.PutUint32(attr[68:], 6) // expected BPF_CGROUP_DEVICE attach type
 	binary.LittleEndian.PutUint32(attr[24:], 1)
 	binary.LittleEndian.PutUint32(attr[28:], uint32(len(log)))
 	binary.LittleEndian.PutUint64(attr[32:], uint64(uintptr(unsafe.Pointer(&log[0]))))
@@ -86,7 +88,7 @@ func EnforceDevices(cgroup string) error {
 	runtime.KeepAlive(license)
 	runtime.KeepAlive(log)
 	if e != nil {
-		return fmt.Errorf("load required device filter: %w: %s", e, log)
+		return fmt.Errorf("load required device filter: %w: %s", e, bytes.TrimRight(log, "\x00"))
 	}
 	defer syscall.Close(int(fd))
 	attach := make([]byte, 20)

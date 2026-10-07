@@ -32,9 +32,9 @@ func (m *Manager) allocateMapping(id string) (IDMapping, error) {
 	if e != nil {
 		return IDMapping{}, e
 	}
-	return allocateMapping(mappingRoot, filepath.Join(root, "units", id)+"@"+state.CreatedAt.Format("20060102T150405.000000000Z"))
+	return allocateMapping(mappingRoot, filepath.Join(root, "units", id)+"@"+state.CreatedAt.Format("20060102T150405.000000000Z"), state.UserMapping)
 }
-func allocateMapping(root, key string) (IDMapping, error) {
+func allocateMapping(root, key string, expected ...IDMapping) (IDMapping, error) {
 	if e := os.MkdirAll(root, 0700); e != nil {
 		return IDMapping{}, e
 	}
@@ -67,7 +67,13 @@ func allocateMapping(root, key string) (IDMapping, error) {
 		}
 	}
 	if v, ok := ledger[key]; ok {
+		if len(expected) > 0 && expected[0].Size != 0 && expected[0] != v {
+			return IDMapping{}, fmt.Errorf("persisted Unit mapping disagrees with node ledger")
+		}
 		return v, nil
+	}
+	if len(expected) > 0 && expected[0].Size != 0 {
+		return IDMapping{}, fmt.Errorf("persisted Unit mapping is missing from node ledger; restore ledger before restart")
 	}
 	if base > 2147418112 {
 		return IDMapping{}, fmt.Errorf("node UID/GID mapping pool exhausted")
@@ -83,6 +89,10 @@ func allocateMapping(root, key string) (IDMapping, error) {
 func (m *Manager) prepareMappedSource(spec Spec, mapping IDMapping) (string, error) {
 	target := filepath.Join(m.unitDir(spec.ID), "mapped-source")
 	if info, e := os.Stat(target); e == nil && info.IsDir() {
+		st := info.Sys().(*syscall.Stat_t)
+		if st.Uid != uint32(mapping.Base) || st.Gid != uint32(mapping.Base) {
+			return "", fmt.Errorf("mapped Source ownership disagrees with Unit mapping")
+		}
 		return target, nil
 	}
 	temporary := target + ".tmp"

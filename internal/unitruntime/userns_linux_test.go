@@ -72,3 +72,20 @@ func TestDiskMountTargetRejectsSourceSymlinkEscape(t *testing.T) {
 		t.Fatal("modified host path")
 	}
 }
+
+func TestMappingLedgerLossOrMismatchFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	mapping, err := allocateMapping(root, "unit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := allocateMapping(root, "unit", IDMapping{Base: mapping.Base + 65536, Size: 65536}); err == nil {
+		t.Fatal("changed Unit ownership accepted")
+	}
+	if err := os.Remove(filepath.Join(root, "allocations.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := allocateMapping(root, "unit", mapping); err == nil {
+		t.Fatal("lost ledger silently recreated")
+	}
+}
