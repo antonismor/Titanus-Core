@@ -35,6 +35,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/realm/nodes", s.nodes)
 	mux.HandleFunc("/v1/realm/pulse", s.pulse)
 	mux.HandleFunc("/v1/realm/fleets", s.fleets)
+	mux.HandleFunc("/v1/realm/fleets/", s.fleetObject)
 	mux.HandleFunc("/v1/node/units", s.units)
 	mux.HandleFunc("/v1/node/units/", s.unitAction)
 	mux.HandleFunc("/v1/node/sources", s.sources)
@@ -309,6 +310,60 @@ func (s *Server) pulse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accepted": true, "revision": s.Store.Snapshot().Revision})
+}
+
+type ScaleFleetRequest struct {
+	Instances int `json:"instances"`
+}
+
+func (s *Server) fleetObject(w http.ResponseWriter, r *http.Request) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/realm/fleets/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("Fleet name is required"))
+		return
+	}
+	name := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	switch {
+	case r.Method == http.MethodGet && action == "":
+		fleet, ok := s.Store.GetFleet(name)
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("Fleet %s not found", name))
+			return
+		}
+		state := s.Store.Snapshot()
+		assignments := make([]realm.Assignment, 0)
+		for _, assignment := range state.Assignments {
+			if assignment.Fleet == name {
+				assignments = append(assignments, assignment)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"fleet": fleet, "assignments": assignments})
+	case r.Method == http.MethodPost && action == "scale":
+		var req ScaleFleetRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		fleet, err := s.Store.ScaleFleet(name, req.Instances)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, fleet)
+	case r.Method == http.MethodDelete && action == "":
+		if err := s.Store.DeleteFleet(name); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 func (s *Server) fleets(w http.ResponseWriter, r *http.Request) {
