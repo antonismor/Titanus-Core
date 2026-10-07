@@ -192,17 +192,29 @@ func TestNormalizePoliciesCanonicalizesSourcesAndPorts(t *testing.T) {
 	}
 }
 
-func TestRenderFilterRulesAllowsBeforeDefaultDeny(t *testing.T) {
-	policies, err := normalizePolicies([]Policy{{
-		Name: "web-ingress",
-		Destinations: []string{"10.240.2.10"},
-		DefaultDeny: true,
-		Rules: []PolicyRule{{
-			Sources: []string{"10.240.1.0/24"},
-			Protocol: "tcp",
-			Ports: []int{80, 443},
-		}},
-	}})
+func TestRenderFilterRulesComposesIngressAndEgress(t *testing.T) {
+	policies, err := normalizePolicies([]Policy{
+		{
+			Name: "web-ingress",
+			Destinations: []string{"10.240.2.10"},
+			DefaultDeny: true,
+			Rules: []PolicyRule{{
+				Sources: []string{"10.240.1.0/24"},
+				Protocol: "tcp",
+				Ports: []int{80, 443},
+			}},
+		},
+		{
+			Name: "api-egress",
+			Sources: []string{"10.240.1.10"},
+			DefaultDenyEgress: true,
+			Egress: []EgressRule{{
+				Destinations: []string{"10.240.2.0/24"},
+				Protocol: "tcp",
+				Ports: []int{443},
+			}},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,22 +223,47 @@ func TestRenderFilterRulesAllowsBeforeDefaultDeny(t *testing.T) {
 		!strings.Contains(rules, "table ip titanus_filter_ip") {
 		t.Fatalf("policy rules must cover bridge and IPv4 forwarding paths:\n%s", rules)
 	}
-	allow := "ip saddr 10.240.1.0/24 ip daddr 10.240.2.10 tcp dport { 80, 443 } accept"
-	drop := "ip daddr 10.240.2.10 drop"
-	if !strings.Contains(rules, allow) || !strings.Contains(rules, drop) {
-		t.Fatalf("missing allow/default-deny policy rules:\n%s", rules)
+	if !strings.Contains(rules, "ip daddr 10.240.2.10 jump ti_i_") {
+		t.Fatalf("missing ingress dispatch chain:\n%s", rules)
 	}
-	for _, table := range []string{"titanus_filter_bridge", "titanus_filter_ip"} {
-		start := strings.Index(rules, table)
-		if start < 0 {
-			t.Fatalf("missing table %s", table)
-		}
-		section := rules[start:]
-		allowIndex := strings.Index(section, allow)
-		dropIndex := strings.Index(section, drop)
-		if allowIndex < 0 || dropIndex < 0 || allowIndex > dropIndex {
-			t.Fatalf("allow rule must precede default deny in %s:\n%s", table, section)
-		}
+	if !strings.Contains(rules, "ip saddr 10.240.1.10 jump ti_e_") {
+		t.Fatalf("missing egress dispatch chain:\n%s", rules)
+	}
+	if !strings.Contains(rules, "ip saddr 10.240.1.0/24 tcp dport { 80, 443 } return") {
+		t.Fatalf("missing ingress allow-return rule:\n%s", rules)
+	}
+	if !strings.Contains(rules, "ip daddr 10.240.2.0/24 tcp dport 443 return") {
+		t.Fatalf("missing egress allow-return rule:\n%s", rules)
+	}
+	if !strings.Contains(rules, "drop comment \"Titanus ingress default deny\"") ||
+		!strings.Contains(rules, "drop comment \"Titanus egress default deny\"") {
+		t.Fatalf("missing directional default-deny rules:\n%s", rules)
+	}
+}
+
+func TestNormalizePoliciesCanonicalizesEgressDestinations(t *testing.T) {
+	policies, err := normalizePolicies([]Policy{{
+		Name: "api-egress",
+		Sources: []string{"10.240.1.10", "10.240.1.10"},
+		DefaultDenyEgress: true,
+		Egress: []EgressRule{{
+			Destinations: []string{"192.0.2.55/24", "192.0.2.0/24"},
+			Protocol: "UDP",
+			Ports: []int{53, 53},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policies) != 1 || len(policies[0].Sources) != 1 {
+		t.Fatalf("unexpected normalized policy sources: %#v", policies)
+	}
+	rule := policies[0].Egress[0]
+	if rule.Protocol != "udp" || len(rule.Destinations) != 1 || rule.Destinations[0] != "192.0.2.0/24" {
+		t.Fatalf("unexpected normalized egress rule: %#v", rule)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0] != 53 {
+		t.Fatalf("unexpected normalized egress ports: %#v", rule.Ports)
 	}
 }
 
@@ -238,15 +275,26 @@ func TestRenderedPolicyRulesPassNftCheck(t *testing.T) {
 	if err != nil {
 		t.Skip("nft is not installed")
 	}
-	policies, err := normalizePolicies([]Policy{{
-		Name: "web-ingress",
-		Destinations: []string{"10.240.2.10"},
-		DefaultDeny: true,
-		Rules: []PolicyRule{
-			{Sources: []string{"10.240.1.0/24"}, Protocol: "tcp", Ports: []int{80, 443}},
-			{AnySource: true, Protocol: "udp", Ports: []int{53}},
+	policies, err := normalizePolicies([]Policy{
+		{
+			Name: "web-ingress",
+			Destinations: []string{"10.240.2.10"},
+			DefaultDeny: true,
+			Rules: []PolicyRule{
+				{Sources: []string{"10.240.1.0/24"}, Protocol: "tcp", Ports: []int{80, 443}},
+				{AnySource: true, Protocol: "udp", Ports: []int{53}},
+			},
 		},
-	}})
+		{
+			Name: "api-egress",
+			Sources: []string{"10.240.1.10"},
+			DefaultDenyEgress: true,
+			Egress: []EgressRule{
+				{Destinations: []string{"10.240.2.0/24"}, Protocol: "tcp", Ports: []int{443}},
+				{AnyDestination: true, Protocol: "udp", Ports: []int{53}},
+			},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
