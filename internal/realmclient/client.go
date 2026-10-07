@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/identity"
+	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
@@ -30,6 +31,55 @@ func New(ca, cert, key string) (*Client, error) {
 			Timeout:   20 * time.Second,
 		},
 	}, nil
+}
+
+func (c *Client) EnsureSource(address, name string, local *source.Manager) error {
+	head, err := http.NewRequest(http.MethodHead, endpoint(address)+"/v1/node/sources/"+url.PathEscape(name), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(head)
+	if err == nil {
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			return fmt.Errorf("Source probe on %s: %s", address, resp.Status)
+		}
+	}
+	if local == nil {
+		return fmt.Errorf("local Source manager unavailable")
+	}
+
+	reader, writer := io.Pipe()
+	exportErr := make(chan error, 1)
+	go func() {
+		err := local.Export(name, writer)
+		_ = writer.CloseWithError(err)
+		exportErr <- err
+	}()
+
+	req, err := http.NewRequest(http.MethodPut, endpoint(address)+"/v1/node/sources/"+url.PathEscape(name), reader)
+	if err != nil {
+		_ = reader.Close()
+		return err
+	}
+	req.Header.Set("Content-Type", "application/vnd.titanus.source+gzip")
+	resp, err = c.http.Do(req)
+	if err != nil {
+		_ = reader.Close()
+		return err
+	}
+	defer resp.Body.Close()
+	if export := <-exportErr; export != nil {
+		return export
+	}
+	if resp.StatusCode/100 != 2 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return fmt.Errorf("Source upload to %s: %s: %s", address, resp.Status, strings.TrimSpace(string(data)))
+	}
+	return nil
 }
 
 func (c *Client) EnsureUnit(address string, spec unitruntime.Spec) (unitruntime.State, error) {
