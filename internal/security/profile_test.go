@@ -27,3 +27,20 @@ func TestBuiltinProfilesExposeSafeDefault(t *testing.T) {
 		t.Fatalf("restricted profile is not fully hardened: %#v", profile)
 	}
 }
+
+func TestSecuritySpecDefaultsAndValidation(t *testing.T) {
+	spec := Spec{}
+	spec.Normalize()
+	if spec.Profile != ProfileRestricted {
+		t.Fatalf("expected restricted default, got %#v", spec)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Spec{Profile: ProfileRestricted, RunAsUID: -1}).Validate(); err == nil {
+		t.Fatal("expected negative UID to be rejected")
+	}
+	if err := (Spec{Profile: "missing"}).Validate(); err == nil {
+		t.Fatal("expected unknown profile to be rejected")
+	}
+}
