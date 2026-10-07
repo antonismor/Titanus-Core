@@ -1,0 +1,20 @@
+[Unit]
+Description=Titanus Realm Node Agent
+Documentation=https://github.com/antonismor/Titanus-Core
+After=network-online.target titanusd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/titanus/agent.env
+ExecStart=/usr/local/sbin/titanus-agent --node=${TITANUS_NODE_ID} --address=${TITANUS_NODE_ADDRESS} --controller=${TITANUS_CONTROLLER} --ca=${TITANUS_CA} --cert=${TITANUS_CERT} --key=${TITANUS_KEY} --capabilities=${TITANUS_CAPABILITIES}
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/titanus /var/log/titanus
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
