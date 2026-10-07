@@ -447,7 +447,16 @@ func (m *Manager) mountOverlay(spec Spec) error {
 		"upperdir=" + filepath.Join(unitDir, "upper"),
 		"workdir=" + filepath.Join(unitDir, "work"),
 	}, ",")
-	return syscall.Mount("overlay", merged, "overlay", 0, data)
+	if err := syscall.Mount("overlay", merged, "overlay", 0, data); err != nil {
+		return err
+	}
+	// The host-side Unit state remains private, but the root of the mounted
+	// filesystem must be traversable by a configured non-root Unit identity.
+	if err := os.Chmod(merged, 0755); err != nil {
+		_ = syscall.Unmount(merged, syscall.MNT_DETACH)
+		return fmt.Errorf("set Unit rootfs permissions: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) unmountRootfs(id string) error {
