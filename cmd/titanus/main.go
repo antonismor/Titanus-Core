@@ -995,7 +995,7 @@ func policyMenu(reader *bufio.Reader) error {
 		fmt.Println(ansi.Paint(ansi.Bold+ansi.White, "Titanus Network Policies"))
 		fmt.Println()
 		fmt.Println("  1) List Policies")
-		fmt.Println("  2) Create ingress Policy")
+		fmt.Println("  2) Create Policy")
 		fmt.Println("  3) Inspect Policy")
 		fmt.Println("  4) Delete Policy")
 		fmt.Println("  0) Back")
@@ -1019,13 +1019,53 @@ func policyMenu(reader *bufio.Reader) error {
 			if err != nil {
 				return err
 			}
-			fromFleet, err := promptDefault(reader, "Allow source Fleet (blank for none)", "")
+			direction, err := promptDefault(reader, "Direction (ingress/egress)", "ingress")
 			if err != nil {
 				return err
 			}
-			fromCIDR, err := promptDefault(reader, "Allow source CIDR (blank for none)", "")
-			if err != nil {
-				return err
+			direction = strings.ToLower(strings.TrimSpace(direction))
+			command := []string{"create", name, "--fleet", fleet, "--direction", direction}
+			switch direction {
+			case "ingress":
+				fromFleet, err := promptDefault(reader, "Allow source Fleet (blank for none)", "")
+				if err != nil {
+					return err
+				}
+				fromCIDR, err := promptDefault(reader, "Allow source CIDR (blank for none)", "")
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(fromFleet) != "" {
+					command = append(command, "--from-fleet", fromFleet)
+				}
+				if strings.TrimSpace(fromCIDR) != "" {
+					command = append(command, "--from-cidr", fromCIDR)
+				}
+				if strings.TrimSpace(fromFleet) == "" && strings.TrimSpace(fromCIDR) == "" {
+					command = append(command, "--allow-any")
+				}
+			case "egress":
+				toFleet, err := promptDefault(reader, "Allow destination Fleet (blank for none)", "")
+				if err != nil {
+					return err
+				}
+				toCIDR, err := promptDefault(reader, "Allow destination CIDR (blank for none)", "")
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(toFleet) != "" {
+					command = append(command, "--to-fleet", toFleet)
+				}
+				if strings.TrimSpace(toCIDR) != "" {
+					command = append(command, "--to-cidr", toCIDR)
+				}
+				if strings.TrimSpace(toFleet) == "" && strings.TrimSpace(toCIDR) == "" {
+					command = append(command, "--allow-any")
+				}
+			default:
+				ansi.Error("Direction must be ingress or egress")
+				pause(reader)
+				continue
 			}
 			protocol, err := promptDefault(reader, "Protocol (tcp/udp/any)", "tcp")
 			if err != nil {
@@ -1035,18 +1075,9 @@ func policyMenu(reader *bufio.Reader) error {
 			if err != nil {
 				return err
 			}
-			command := []string{"create", name, "--fleet", fleet, "--protocol", protocol}
-			if strings.TrimSpace(fromFleet) != "" {
-				command = append(command, "--from-fleet", fromFleet)
-			}
-			if strings.TrimSpace(fromCIDR) != "" {
-				command = append(command, "--from-cidr", fromCIDR)
-			}
+			command = append(command, "--protocol", protocol)
 			if strings.TrimSpace(ports) != "" {
 				command = append(command, "--ports", ports)
-			}
-			if strings.TrimSpace(fromFleet) == "" && strings.TrimSpace(fromCIDR) == "" {
-				command = append(command, "--allow-any")
 			}
 			if err := runPolicy(command); err != nil {
 				ansi.Error(err.Error())
@@ -1094,25 +1125,33 @@ func runPolicy(args []string) error {
 			fmt.Println("No Titanus Network Policies.")
 			return nil
 		}
-		fmt.Printf("%-24s %-20s %-8s %-12s\n", "POLICY", "FLEET", "RULES", "DEFAULT")
+		fmt.Printf("%-24s %-20s %-8s %-8s %-12s %-12s\n", "POLICY", "FLEET", "INGRESS", "EGRESS", "INGRESS-DEF", "EGRESS-DEF")
 		for _, policy := range policies {
-			defaultAction := "ALLOW"
+			ingressDefault := "ALLOW"
 			if policy.DefaultDeny {
-				defaultAction = "DENY"
+				ingressDefault = "DENY"
 			}
-			fmt.Printf("%-24s %-20s %-8d %-12s\n", policy.Name, policy.Fleet, len(policy.Ingress), defaultAction)
+			egressDefault := "ALLOW"
+			if policy.DefaultDenyEgress {
+				egressDefault = "DENY"
+			}
+			fmt.Printf("%-24s %-20s %-8d %-8d %-12s %-12s\n",
+				policy.Name, policy.Fleet, len(policy.Ingress), len(policy.Egress), ingressDefault, egressDefault)
 		}
 		return nil
 	case "create":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: titanus policy create NAME --fleet FLEET [--from-fleet FLEET|--from-cidr CIDR|--allow-any] [--protocol tcp|udp|any] [--ports LIST]")
+			return fmt.Errorf("usage: titanus policy create NAME --fleet FLEET --direction ingress|egress [selectors] [--protocol tcp|udp|any] [--ports LIST]")
 		}
 		name := args[1]
 		fs := flag.NewFlagSet("policy create", flag.ContinueOnError)
-		fleetName := fs.String("fleet", "", "protected destination Fleet")
-		fromFleet := fs.String("from-fleet", "", "allowed source Fleet")
-		fromCIDR := fs.String("from-cidr", "", "allowed source IPv4 CIDR")
-		allowAny := fs.Bool("allow-any", false, "allow any source subject to protocol/ports")
+		fleetName := fs.String("fleet", "", "protected Fleet")
+		direction := fs.String("direction", "ingress", "policy direction: ingress or egress")
+		fromFleet := fs.String("from-fleet", "", "allowed source Fleet for ingress")
+		fromCIDR := fs.String("from-cidr", "", "allowed source IPv4 CIDR for ingress")
+		toFleet := fs.String("to-fleet", "", "allowed destination Fleet for egress")
+		toCIDR := fs.String("to-cidr", "", "allowed destination IPv4 CIDR for egress")
+		allowAny := fs.Bool("allow-any", false, "allow any source/destination subject to protocol and ports")
 		protocol := fs.String("protocol", "tcp", "tcp, udp or any")
 		portsText := fs.String("ports", "", "comma-separated destination ports; blank means all ports for protocol")
 		if err := fs.Parse(args[2:]); err != nil {
@@ -1120,12 +1159,6 @@ func runPolicy(args []string) error {
 		}
 		if strings.TrimSpace(*fleetName) == "" {
 			return fmt.Errorf("--fleet is required")
-		}
-		if *allowAny && (strings.TrimSpace(*fromFleet) != "" || strings.TrimSpace(*fromCIDR) != "") {
-			return fmt.Errorf("--allow-any cannot be combined with --from-fleet or --from-cidr")
-		}
-		if !*allowAny && strings.TrimSpace(*fromFleet) == "" && strings.TrimSpace(*fromCIDR) == "" {
-			return fmt.Errorf("one of --from-fleet, --from-cidr or --allow-any is required")
 		}
 		ports := make([]int, 0)
 		if strings.TrimSpace(*portsText) != "" {
@@ -1137,24 +1170,60 @@ func runPolicy(args []string) error {
 				ports = append(ports, port)
 			}
 		}
-		rule := realm.NetworkPolicyRule{
-			FromFleet: strings.TrimSpace(*fromFleet),
-			FromCIDR: strings.TrimSpace(*fromCIDR),
-			Protocol: strings.TrimSpace(*protocol),
-			Ports: ports,
+		policy := realm.NetworkPolicy{Name: name, Fleet: strings.TrimSpace(*fleetName)}
+		switch strings.ToLower(strings.TrimSpace(*direction)) {
+		case "ingress":
+			if strings.TrimSpace(*toFleet) != "" || strings.TrimSpace(*toCIDR) != "" {
+				return fmt.Errorf("--to-fleet/--to-cidr are only valid for egress policies")
+			}
+			if *allowAny && (strings.TrimSpace(*fromFleet) != "" || strings.TrimSpace(*fromCIDR) != "") {
+				return fmt.Errorf("--allow-any cannot be combined with --from-fleet or --from-cidr")
+			}
+			if !*allowAny && strings.TrimSpace(*fromFleet) == "" && strings.TrimSpace(*fromCIDR) == "" {
+				return fmt.Errorf("ingress requires --from-fleet, --from-cidr or --allow-any")
+			}
+			rule := realm.NetworkPolicyRule{
+				FromFleet: strings.TrimSpace(*fromFleet),
+				FromCIDR: strings.TrimSpace(*fromCIDR),
+				Protocol: strings.TrimSpace(*protocol),
+				Ports: ports,
+			}
+			if *allowAny {
+				rule.FromFleet = ""
+				rule.FromCIDR = ""
+			}
+			policy.DefaultDeny = true
+			policy.Ingress = []realm.NetworkPolicyRule{rule}
+		case "egress":
+			if strings.TrimSpace(*fromFleet) != "" || strings.TrimSpace(*fromCIDR) != "" {
+				return fmt.Errorf("--from-fleet/--from-cidr are only valid for ingress policies")
+			}
+			if *allowAny && (strings.TrimSpace(*toFleet) != "" || strings.TrimSpace(*toCIDR) != "") {
+				return fmt.Errorf("--allow-any cannot be combined with --to-fleet or --to-cidr")
+			}
+			if !*allowAny && strings.TrimSpace(*toFleet) == "" && strings.TrimSpace(*toCIDR) == "" {
+				return fmt.Errorf("egress requires --to-fleet, --to-cidr or --allow-any")
+			}
+			rule := realm.NetworkPolicyEgressRule{
+				ToFleet: strings.TrimSpace(*toFleet),
+				ToCIDR: strings.TrimSpace(*toCIDR),
+				Protocol: strings.TrimSpace(*protocol),
+				Ports: ports,
+			}
+			if *allowAny {
+				rule.ToFleet = ""
+				rule.ToCIDR = ""
+			}
+			policy.DefaultDenyEgress = true
+			policy.Egress = []realm.NetworkPolicyEgressRule{rule}
+		default:
+			return fmt.Errorf("--direction must be ingress or egress")
 		}
-		if *allowAny {
-			rule.FromFleet = ""
-			rule.FromCIDR = ""
-		}
-		stored, err := client.CreatePolicy(realm.NetworkPolicy{
-			Name: name, Fleet: strings.TrimSpace(*fleetName),
-			DefaultDeny: true, Ingress: []realm.NetworkPolicyRule{rule},
-		})
+		stored, err := client.CreatePolicy(policy)
 		if err != nil {
 			return err
 		}
-		ansi.OK(fmt.Sprintf("Network Policy %s protects Fleet %s with default deny", stored.Name, stored.Fleet))
+		ansi.OK(fmt.Sprintf("Network Policy %s protects Fleet %s", stored.Name, stored.Fleet))
 		return nil
 	case "status":
 		if len(args) != 2 {
@@ -1887,7 +1956,7 @@ Usage:
   titanus route status NAME
   titanus route delete NAME
 
-  titanus policy create NAME --fleet FLEET [--from-fleet FLEET|--from-cidr CIDR|--allow-any]
+  titanus policy create NAME --fleet FLEET --direction ingress|egress [selectors]
   titanus policy list
   titanus policy status NAME
   titanus policy delete NAME

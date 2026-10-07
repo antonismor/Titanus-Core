@@ -149,3 +149,46 @@ func TestHealthySourceFleetWithoutReadyAssignmentsFailsClosed(t *testing.T) {
 		t.Fatalf("unhealthy source must not be permitted: %#v", policies[0].Rules)
 	}
 }
+
+func TestPoliciesFromStateProjectsEgressFleetAndCIDR(t *testing.T) {
+	state := realm.State{
+		Nodes: map[string]realm.Node{
+			"api": {ID: "api", State: realm.NodeReady},
+			"db":  {ID: "db", State: realm.NodeReady},
+		},
+		Policies: map[string]realm.NetworkPolicy{
+			"api-egress": {
+				Name: "api-egress", Fleet: "api", DefaultDenyEgress: true,
+				Egress: []realm.NetworkPolicyEgressRule{{
+					ToFleet: "db", ToCIDR: "192.0.2.0/24",
+					Protocol: "tcp", Ports: []int{5432},
+				}},
+			},
+		},
+		Assignments: map[string]realm.Assignment{
+			"api-1": {ID: "api-1", Fleet: "api", NodeID: "api", State: realm.AssignmentActive, NetworkAddress: "10.240.1.10"},
+			"db-1":  {ID: "db-1", Fleet: "db", NodeID: "db", State: realm.AssignmentActive, NetworkAddress: "10.240.2.10"},
+		},
+	}
+	policies := policiesFromState(state)
+	if len(policies) != 1 {
+		t.Fatalf("expected one policy, got %#v", policies)
+	}
+	policy := policies[0]
+	if !policy.DefaultDenyEgress || len(policy.Sources) != 1 || policy.Sources[0] != "10.240.1.10" {
+		t.Fatalf("unexpected protected egress sources: %#v", policy)
+	}
+	if len(policy.Egress) != 1 {
+		t.Fatalf("unexpected egress rules: %#v", policy.Egress)
+	}
+	rule := policy.Egress[0]
+	if rule.AnyDestination {
+		t.Fatal("Fleet/CIDR egress rule must not become any-destination")
+	}
+	if len(rule.Destinations) != 2 ||
+		(rule.Destinations[0] != "10.240.2.10/32" && rule.Destinations[1] != "10.240.2.10/32") ||
+		(rule.Destinations[0] != "192.0.2.0/24" && rule.Destinations[1] != "192.0.2.0/24") {
+		t.Fatalf("unexpected egress destinations: %#v", rule.Destinations)
+	}
+}
+

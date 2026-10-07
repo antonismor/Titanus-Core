@@ -69,11 +69,21 @@ type PolicyRule struct {
 	Ports     []int    `json:"ports,omitempty"`
 }
 
+type EgressRule struct {
+	Destinations  []string `json:"destinations,omitempty"`
+	AnyDestination bool     `json:"any_destination,omitempty"`
+	Protocol       string   `json:"protocol"`
+	Ports          []int    `json:"ports,omitempty"`
+}
+
 type Policy struct {
-	Name         string       `json:"name"`
-	Destinations []string     `json:"destinations,omitempty"`
-	DefaultDeny  bool         `json:"default_deny"`
-	Rules        []PolicyRule `json:"rules,omitempty"`
+	Name              string       `json:"name"`
+	Destinations      []string     `json:"destinations,omitempty"`
+	Sources           []string     `json:"sources,omitempty"`
+	DefaultDeny       bool         `json:"default_deny"`
+	DefaultDenyEgress bool         `json:"default_deny_egress,omitempty"`
+	Rules             []PolicyRule `json:"rules,omitempty"`
+	Egress            []EgressRule `json:"egress,omitempty"`
 }
 
 type state struct {
@@ -588,75 +598,136 @@ func normalizePolicies(policies []Policy) ([]Policy, error) {
 		if policy.Name == "" {
 			return nil, fmt.Errorf("Fabric Policy name is required")
 		}
-		destSeen := map[string]bool{}
-		destinations := make([]string, 0, len(policy.Destinations))
-		for _, value := range policy.Destinations {
-			ip := net.ParseIP(strings.TrimSpace(value))
-			if ip == nil || ip.To4() == nil {
-				return nil, fmt.Errorf("Fabric Policy %s has invalid destination %q", policy.Name, value)
-			}
-			text := ip.To4().String()
-			if !destSeen[text] {
-				destSeen[text] = true
-				destinations = append(destinations, text)
-			}
-		}
-		sort.Strings(destinations)
-		policy.Destinations = destinations
 
-		rules := make([]PolicyRule, 0, len(policy.Rules))
+		var err error
+		policy.Destinations, err = normalizePolicyAddresses(policy.Name, "destination", policy.Destinations)
+		if err != nil {
+			return nil, err
+		}
+		policy.Sources, err = normalizePolicyAddresses(policy.Name, "source", policy.Sources)
+		if err != nil {
+			return nil, err
+		}
+
+		ingress := make([]PolicyRule, 0, len(policy.Rules))
 		for index, rule := range policy.Rules {
-			rule.Protocol = strings.ToLower(strings.TrimSpace(rule.Protocol))
-			if rule.Protocol == "" {
-				rule.Protocol = "tcp"
-			}
-			if rule.Protocol != "tcp" && rule.Protocol != "udp" && rule.Protocol != "any" {
-				return nil, fmt.Errorf("Fabric Policy %s rule %d has unsupported protocol %q", policy.Name, index+1, rule.Protocol)
+			rule.Protocol, err = normalizePolicyProtocol(policy.Name, "ingress", index, rule.Protocol)
+			if err != nil {
+				return nil, err
 			}
 			if rule.AnySource && len(rule.Sources) > 0 {
-				return nil, fmt.Errorf("Fabric Policy %s rule %d mixes any-source with source CIDRs", policy.Name, index+1)
+				return nil, fmt.Errorf("Fabric Policy %s ingress rule %d mixes any-source with source CIDRs", policy.Name, index+1)
 			}
-			sourceSeen := map[string]bool{}
-			sources := make([]string, 0, len(rule.Sources))
-			for _, value := range rule.Sources {
-				ip, network, err := net.ParseCIDR(strings.TrimSpace(value))
-				if err != nil || ip.To4() == nil {
-					return nil, fmt.Errorf("Fabric Policy %s rule %d has invalid IPv4 source %q", policy.Name, index+1, value)
-				}
-				text := network.String()
-				if !sourceSeen[text] {
-					sourceSeen[text] = true
-					sources = append(sources, text)
-				}
+			rule.Sources, err = normalizePolicyCIDRs(policy.Name, "ingress source", index, rule.Sources)
+			if err != nil {
+				return nil, err
 			}
-			sort.Strings(sources)
-			rule.Sources = sources
 			if !rule.AnySource && len(rule.Sources) == 0 {
+				ingress = append(ingress, rule)
 				continue
 			}
-			portSeen := map[int]bool{}
-			ports := make([]int, 0, len(rule.Ports))
-			for _, port := range rule.Ports {
-				if port < 1 || port > 65535 {
-					return nil, fmt.Errorf("Fabric Policy %s rule %d has invalid port %d", policy.Name, index+1, port)
-				}
-				if !portSeen[port] {
-					portSeen[port] = true
-					ports = append(ports, port)
-				}
+			rule.Ports, err = normalizePolicyPorts(policy.Name, "ingress", index, rule.Protocol, rule.Ports)
+			if err != nil {
+				return nil, err
 			}
-			sort.Ints(ports)
-			if rule.Protocol == "any" && len(ports) > 0 {
-				return nil, fmt.Errorf("Fabric Policy %s rule %d cannot combine protocol any with ports", policy.Name, index+1)
-			}
-			rule.Ports = ports
-			rules = append(rules, rule)
+			ingress = append(ingress, rule)
 		}
-		policy.Rules = rules
+		policy.Rules = ingress
+
+		egress := make([]EgressRule, 0, len(policy.Egress))
+		for index, rule := range policy.Egress {
+			rule.Protocol, err = normalizePolicyProtocol(policy.Name, "egress", index, rule.Protocol)
+			if err != nil {
+				return nil, err
+			}
+			if rule.AnyDestination && len(rule.Destinations) > 0 {
+				return nil, fmt.Errorf("Fabric Policy %s egress rule %d mixes any-destination with destination CIDRs", policy.Name, index+1)
+			}
+			rule.Destinations, err = normalizePolicyCIDRs(policy.Name, "egress destination", index, rule.Destinations)
+			if err != nil {
+				return nil, err
+			}
+			if !rule.AnyDestination && len(rule.Destinations) == 0 {
+				egress = append(egress, rule)
+				continue
+			}
+			rule.Ports, err = normalizePolicyPorts(policy.Name, "egress", index, rule.Protocol, rule.Ports)
+			if err != nil {
+				return nil, err
+			}
+			egress = append(egress, rule)
+		}
+		policy.Egress = egress
 		out = append(out, policy)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func normalizePolicyAddresses(policyName, label string, values []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil || ip.To4() == nil {
+			return nil, fmt.Errorf("Fabric Policy %s has invalid %s %q", policyName, label, value)
+		}
+		text := ip.To4().String()
+		if !seen[text] {
+			seen[text] = true
+			out = append(out, text)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func normalizePolicyCIDRs(policyName, label string, index int, values []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		ip, network, err := net.ParseCIDR(strings.TrimSpace(value))
+		if err != nil || ip.To4() == nil {
+			return nil, fmt.Errorf("Fabric Policy %s %s rule %d has invalid IPv4 CIDR %q", policyName, label, index+1, value)
+		}
+		text := network.String()
+		if !seen[text] {
+			seen[text] = true
+			out = append(out, text)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func normalizePolicyProtocol(policyName, direction string, index int, protocol string) (string, error) {
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	if protocol != "tcp" && protocol != "udp" && protocol != "any" {
+		return "", fmt.Errorf("Fabric Policy %s %s rule %d has unsupported protocol %q", policyName, direction, index+1, protocol)
+	}
+	return protocol, nil
+}
+
+func normalizePolicyPorts(policyName, direction string, index int, protocol string, values []int) ([]int, error) {
+	seen := map[int]bool{}
+	ports := make([]int, 0, len(values))
+	for _, port := range values {
+		if port < 1 || port > 65535 {
+			return nil, fmt.Errorf("Fabric Policy %s %s rule %d has invalid port %d", policyName, direction, index+1, port)
+		}
+		if !seen[port] {
+			seen[port] = true
+			ports = append(ports, port)
+		}
+	}
+	sort.Ints(ports)
+	if protocol == "any" && len(ports) > 0 {
+		return nil, fmt.Errorf("Fabric Policy %s %s rule %d cannot combine protocol any with ports", policyName, direction, index+1)
+	}
+	return ports, nil
 }
 
 func normalizeServices(network *net.IPNet, services []Service) ([]Service, error) {
@@ -874,58 +945,130 @@ func renderFilterRules(policies []Policy) string {
 	return b.String()
 }
 
+type ingressPolicyBucket struct {
+	Rules       []PolicyRule
+	DefaultDeny bool
+}
+
+type egressPolicyBucket struct {
+	Rules       []EgressRule
+	DefaultDeny bool
+}
+
 func writePolicyTable(b *strings.Builder, family, table string, policies []Policy) {
+	ingress := map[string]*ingressPolicyBucket{}
+	egress := map[string]*egressPolicyBucket{}
+	for _, policy := range policies {
+		for _, destination := range policy.Destinations {
+			bucket := ingress[destination]
+			if bucket == nil {
+				bucket = &ingressPolicyBucket{}
+				ingress[destination] = bucket
+			}
+			bucket.Rules = append(bucket.Rules, policy.Rules...)
+			bucket.DefaultDeny = bucket.DefaultDeny || policy.DefaultDeny
+		}
+		for _, source := range policy.Sources {
+			bucket := egress[source]
+			if bucket == nil {
+				bucket = &egressPolicyBucket{}
+				egress[source] = bucket
+			}
+			bucket.Rules = append(bucket.Rules, policy.Egress...)
+			bucket.DefaultDeny = bucket.DefaultDeny || policy.DefaultDenyEgress
+		}
+	}
+
+	ingressAddresses := make([]string, 0, len(ingress))
+	for address := range ingress {
+		ingressAddresses = append(ingressAddresses, address)
+	}
+	sort.Strings(ingressAddresses)
+	egressAddresses := make([]string, 0, len(egress))
+	for address := range egress {
+		egressAddresses = append(egressAddresses, address)
+	}
+	sort.Strings(egressAddresses)
+
 	fmt.Fprintf(b, "table %s %s {\n", family, table)
 	b.WriteString(" chain forward { type filter hook forward priority 0; policy accept;\n")
 	b.WriteString("  ct state established,related accept comment \"Titanus policy established\"\n")
-	for _, policy := range policies {
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(policy.Name))
-		comment := fmt.Sprintf("Titanus:policy:%08x", h.Sum32())
-		for _, destination := range policy.Destinations {
-			for _, rule := range policy.Rules {
-				if rule.AnySource {
-					writePolicyAccept(b, "", destination, rule, comment)
-					continue
-				}
-				for _, source := range rule.Sources {
-					writePolicyAccept(b, source, destination, rule, comment)
-				}
-			}
-		}
+	for _, destination := range ingressAddresses {
+		fmt.Fprintf(b, "  ip daddr %s jump %s\n", destination, policyChainName("i", destination))
 	}
-	dropped := map[string]bool{}
-	for _, policy := range policies {
-		if !policy.DefaultDeny {
-			continue
-		}
-		for _, destination := range policy.Destinations {
-			if dropped[destination] {
-				continue
-			}
-			dropped[destination] = true
-			fmt.Fprintf(b, "  ip daddr %s drop comment \"Titanus policy default deny\"\n", destination)
-		}
+	for _, source := range egressAddresses {
+		fmt.Fprintf(b, "  ip saddr %s jump %s\n", source, policyChainName("e", source))
 	}
 	b.WriteString(" }\n")
+
+	for _, destination := range ingressAddresses {
+		bucket := ingress[destination]
+		fmt.Fprintf(b, " chain %s {\n", policyChainName("i", destination))
+		for _, rule := range bucket.Rules {
+			writeIngressPolicyRule(b, rule)
+		}
+		if bucket.DefaultDeny {
+			b.WriteString("  drop comment \"Titanus ingress default deny\"\n")
+		}
+		b.WriteString(" }\n")
+	}
+	for _, source := range egressAddresses {
+		bucket := egress[source]
+		fmt.Fprintf(b, " chain %s {\n", policyChainName("e", source))
+		for _, rule := range bucket.Rules {
+			writeEgressPolicyRule(b, rule)
+		}
+		if bucket.DefaultDeny {
+			b.WriteString("  drop comment \"Titanus egress default deny\"\n")
+		}
+		b.WriteString(" }\n")
+	}
 	b.WriteString("}\n")
 }
 
-func writePolicyAccept(b *strings.Builder, source, destination string, rule PolicyRule, comment string) {
+func policyChainName(direction, address string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(direction + ":" + address))
+	return fmt.Sprintf("ti_%s_%08x", direction, h.Sum32())
+}
+
+func writeIngressPolicyRule(b *strings.Builder, rule PolicyRule) {
+	if rule.AnySource {
+		writePolicyReturn(b, "", "", rule.Protocol, rule.Ports, "Titanus ingress allow")
+		return
+	}
+	for _, source := range rule.Sources {
+		writePolicyReturn(b, source, "", rule.Protocol, rule.Ports, "Titanus ingress allow")
+	}
+}
+
+func writeEgressPolicyRule(b *strings.Builder, rule EgressRule) {
+	if rule.AnyDestination {
+		writePolicyReturn(b, "", "", rule.Protocol, rule.Ports, "Titanus egress allow")
+		return
+	}
+	for _, destination := range rule.Destinations {
+		writePolicyReturn(b, "", destination, rule.Protocol, rule.Ports, "Titanus egress allow")
+	}
+}
+
+func writePolicyReturn(b *strings.Builder, source, destination, protocol string, ports []int, comment string) {
 	b.WriteString("  ")
 	if source != "" {
 		fmt.Fprintf(b, "ip saddr %s ", source)
 	}
-	fmt.Fprintf(b, "ip daddr %s ", destination)
-	switch rule.Protocol {
+	if destination != "" {
+		fmt.Fprintf(b, "ip daddr %s ", destination)
+	}
+	switch protocol {
 	case "tcp", "udp":
-		if len(rule.Ports) == 0 {
-			fmt.Fprintf(b, "ip protocol %s ", rule.Protocol)
-		} else if len(rule.Ports) == 1 {
-			fmt.Fprintf(b, "%s dport %d ", rule.Protocol, rule.Ports[0])
+		if len(ports) == 0 {
+			fmt.Fprintf(b, "ip protocol %s ", protocol)
+		} else if len(ports) == 1 {
+			fmt.Fprintf(b, "%s dport %d ", protocol, ports[0])
 		} else {
-			fmt.Fprintf(b, "%s dport { ", rule.Protocol)
-			for i, port := range rule.Ports {
+			fmt.Fprintf(b, "%s dport { ", protocol)
+			for i, port := range ports {
 				if i > 0 {
 					b.WriteString(", ")
 				}
@@ -934,7 +1077,7 @@ func writePolicyAccept(b *strings.Builder, source, destination string, rule Poli
 			b.WriteString(" } ")
 		}
 	}
-	fmt.Fprintf(b, "accept comment \"%s\"\n", comment)
+	fmt.Fprintf(b, "return comment \"%s\"\n", comment)
 }
 
 func sortedActive(st state) []Allocation {
