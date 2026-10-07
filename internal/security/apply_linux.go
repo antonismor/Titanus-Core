@@ -207,11 +207,22 @@ func restrictedSyscalls() []uintptr {
 		syscall.SYS_DELETE_MODULE,
 		syscall.SYS_KEXEC_LOAD,
 		syscall.SYS_PERF_EVENT_OPEN,
-		syscall.SYS_SETNS,
+		setnsSyscallNumber(),
 		syscall.SYS_UNSHARE,
 		syscall.SYS_PIVOT_ROOT,
 		syscall.SYS_ACCT,
 		syscall.SYS_SYSLOG,
+	}
+}
+
+func setnsSyscallNumber() uintptr {
+	switch runtime.GOARCH {
+	case "amd64":
+		return 308
+	case "arm64":
+		return 268
+	default:
+		return ^uintptr(0)
 	}
 }
 
