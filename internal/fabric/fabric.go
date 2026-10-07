@@ -409,6 +409,10 @@ func sortedActive(st state) []Allocation {
 	return items
 }
 
+func ValidatePorts(ports []Port) error {
+	return validatePorts(ports)
+}
+
 func validatePorts(ports []Port) error {
 	seen := map[string]bool{}
 	for _, port := range ports {
