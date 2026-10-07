@@ -125,25 +125,41 @@ func (m *Manager) ConfigureMesh(localVTEP string, vxlanID int, peers []Peer) (Co
 	if cfg.MTU == 0 {
 		cfg.MTU = 1450
 	}
+
+	oldPeers := append([]Peer(nil), cfg.Peers...)
+	previousInterface := cfg.VXLANInterface
+	previousID := cfg.VXLANID
+	previousVTEP := cfg.VTEP
+
 	cfg.Mode = "realm"
 	cfg.VXLANInterface = "titanusvx"
 	cfg.VXLANID = vxlanID
 	cfg.VTEP = localVTEP
-	cfg.Peers = append([]Peer(nil), peers...)
+	cfg.Peers = normalizedPeers(peers, localVTEP)
 
 	if err := m.ensureHostFabric(cfg); err != nil {
 		return Config{}, err
 	}
-	_, _ = runOutput("ip", "link", "del", cfg.VXLANInterface)
-	args := []string{
-		"link", "add", cfg.VXLANInterface, "type", "vxlan",
-		"id", strconv.Itoa(vxlanID),
-		"local", localVTEP,
-		"dstport", "4789",
-		"nolearning",
+
+	needsCreate := previousInterface != cfg.VXLANInterface ||
+		previousID != vxlanID ||
+		previousVTEP != localVTEP
+	if _, err := runOutput("ip", "link", "show", cfg.VXLANInterface); err != nil {
+		needsCreate = true
 	}
-	if out, err := runOutput("ip", args...); err != nil {
-		return Config{}, fmt.Errorf("create Titanus VXLAN: %w: %s", err, out)
+
+	if needsCreate {
+		_, _ = runOutput("ip", "link", "del", cfg.VXLANInterface)
+		args := []string{
+			"link", "add", cfg.VXLANInterface, "type", "vxlan",
+			"id", strconv.Itoa(vxlanID),
+			"local", localVTEP,
+			"dstport", "4789",
+			"nolearning",
+		}
+		if out, err := runOutput("ip", args...); err != nil {
+			return Config{}, fmt.Errorf("create Titanus VXLAN: %w: %s", err, out)
+		}
 	}
 	if out, err := runOutput("ip", "link", "set", cfg.VXLANInterface, "mtu", strconv.Itoa(cfg.MTU)); err != nil {
 		return Config{}, fmt.Errorf("set VXLAN MTU: %w: %s", err, out)
@@ -155,16 +171,16 @@ func (m *Manager) ConfigureMesh(localVTEP string, vxlanID int, peers []Peer) (Co
 		return Config{}, fmt.Errorf("raise VXLAN interface: %w: %s", err, out)
 	}
 
-	for _, peer := range peers {
-		if peer.VTEP == "" || peer.VTEP == localVTEP {
-			continue
+	if !needsCreate {
+		for _, peer := range oldPeers {
+			if peer.CIDR != "" && !containsPeerCIDR(cfg.Peers, peer.CIDR) {
+				_, _ = runOutput("ip", "route", "del", peer.CIDR, "dev", cfg.Bridge)
+			}
 		}
-		if net.ParseIP(peer.VTEP) == nil {
-			return Config{}, fmt.Errorf("invalid peer VTEP %q", peer.VTEP)
-		}
-		if _, _, err := net.ParseCIDR(peer.CIDR); err != nil {
-			return Config{}, fmt.Errorf("invalid peer CIDR %q: %w", peer.CIDR, err)
-		}
+		_, _ = runOutput("bridge", "fdb", "flush", "dev", cfg.VXLANInterface)
+	}
+
+	for _, peer := range cfg.Peers {
 		if out, err := runOutput("bridge", "fdb", "append", "00:00:00:00:00:00", "dev", cfg.VXLANInterface, "dst", peer.VTEP); err != nil {
 			return Config{}, fmt.Errorf("add VXLAN peer %s: %w: %s", peer.NodeID, err, out)
 		}
@@ -176,6 +192,49 @@ func (m *Manager) ConfigureMesh(localVTEP string, vxlanID int, peers []Peer) (Co
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func normalizedPeers(peers []Peer, localVTEP string) []Peer {
+	out := make([]Peer, 0, len(peers))
+	seen := map[string]bool{}
+	for _, peer := range peers {
+		peer.NodeID = strings.TrimSpace(peer.NodeID)
+		peer.VTEP = strings.TrimSpace(peer.VTEP)
+		peer.CIDR = strings.TrimSpace(peer.CIDR)
+		if peer.VTEP == "" || peer.VTEP == localVTEP {
+			continue
+		}
+		if net.ParseIP(peer.VTEP) == nil {
+			continue
+		}
+		if _, network, err := net.ParseCIDR(peer.CIDR); err != nil {
+			continue
+		} else {
+			peer.CIDR = network.String()
+		}
+		key := peer.VTEP + "|" + peer.CIDR
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, peer)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NodeID == out[j].NodeID {
+			return out[i].CIDR < out[j].CIDR
+		}
+		return out[i].NodeID < out[j].NodeID
+	})
+	return out
+}
+
+func containsPeerCIDR(peers []Peer, cidr string) bool {
+	for _, peer := range peers {
+		if peer.CIDR == cidr {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) Config() (Config, error) {
