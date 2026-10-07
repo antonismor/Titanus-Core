@@ -20,6 +20,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/realmclient"
 	"github.com/antonismor/Titanus-Core/internal/reconcile"
+	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
@@ -62,7 +63,8 @@ func main() {
 	if initBinary := strings.TrimSpace(os.Getenv("TITANUS_INIT_BINARY")); initBinary != "" {
 		runtimeConfig.InitBinary = initBinary
 	}
-	controlapi.New(store, unitruntime.NewManager(runtimeConfig)).Register(mux)
+	sourceManager := source.NewManager(stateRoot)
+	controlapi.New(store, unitruntime.NewManager(runtimeConfig), sourceManager).Register(mux)
 
 	unixListener, err := unixSocket()
 	if err != nil {
@@ -103,7 +105,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Realm reconciler mTLS client: %v", err)
 		}
-		controller := &reconcile.Controller{Store: store, Nodes: client, Interval: 5 * time.Second}
+		controller := &reconcile.Controller{Store: store, Nodes: client, Sources: sourceManager, Interval: 5 * time.Second}
 		go controller.Run(ctx)
 		log.Printf("Titanus Fleet reconciler enabled")
 	}
