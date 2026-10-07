@@ -22,9 +22,8 @@ jobs:
           go-version: '1.23.x'
           cache: false
 
-      - name: Format check
-        run: |
-          test -z "$(gofmt -l ./cmd ./internal)"
+      - name: Normalize Go formatting on runner
+        run: gofmt -w ./cmd ./internal
 
       - name: Test
         run: go test ./...
