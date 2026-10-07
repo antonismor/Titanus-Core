@@ -1,0 +1,5 @@
+bin/
+*.log
+*.pid
+titanus-plan.json
+.DS_Store
