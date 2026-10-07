@@ -90,6 +90,17 @@ const (
 	AssignmentStopped  AssignmentState = "STOPPED"
 )
 
+type Route struct {
+	Name       string    `json:"name"`
+	Fleet      string    `json:"fleet"`
+	ListenIP   string    `json:"listen_ip"`
+	ListenPort int       `json:"listen_port"`
+	TargetPort int       `json:"target_port"`
+	Protocol   string    `json:"protocol"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 type Assignment struct {
 	ID         string          `json:"id"`
 	Fleet      string          `json:"fleet"`
@@ -101,6 +112,7 @@ type Assignment struct {
 	LeaseToken     string          `json:"lease_token,omitempty"`
 	LeaseExpiresAt time.Time       `json:"lease_expires_at,omitempty"`
 	StartAfter     time.Time       `json:"start_after,omitempty"`
+	NetworkAddress string          `json:"network_address,omitempty"`
 }
 
 type State struct {
@@ -110,6 +122,7 @@ type State struct {
 	Nodes       map[string]Node       `json:"nodes"`
 	Fleets      map[string]Fleet      `json:"fleets"`
 	Assignments map[string]Assignment `json:"assignments"`
+	Routes      map[string]Route      `json:"routes"`
 	UpdatedAt   time.Time             `json:"updated_at"`
 }
 
@@ -335,6 +348,84 @@ func (s *Store) PutFleet(fleet Fleet) error {
 	return s.commitLocked()
 }
 
+func (s *Store) PutRoute(route Route) (Route, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	route.Name = strings.TrimSpace(route.Name)
+	route.Fleet = strings.TrimSpace(route.Fleet)
+	route.Protocol = strings.ToLower(strings.TrimSpace(route.Protocol))
+	if route.Name == "" || route.Fleet == "" {
+		return Route{}, fmt.Errorf("Route name and Fleet are required")
+	}
+	if _, ok := s.data.Fleets[route.Fleet]; !ok {
+		return Route{}, fmt.Errorf("unknown Fleet %s", route.Fleet)
+	}
+	if route.ListenIP == "" {
+		route.ListenIP = "0.0.0.0"
+	}
+	if ip := net.ParseIP(route.ListenIP); ip == nil {
+		return Route{}, fmt.Errorf("invalid Route listen IP %q", route.ListenIP)
+	}
+	if route.Protocol == "" {
+		route.Protocol = "tcp"
+	}
+	if route.Protocol != "tcp" {
+		return Route{}, fmt.Errorf("Titanus Route v1 supports TCP only")
+	}
+	if route.ListenPort < 1 || route.ListenPort > 65535 || route.TargetPort < 1 || route.TargetPort > 65535 {
+		return Route{}, fmt.Errorf("invalid Route ports")
+	}
+	for name, existing := range s.data.Routes {
+		if name != route.Name && existing.ListenIP == route.ListenIP &&
+			existing.ListenPort == route.ListenPort && existing.Protocol == route.Protocol {
+			return Route{}, fmt.Errorf("Route %s already uses %s:%d/%s", name, route.ListenIP, route.ListenPort, route.Protocol)
+		}
+	}
+	now := time.Now().UTC()
+	if existing, ok := s.data.Routes[route.Name]; ok {
+		route.CreatedAt = existing.CreatedAt
+	} else {
+		route.CreatedAt = now
+	}
+	route.UpdatedAt = now
+	s.data.Routes[route.Name] = route
+	if err := s.commitLocked(); err != nil {
+		return Route{}, err
+	}
+	return route, nil
+}
+
+func (s *Store) DeleteRoute(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data.Routes[name]; !ok {
+		return fmt.Errorf("unknown Route %s", name)
+	}
+	delete(s.data.Routes, name)
+	return s.commitLocked()
+}
+
+func (s *Store) GetRoute(name string) (Route, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	route, ok := s.data.Routes[name]
+	return route, ok
+}
+
+func (s *Store) UpdateAssignmentRuntime(id, address string, state AssignmentState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	assignment, ok := s.data.Assignments[id]
+	if !ok {
+		return fmt.Errorf("unknown assignment %s", id)
+	}
+	assignment.NetworkAddress = address
+	assignment.State = state
+	assignment.UpdatedAt = time.Now().UTC()
+	s.data.Assignments[id] = assignment
+	return s.commitLocked()
+}
+
 func (s *Store) GetFleet(name string) (Fleet, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -426,7 +517,7 @@ func (s *Store) load(realmName string) error {
 	if errors.Is(err, os.ErrNotExist) {
 		s.data = State{
 			Name: realmName, Nodes: map[string]Node{},
-			Fleets: map[string]Fleet{}, Assignments: map[string]Assignment{},
+			Fleets: map[string]Fleet{}, Assignments: map[string]Assignment{}, Routes: map[string]Route{},
 			UpdatedAt: time.Now().UTC(),
 		}
 		return s.commitLocked()
@@ -445,6 +536,9 @@ func (s *Store) load(realmName string) error {
 	}
 	if s.data.Assignments == nil {
 		s.data.Assignments = map[string]Assignment{}
+	}
+	if s.data.Routes == nil {
+		s.data.Routes = map[string]Route{}
 	}
 	if s.data.Name == "" {
 		s.data.Name = realmName
