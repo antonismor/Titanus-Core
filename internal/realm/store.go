@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/security"
+	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 	"net"
 	"os"
 	"path/filepath"
@@ -60,16 +61,17 @@ type Node struct {
 }
 
 type UnitTemplate struct {
-	Source      string          `json:"source"`
-	Command     []string        `json:"command"`
-	Environment []string        `json:"environment,omitempty"`
-	MemoryBytes int64           `json:"memory_bytes"`
-	CPUPercent  int             `json:"cpu_percent"`
-	PidsMax     int             `json:"pids_max"`
-	Fabric      bool            `json:"fabric"`
-	Ports       []fabric.Port   `json:"ports,omitempty"`
-	Mounts      []disk.Mount    `json:"mounts,omitempty"`
-	Security    security.Policy `json:"security"`
+	Health      unitruntime.Health `json:"health"`
+	Source      string             `json:"source"`
+	Command     []string           `json:"command"`
+	Environment []string           `json:"environment,omitempty"`
+	MemoryBytes int64              `json:"memory_bytes"`
+	CPUPercent  int                `json:"cpu_percent"`
+	PidsMax     int                `json:"pids_max"`
+	Fabric      bool               `json:"fabric"`
+	Ports       []fabric.Port      `json:"ports,omitempty"`
+	Mounts      []disk.Mount       `json:"mounts,omitempty"`
+	Security    security.Policy    `json:"security"`
 }
 
 type Fleet struct {
@@ -446,6 +448,10 @@ func (s *Store) PutFleet(fleet Fleet) error {
 	}
 	if len(fleet.Template.Command) == 0 || strings.TrimSpace(fleet.Template.Source) == "" {
 		return fmt.Errorf("Fleet requires Source and command")
+	}
+	fleet.Template.Health.Normalize("always")
+	if err := fleet.Template.Health.Validate(); err != nil {
+		return fmt.Errorf("Fleet health: %w", err)
 	}
 	fleet.Template.Security.Normalize()
 	if err := fleet.Template.Security.Validate(); err != nil {

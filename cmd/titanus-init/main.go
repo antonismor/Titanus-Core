@@ -20,6 +20,19 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 3 && (os.Args[1] == "--probe-net" || os.Args[1] == "--probe-worker") {
+		var err error
+		if os.Args[1] == "--probe-net" {
+			err = unitruntime.EnterProbeNamespace(os.Args[2])
+		} else {
+			err = unitruntime.ProbeWorker(os.Args[2])
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "--unit-monitor" {
 		if err := unitruntime.RunMonitor(os.Args[2]); err != nil {
 			fmt.Fprintln(os.Stderr, "titanus-monitor:", err)

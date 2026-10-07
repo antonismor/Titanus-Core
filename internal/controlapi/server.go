@@ -254,7 +254,13 @@ func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		state, err := s.Runtime.Start(id)
+		var state unitruntime.State
+		var err error
+		if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleController {
+			state, err = s.Runtime.EnsureRunning(id)
+		} else {
+			state, err = s.Runtime.Start(id)
+		}
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return

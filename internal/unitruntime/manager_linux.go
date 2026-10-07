@@ -53,6 +53,15 @@ func NewManager(cfg Config) *Manager {
 }
 
 func (m *Manager) Create(spec Spec) (State, error) {
+	unlock, err := m.lock()
+	if err != nil {
+		return State{}, err
+	}
+	defer unlock()
+	return m.create(spec)
+}
+
+func (m *Manager) create(spec Spec) (State, error) {
 	spec.Normalize()
 	if err := spec.Validate(); err != nil {
 		return State{}, err
@@ -104,25 +113,41 @@ func (m *Manager) Create(spec Spec) (State, error) {
 }
 
 func (m *Manager) Ensure(spec Spec) (State, error) {
+	unlock, err := m.lock()
+	if err != nil {
+		return State{}, err
+	}
+	defer unlock()
 	spec.Normalize()
 	if err := spec.Validate(); err != nil {
 		return State{}, err
 	}
 	existingSpec, state, err := m.load(spec.ID)
 	if err == nil {
+		legacyHealth := existingSpec.Health.Restart == ""
+		if legacyHealth && spec.Health.Readiness == nil && spec.Health.Liveness == nil {
+			existingSpec.Health = spec.Health
+		}
 		existingSpec.Normalize()
 		if !reflect.DeepEqual(existingSpec, spec) {
 			return State{}, fmt.Errorf("Unit %s already exists with a different specification", spec.ID)
+		}
+		if legacyHealth {
+			if err := saveJSON(filepath.Join(m.unitDir(spec.ID), "spec.json"), existingSpec, 0600); err != nil {
+				return State{}, err
+			}
 		}
 		return state, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
 		return State{}, err
 	}
-	return m.Create(spec)
+	return m.create(spec)
 }
 
-func (m *Manager) Start(id string) (State, error) {
+func (m *Manager) Start(id string) (State, error) { return m.start(id, false) }
+
+func (m *Manager) start(id string, automatic bool) (State, error) {
 	unlock, lockErr := m.lock()
 	if lockErr != nil {
 		return State{}, lockErr
@@ -136,10 +161,17 @@ func (m *Manager) Start(id string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	if automatic && !state.DesiredRunning {
+		return state, nil
+	}
 	if state.PID > 0 && state.Process.StartTicks == 0 && m.belongsToUnit(id, state.PID) {
 		state.Process, _ = readProcessIdentity(state.PID)
 	}
 	if processMatches(state) {
+		state.DesiredRunning = true
+		if spec.Health.Readiness == nil {
+			state.Ready = true
+		}
 		if err := m.saveState(state); err != nil {
 			return State{}, err
 		}
@@ -163,6 +195,18 @@ func (m *Manager) Start(id string) (State, error) {
 		return m.fail(state, err)
 	}
 
+	state.DesiredRunning = true
+	state.HealthFailed = false
+	if automatic {
+		state.RestartCount++
+	} else {
+		state.RestartCount = 0
+	}
+	state.NextStartAt = time.Time{}
+	state.Ready = spec.Health.Readiness == nil
+	state.Live = true
+	state.Readiness = ProbeResult{}
+	state.Liveness = ProbeResult{}
 	var token [24]byte
 	if _, err := rand.Read(token[:]); err != nil {
 		return State{}, err
@@ -339,6 +383,10 @@ func awaitStartup(file *os.File, timeout time.Duration) error {
 }
 
 func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
+	return m.stop(id, timeout, false, "")
+}
+
+func (m *Manager) stop(id string, timeout time.Duration, forHealth bool, expectedRun string) (State, error) {
 	unlock, lockErr := m.lock()
 	if lockErr != nil {
 		return State{}, lockErr
@@ -347,6 +395,9 @@ func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
 	_, state, err := m.load(id)
 	if err != nil {
 		return State{}, err
+	}
+	if expectedRun != "" && state.RunID != expectedRun {
+		return state, nil
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -388,7 +439,17 @@ func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
 	state.PID = 0
 	state.Status = StatusStopped
 	state.StoppedAt = time.Now().UTC()
-	state.LastError = ""
+	state.HealthFailed = forHealth
+	state.DesiredRunning = forHealth
+	state.Ready = false
+	state.Live = !forHealth
+	if forHealth {
+		state.Status = StatusFailed
+		state.LastError = "liveness probe failed"
+	} else {
+		state.LastError = ""
+	}
+	state.NextStartAt = time.Time{}
 	if err := m.saveState(state); err != nil {
 		return State{}, err
 	}
@@ -434,6 +495,8 @@ func (m *Manager) Inspect(id string) (Spec, State, error) {
 			state.LastError = "Unit process is no longer running or its identity changed"
 			m.applyExitRecord(&state)
 			state.PID = 0
+			state.Ready = false
+			state.Live = false
 			if spec.Network.Fabric {
 				_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
 			}
@@ -444,6 +507,21 @@ func (m *Manager) Inspect(id string) (Spec, State, error) {
 		}
 	}
 	if state.PID == 0 && m.applyExitRecord(&state) {
+		if err := m.saveState(state); err != nil {
+			return Spec{}, State{}, err
+		}
+	}
+	if state.Status == StatusActive && spec.Health.Readiness == nil {
+		state.Ready = true
+	}
+	if state.Status == StatusActive && state.RestartCount > 0 && time.Since(state.StartedAt) > 10*time.Minute {
+		state.RestartCount = 0
+		if err := m.saveState(state); err != nil {
+			return Spec{}, State{}, err
+		}
+	}
+	if state.Status == StatusActive && !state.DesiredRunning {
+		state.DesiredRunning = true
 		if err := m.saveState(state); err != nil {
 			return Spec{}, State{}, err
 		}
@@ -681,6 +759,8 @@ func (m *Manager) cleanupAfterStop(id string) {
 
 func (m *Manager) fail(state State, cause error) (State, error) {
 	state.Status = StatusFailed
+	state.Ready = false
+	state.Live = false
 	state.PID = 0
 	state.LastError = cause.Error()
 	if err := m.saveState(state); err != nil {
