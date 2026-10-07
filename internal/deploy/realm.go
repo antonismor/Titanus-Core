@@ -342,9 +342,13 @@ func agentEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts R
 		caps = append(caps, string(capability))
 	}
 	sort.Strings(caps)
+	fabricAddress := node.FabricIP
+	if fabricAddress == "" {
+		fabricAddress = node.ManagementIP
+	}
 	return fmt.Sprintf(
-		"TITANUS_NODE_ID=%s\nTITANUS_NODE_ADDRESS=%s\nTITANUS_CONTROLLER=https://%s:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\nTITANUS_CAPABILITIES=%s\n",
-		node.Name, node.ManagementIP, primary.ManagementIP, opts.ClusterPort, strings.Join(caps, ","),
+		"TITANUS_NODE_ID=%s\nTITANUS_NODE_ADDRESS=%s\nTITANUS_NODE_FABRIC_ADDRESS=%s\nTITANUS_CONTROLLER=https://%s:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\nTITANUS_CAPABILITIES=%s\n",
+		node.Name, node.ManagementIP, fabricAddress, primary.ManagementIP, opts.ClusterPort, strings.Join(caps, ","),
 	)
 }
 
