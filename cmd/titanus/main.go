@@ -855,7 +855,7 @@ func interactiveFleetCreate(reader *bufio.Reader) error {
 
 func runFleet(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: titanus fleet <create|list|status|scale|delete>")
+		return fmt.Errorf("usage: titanus fleet <create|apply|rollback|list|status|scale|delete>")
 	}
 	client := localclient.New("/run/titanus/titanus.sock")
 	switch args[0] {
@@ -882,7 +882,8 @@ func runFleet(args []string) error {
 		fs := flag.NewFlagSet("fleet create", flag.ContinueOnError)
 		sourceName := fs.String("source", "", "Titanus Source")
 		instances := fs.Int("instances", 1, "desired Unit count")
-		minAvailable := fs.Int("minimum", 1, "minimum desired availability")
+		maxSurge := fs.Int("max-surge",1,"maximum extra Units during rollout")
+ minAvailable := fs.Int("minimum", 1, "minimum desired availability")
 		memory := fs.String("memory", "512M", "memory per Unit")
 		cpu := fs.Int("cpu", 100, "CPU percentage per Unit")
 		pids := fs.Int("pids", 256, "maximum processes per Unit")
@@ -941,7 +942,7 @@ func runFleet(args []string) error {
 			}
 		}
 		fleet := realm.Fleet{
-			Name: name, Instances: *instances, MinimumAvailable: *minAvailable,
+			MaxSurge:*maxSurge, Name: name, Instances: *instances, MinimumAvailable: *minAvailable,
 			RequiredLabels: labels, SpreadLabel: strings.TrimSpace(*spread),
 			Template: realm.UnitTemplate{
 				Source: *sourceName, Command: fs.Args(),
@@ -982,6 +983,20 @@ func runFleet(args []string) error {
 		data, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Println(string(data))
 		return nil
+
+case "apply":
+ if len(args)!=2{return fmt.Errorf("usage: titanus fleet apply FLEET.json")}
+ data,err:=os.ReadFile(args[1]);if err!=nil{return err}
+ var fleet realm.Fleet
+ if err:=json.Unmarshal(data,&fleet);err!=nil{return err}
+ result,err:=client.CreateFleet(fleet);if err!=nil{return err}
+ data,_=json.MarshalIndent(result,"","  ");fmt.Println(string(data));return nil
+case "rollback":
+ if len(args)<2 || len(args)>3{return fmt.Errorf("usage: titanus fleet rollback NAME [GENERATION]")}
+ var generation uint64
+ if len(args)==3{var err error;generation,err=strconv.ParseUint(args[2],10,64);if err!=nil{return err}}
+ fleet,err:=client.RollbackFleet(args[1],generation);if err!=nil{return err}
+ data,_:=json.MarshalIndent(fleet,"","  ");fmt.Println(string(data));return nil
 
 	case "scale":
 		if len(args) != 3 {

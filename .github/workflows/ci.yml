@@ -85,6 +85,7 @@ jobs:
           ln -s busybox /tmp/titanus-rootfs/bin/sleep
           CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/security-probe ./internal/security/testprobe
           CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/health-app ./internal/unitruntime/testapp
+          CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/rollout-app ./internal/unitruntime/rolloutapp
 
       - name: Exercise native Unit runtime
         run: |
@@ -174,6 +175,9 @@ jobs:
 
       - name: Exercise health checks and restart policy
         run: sudo env "PATH=$PATH" bash scripts/ci-runtime-health.sh
+
+      - name: Exercise native rolling updates and rollback
+        run: sudo env "PATH=$PATH" TITANUS_NATIVE_ROLLOUT_TEST=1 TITANUS_INIT_BINARY="$PWD/bin/titanus-init" go test ./internal/reconcile -run TestNativeRollingRuntime -v -timeout 180s
 
       - name: Runtime diagnostics on failure
         if: failure()

@@ -105,6 +105,12 @@ func (c *Client) ScaleFleet(name string, instances int) (realm.Fleet, error) {
 	return fleet, err
 }
 
+func(c *Client) RollbackFleet(name string,g uint64)(realm.Fleet,error) {
+ var f realm.Fleet
+ err:=c.do(http.MethodPost,"/v1/realm/fleets/"+url.PathEscape(name)+"/rollback",map[string]uint64{"generation":g},&f)
+ return f,err
+}
+
 func (c *Client) DeleteFleet(name string) error {
 	return c.do(http.MethodDelete, "/v1/realm/fleets/"+url.PathEscape(name), nil, nil)
 }

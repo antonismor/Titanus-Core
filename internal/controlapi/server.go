@@ -301,6 +301,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
 		for name, fleet := range state.Fleets {
 			fleet.Template.Environment = nil
+ for i:=range fleet.History {fleet.History[i].Template.Environment=nil}
 			state.Fleets[name] = fleet
 		}
 		for id, assignment := range state.Assignments {
@@ -497,7 +498,7 @@ func (s *Server) fleetObject(w http.ResponseWriter, r *http.Request) {
 				assignments = append(assignments, assignment)
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"fleet": fleet, "assignments": assignments})
+		writeJSON(w, http.StatusOK, map[string]any{"fleet": fleet, "assignments": assignments,"rollout":realm.NewPlacementEngine().Rolling(state,fleet,time.Now().UTC())})
 	case r.Method == http.MethodPost && action == "scale":
 		var req ScaleFleetRequest
 		if err := decodeJSON(r, &req); err != nil {
@@ -510,8 +511,14 @@ func (s *Server) fleetObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, fleet)
-	case r.Method == http.MethodDelete && action == "":
-		if err := s.Store.DeleteFleet(name); err != nil {
+	case r.Method==http.MethodPost && action=="rollback":
+ var req struct {Generation uint64 `json:"generation"`}
+ if err:=decodeJSON(r,&req);err!=nil{writeError(w,http.StatusBadRequest,err);return}
+ fleet,err:=s.Store.RollbackFleet(name,req.Generation)
+ if err!=nil{writeError(w,http.StatusConflict,err);return}
+ writeJSON(w,http.StatusOK,fleet)
+ case r.Method == http.MethodDelete && action == "":
+ if err := s.Store.DeleteFleet(name); err != nil {
 			writeError(w, http.StatusNotFound, err)
 			return
 		}
@@ -542,15 +549,8 @@ func (s *Server) fleets(w http.ResponseWriter, r *http.Request) {
 		}
 		state := s.Store.Snapshot()
 		fleet = state.Fleets[fleet.Name]
-		assignments, err := realm.NewPlacementEngine().Plan(state, fleet)
-		if err != nil {
-			writeError(w, http.StatusConflict, err)
-			return
-		}
-		if err := s.Store.SetAssignments(fleet.Name, assignments); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
+ assignments:=make([]realm.Assignment,0)
+ for _,a:=range state.Assignments {if a.Fleet==fleet.Name{assignments=append(assignments,a)}}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"fleet": fleet, "assignments": assignments, "revision": s.Store.Snapshot().Revision,
 		})

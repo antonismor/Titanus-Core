@@ -50,6 +50,7 @@ func TestAPIRolesAndNodeIdentityScoping(t *testing.T) {
 			{"GET", "/v1/realm/state", "", true},
 			{"GET", "/v1/realm/fleets", "", role != identity.RoleNode},
 			{"POST", "/v1/realm/fleets", "{}", role == identity.RoleAdmin},
+ {"POST", "/v1/realm/fleets/web/rollback", "{}", role == identity.RoleAdmin},
 			{"POST", "/v1/realm/pulse", `{"node_id":"other"}`, role == identity.RoleAdmin},
 			{"POST", "/v1/realm/nodes", `{"id":"worker","capabilities":["CONTROL"],"address":"127.0.0.1"}`, role != identity.RoleNode},
 		} {
