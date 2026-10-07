@@ -192,7 +192,8 @@ func unitSpec(fleet realm.Fleet, assignment realm.Assignment) unitruntime.Spec {
 			Fabric: fleet.Template.Fabric,
 			Ports:  append([]fabric.Port(nil), fleet.Template.Ports...),
 		},
-		Mounts: append([]disk.Mount(nil), fleet.Template.Mounts...),
+		Mounts:   append([]disk.Mount(nil), fleet.Template.Mounts...),
+		Security: fleet.Template.Security,
 	}
 }
 
