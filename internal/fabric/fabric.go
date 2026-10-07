@@ -852,7 +852,8 @@ func (m *Manager) reconcileFilter() error {
 	if err != nil {
 		return err
 	}
-	_, _ = runOutput("nft", "delete", "table", "ip", "titanus_filter")
+	_, _ = runOutput("nft", "delete", "table", "ip", "titanus_filter_ip")
+	_, _ = runOutput("nft", "delete", "table", "bridge", "titanus_filter_bridge")
 	if len(policies) == 0 {
 		return nil
 	}
@@ -868,7 +869,13 @@ func (m *Manager) reconcileFilter() error {
 
 func renderFilterRules(policies []Policy) string {
 	var b strings.Builder
-	b.WriteString("table ip titanus_filter {\n")
+	writePolicyTable(&b, "bridge", "titanus_filter_bridge", policies)
+	writePolicyTable(&b, "ip", "titanus_filter_ip", policies)
+	return b.String()
+}
+
+func writePolicyTable(b *strings.Builder, family, table string, policies []Policy) {
+	fmt.Fprintf(b, "table %s %s {\n", family, table)
 	b.WriteString(" chain forward { type filter hook forward priority 0; policy accept;\n")
 	b.WriteString("  ct state established,related accept comment \"Titanus policy established\"\n")
 	for _, policy := range policies {
@@ -878,11 +885,11 @@ func renderFilterRules(policies []Policy) string {
 		for _, destination := range policy.Destinations {
 			for _, rule := range policy.Rules {
 				if rule.AnySource {
-					writePolicyAccept(&b, "", destination, rule, comment)
+					writePolicyAccept(b, "", destination, rule, comment)
 					continue
 				}
 				for _, source := range rule.Sources {
-					writePolicyAccept(&b, source, destination, rule, comment)
+					writePolicyAccept(b, source, destination, rule, comment)
 				}
 			}
 		}
@@ -897,12 +904,11 @@ func renderFilterRules(policies []Policy) string {
 				continue
 			}
 			dropped[destination] = true
-			fmt.Fprintf(&b, "  ip daddr %s drop comment \"Titanus policy default deny\"\n", destination)
+			fmt.Fprintf(b, "  ip daddr %s drop comment \"Titanus policy default deny\"\n", destination)
 		}
 	}
 	b.WriteString(" }\n")
 	b.WriteString("}\n")
-	return b.String()
 }
 
 func writePolicyAccept(b *strings.Builder, source, destination string, rule PolicyRule, comment string) {
