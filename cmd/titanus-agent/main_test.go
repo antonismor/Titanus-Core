@@ -48,3 +48,104 @@ func TestServicesFromStateSkipsLegacyRouteWithoutServiceIP(t *testing.T) {
 		t.Fatalf("expected no service for legacy Route, got %#v", services)
 	}
 }
+
+
+func TestPoliciesFromStateProtectsImpairedDestinationAndAllowsHealthySource(t *testing.T) {
+	state := realm.State{
+		Nodes: map[string]realm.Node{
+			"api-ready": {ID: "api-ready", State: realm.NodeReady},
+			"api-bad":   {ID: "api-bad", State: realm.NodeUnreachable},
+			"web-bad":   {ID: "web-bad", State: realm.NodeUnreachable},
+		},
+		Policies: map[string]realm.NetworkPolicy{
+			"web-ingress": {
+				Name: "web-ingress", Fleet: "web", DefaultDeny: true,
+				Ingress: []realm.NetworkPolicyRule{{
+					FromFleet: "api", FromCIDR: "192.0.2.0/24",
+					Protocol: "tcp", Ports: []int{443},
+				}},
+			},
+		},
+		Assignments: map[string]realm.Assignment{
+			"web": {
+				ID: "web", Fleet: "web", NodeID: "web-bad",
+				State: realm.AssignmentImpaired, NetworkAddress: "10.240.2.10",
+			},
+			"api-good": {
+				ID: "api-good", Fleet: "api", NodeID: "api-ready",
+				State: realm.AssignmentActive, NetworkAddress: "10.240.1.10",
+			},
+			"api-bad": {
+				ID: "api-bad", Fleet: "api", NodeID: "api-bad",
+				State: realm.AssignmentActive, NetworkAddress: "10.240.3.10",
+			},
+		},
+	}
+
+	policies := policiesFromState(state)
+	if len(policies) != 1 {
+		t.Fatalf("expected one policy, got %#v", policies)
+	}
+	policy := policies[0]
+	if len(policy.Destinations) != 1 || policy.Destinations[0] != "10.240.2.10" {
+		t.Fatalf("impaired destination must remain protected: %#v", policy.Destinations)
+	}
+	if len(policy.Rules) != 1 {
+		t.Fatalf("unexpected rules: %#v", policy.Rules)
+	}
+	rule := policy.Rules[0]
+	if rule.AnySource {
+		t.Fatal("Fleet/CIDR rule must not become any-source")
+	}
+	if len(rule.Sources) != 2 ||
+		(rule.Sources[0] != "10.240.1.10/32" && rule.Sources[1] != "10.240.1.10/32") ||
+		(rule.Sources[0] != "192.0.2.0/24" && rule.Sources[1] != "192.0.2.0/24") {
+		t.Fatalf("expected only healthy Fleet source plus explicit CIDR, got %#v", rule.Sources)
+	}
+}
+
+func TestPoliciesFromStateSupportsAnySourceRule(t *testing.T) {
+	state := realm.State{
+		Policies: map[string]realm.NetworkPolicy{
+			"dns": {
+				Name: "dns", Fleet: "resolver", DefaultDeny: true,
+				Ingress: []realm.NetworkPolicyRule{{Protocol: "udp", Ports: []int{53}}},
+			},
+		},
+		Assignments: map[string]realm.Assignment{
+			"dns-1": {
+				ID: "dns-1", Fleet: "resolver", State: realm.AssignmentActive,
+				NetworkAddress: "10.240.4.10",
+			},
+		},
+	}
+	policies := policiesFromState(state)
+	if len(policies) != 1 || len(policies[0].Rules) != 1 || !policies[0].Rules[0].AnySource {
+		t.Fatalf("expected any-source policy rule, got %#v", policies)
+	}
+}
+
+func TestHealthySourceFleetWithoutReadyAssignmentsFailsClosed(t *testing.T) {
+	state := realm.State{
+		Nodes: map[string]realm.Node{
+			"bad": {ID: "bad", State: realm.NodeUnreachable},
+		},
+		Policies: map[string]realm.NetworkPolicy{
+			"web": {
+				Name: "web", Fleet: "web", DefaultDeny: true,
+				Ingress: []realm.NetworkPolicyRule{{FromFleet: "api", Protocol: "tcp", Ports: []int{80}}},
+			},
+		},
+		Assignments: map[string]realm.Assignment{
+			"web": {ID: "web", Fleet: "web", State: realm.AssignmentActive, NetworkAddress: "10.240.2.10"},
+			"api": {ID: "api", Fleet: "api", NodeID: "bad", State: realm.AssignmentActive, NetworkAddress: "10.240.3.10"},
+		},
+	}
+	policies := policiesFromState(state)
+	if len(policies) != 1 || len(policies[0].Destinations) != 1 {
+		t.Fatalf("expected protected destination, got %#v", policies)
+	}
+	if len(policies[0].Rules) != 1 || len(policies[0].Rules[0].Sources) != 0 || policies[0].Rules[0].AnySource {
+		t.Fatalf("unhealthy source must not be permitted: %#v", policies[0].Rules)
+	}
+}
