@@ -83,6 +83,39 @@ func (e *SSHExecutor) DiscoverBlockDevices(node model.NodeSpec) ([]BlockDevice, 
 	return devices, nil
 }
 
+func (e *SSHExecutor) FetchFile(node model.NodeSpec, remotePath, localPath string) error {
+	timeout := e.CommandTimeout
+	if timeout < 2*time.Minute {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	connectSeconds := int(e.ConnectTimeout.Seconds())
+	if connectSeconds < 1 {
+		connectSeconds = 5
+	}
+	source := node.SSHUser + "@" + node.ManagementIP + ":" + remotePath
+	args := []string{
+		"-q",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "ConnectTimeout=" + strconv.Itoa(connectSeconds),
+		"-P", strconv.Itoa(node.SSHPort),
+		source,
+		localPath,
+	}
+	cmd := exec.CommandContext(ctx, "scp", args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("SCP download timed out after %s", timeout)
+	}
+	if err != nil {
+		return fmt.Errorf("scp %s from %s: %w: %s", remotePath, node.Name, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (e *SSHExecutor) CopyFile(node model.NodeSpec, localPath, remotePath string) error {
 	info, err := os.Stat(localPath)
 	if err != nil {
