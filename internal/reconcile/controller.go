@@ -8,6 +8,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -19,6 +20,8 @@ type NodeRuntime interface {
 	StopUnit(address, id string) (unitruntime.State, error)
 	DeleteUnit(address, id string) error
 	EnsureSource(address, name string, local *source.Manager) error
+	RenewLease(address, id, token string, ttl time.Duration) (lease.Record, error)
+	RevokeLease(address, id, token string) error
 }
 
 type Controller struct {
@@ -69,6 +72,33 @@ func (c *Controller) Once() error {
 			if !ok || node.State != realm.NodeReady {
 				continue
 			}
+			now := time.Now().UTC()
+			if !assignment.StartAfter.IsZero() && now.Before(assignment.StartAfter) {
+				continue
+			}
+
+			token := assignment.LeaseToken
+			if token == "" {
+				var err error
+				token, err = lease.NewToken()
+				if err != nil {
+					_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+					continue
+				}
+			}
+			const leaseTTL = 20 * time.Second
+			record, err := c.Nodes.RenewLease(node.Address, assignment.ID, token, leaseTTL)
+			if err != nil {
+				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+				continue
+			}
+			if err := c.Store.RenewAssignmentLease(assignment.ID, token, now.Add(leaseTTL)); err != nil {
+				_ = c.Nodes.RevokeLease(node.Address, assignment.ID, token)
+				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+				continue
+			}
+			_ = record
+
 			spec := unitSpec(fleet, assignment)
 			if err := c.Nodes.EnsureSource(node.Address, spec.Source, c.Sources); err != nil {
 				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
@@ -124,7 +154,7 @@ func assignmentsForFleet(state realm.State, name string) []realm.Assignment {
 func normalizeAssignments(items []realm.Assignment) map[string]string {
 	out := map[string]string{}
 	for _, item := range items {
-		out[item.ID] = item.NodeID + ":" + string(item.State)
+		out[item.ID] = item.NodeID + ":" + string(item.State) + ":" + item.StartAfter.UTC().Format(time.RFC3339Nano)
 	}
 	return out
 }
