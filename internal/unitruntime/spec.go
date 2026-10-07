@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 )
 
@@ -29,7 +30,8 @@ type Spec struct {
 	MemoryBytes int64       `json:"memory_bytes"`
 	CPUPercent  int         `json:"cpu_percent"`
 	PidsMax     int         `json:"pids_max"`
-	Network     NetworkSpec `json:"network"`
+	Network     NetworkSpec  `json:"network"`
+	Mounts      []disk.Mount `json:"mounts,omitempty"`
 }
 
 type Status string
@@ -94,6 +96,9 @@ func (s Spec) Validate() error {
 	}
 	if len(s.Network.Ports) > 0 && !s.Network.Fabric {
 		return fmt.Errorf("Unit %s publishes ports but Titanus Fabric is disabled", s.ID)
+	}
+	if err := disk.ValidateMounts(s.Mounts); err != nil {
+		return fmt.Errorf("Unit %s storage: %w", s.ID, err)
 	}
 	return nil
 }
