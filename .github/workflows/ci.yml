@@ -32,7 +32,7 @@ jobs:
         run: go vet ./...
 
       - name: Race checks
-        run: go test -race ./cmd/titanus-init ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile
+        run: go test -race ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile
 
       - name: Cross-build native ARM64 runtime
         run: |

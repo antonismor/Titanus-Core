@@ -260,3 +260,15 @@ License: To be decided
 ---
 
 **Titanus — one Realm, one control experience, from a single Unit to a distributed infrastructure platform.**
+
+## Runtime and API production work
+
+Native lifecycle/recovery now includes restricted PID 1 supervision, orphan
+reaping, durable exit status, pidfd identity checks and lease restoration.
+See [runtime lifecycle](docs/RUNTIME_LIFECYCLE.md).
+
+The mTLS API uses CA-signed `node`, `controller` and `admin` roles. Agents rotate
+certificate/key pairs before expiry and synchronize signed CRLs. Existing
+role-less certificates require reissuance; see
+[API identity and migration](docs/API_IDENTITY.md). The complete production
+milestones and remaining failure testing are tracked in issue #8.

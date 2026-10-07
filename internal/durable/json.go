@@ -13,6 +13,10 @@ func WriteJSON(path string, value any, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	return WriteFile(path, append(data, '\n'), mode)
+}
+
+func WriteFile(path string, data []byte, mode os.FileMode) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".state-*")
 	if err != nil {
 		return err
@@ -20,7 +24,7 @@ func WriteJSON(path string, value any, mode os.FileMode) error {
 	tmp := f.Name()
 	defer os.Remove(tmp)
 	if err = f.Chmod(mode); err == nil {
-		_, err = f.Write(append(data, '\n'))
+		_, err = f.Write(data)
 	}
 	if err == nil {
 		err = f.Sync()

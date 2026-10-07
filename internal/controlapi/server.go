@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
@@ -15,10 +16,12 @@ import (
 )
 
 type Server struct {
-	Store   *realm.Store
-	Runtime *unitruntime.Manager
-	Sources *source.Manager
-	Leases  *lease.Manager
+	Store     *realm.Store
+	Runtime   *unitruntime.Manager
+	Sources   *source.Manager
+	Leases    *lease.Manager
+	CAPath    string
+	Authority *identity.Authority
 }
 
 type PulseRequest struct {
@@ -31,20 +34,22 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/realm/state", s.state)
-	mux.HandleFunc("/v1/realm/nodes", s.nodes)
-	mux.HandleFunc("/v1/realm/pulse", s.pulse)
-	mux.HandleFunc("/v1/realm/fleets", s.fleets)
-	mux.HandleFunc("/v1/realm/fleets/", s.fleetObject)
-	mux.HandleFunc("/v1/realm/routes", s.routes)
-	mux.HandleFunc("/v1/realm/routes/", s.routeObject)
-	mux.HandleFunc("/v1/realm/policies", s.policies)
-	mux.HandleFunc("/v1/realm/policies/", s.policyObject)
-	mux.HandleFunc("/v1/node/units", s.units)
-	mux.HandleFunc("/v1/node/units/", s.unitAction)
-	mux.HandleFunc("/v1/node/sources", s.sources)
-	mux.HandleFunc("/v1/node/sources/", s.sourceObject)
-	mux.HandleFunc("/v1/node/leases/", s.leaseObject)
+	mux.HandleFunc("/v1/identity/crl", s.authorize(s.certificateRevocations))
+	mux.HandleFunc("/v1/identity/renew", s.authorize(s.certificateRenewal))
+	mux.HandleFunc("/v1/realm/state", s.authorize(s.state))
+	mux.HandleFunc("/v1/realm/nodes", s.authorize(s.nodes))
+	mux.HandleFunc("/v1/realm/pulse", s.authorize(s.pulse))
+	mux.HandleFunc("/v1/realm/fleets", s.authorize(s.fleets))
+	mux.HandleFunc("/v1/realm/fleets/", s.authorize(s.fleetObject))
+	mux.HandleFunc("/v1/realm/routes", s.authorize(s.routes))
+	mux.HandleFunc("/v1/realm/routes/", s.authorize(s.routeObject))
+	mux.HandleFunc("/v1/realm/policies", s.authorize(s.policies))
+	mux.HandleFunc("/v1/realm/policies/", s.authorize(s.policyObject))
+	mux.HandleFunc("/v1/node/units", s.authorize(s.units))
+	mux.HandleFunc("/v1/node/units/", s.authorize(s.unitAction))
+	mux.HandleFunc("/v1/node/sources", s.authorize(s.sources))
+	mux.HandleFunc("/v1/node/sources/", s.authorize(s.sourceObject))
+	mux.HandleFunc("/v1/node/leases/", s.authorize(s.leaseObject))
 }
 
 type LeaseRequest struct {
@@ -234,6 +239,21 @@ func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "start":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleController {
+			if s.Leases == nil {
+				writeError(w, http.StatusServiceUnavailable, fmt.Errorf("lease watchdog unavailable"))
+				return
+			}
+			record, exists := s.Leases.Inspect(id)
+			if !exists || !time.Now().Before(record.ExpiresAt) {
+				writeError(w, http.StatusConflict, fmt.Errorf("live lease required before controller start"))
+				return
+			}
+		}
 		state, err := s.Runtime.Start(id)
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
@@ -241,6 +261,10 @@ func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, state)
 	case "stop":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
 		state, err := s.Runtime.Stop(id, 10*time.Second)
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
@@ -267,7 +291,18 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Store.Snapshot())
+	state := s.Store.Snapshot()
+	if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
+		for name, fleet := range state.Fleets {
+			fleet.Template.Environment = nil
+			state.Fleets[name] = fleet
+		}
+		for id, assignment := range state.Assignments {
+			assignment.LeaseToken = ""
+			state.Assignments[id] = assignment
+		}
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) nodes(w http.ResponseWriter, r *http.Request) {
@@ -283,6 +318,14 @@ func (s *Server) nodes(w http.ResponseWriter, r *http.Request) {
 		if err := authorizeNode(r, node.ID); err != nil {
 			writeError(w, http.StatusForbidden, err)
 			return
+		}
+		if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
+			for _, capability := range node.Capabilities {
+				if string(capability) == "CONTROL" {
+					writeError(w, http.StatusForbidden, fmt.Errorf("Node role cannot claim CONTROL capability"))
+					return
+				}
+			}
 		}
 		if err := s.Store.UpsertNode(node); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -514,16 +557,15 @@ func authorizeNode(r *http.Request, nodeID string) error {
 	if strings.TrimSpace(nodeID) == "" {
 		return fmt.Errorf("node ID is required")
 	}
-	// Unix-socket requests are local privileged management requests.
-	if r.TLS == nil {
+	principal, ok := identity.RequestPrincipal(r)
+	if !ok {
+		return fmt.Errorf("authenticated identity required")
+	}
+	if principal.Role == identity.RoleAdmin {
 		return nil
 	}
-	if len(r.TLS.PeerCertificates) == 0 {
-		return fmt.Errorf("missing Titanus node certificate")
-	}
-	identity := r.TLS.PeerCertificates[0].Subject.CommonName
-	if identity != nodeID {
-		return fmt.Errorf("certificate identity %q cannot act as Node %q", identity, nodeID)
+	if principal.ID != nodeID {
+		return fmt.Errorf("certificate identity cannot act as another Node")
 	}
 	return nil
 }
@@ -550,4 +592,15 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+}
+
+func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := identity.RequestPrincipal(r)
+		if !ok || !identity.Allowed(principal, r.Method, r.URL.Path) {
+			writeError(w, http.StatusForbidden, fmt.Errorf("role does not permit this operation"))
+			return
+		}
+		next(w, r)
+	}
 }

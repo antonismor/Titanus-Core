@@ -143,7 +143,11 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		if err := validateEnvValue(node.Name); err != nil {
 			return nil, err
 		}
-		cert, key, err := auth.IssueNode(node.Name, []string{node.ManagementIP})
+		role := identity.RoleNode
+		if hasCapability(node, model.CapabilityControl) {
+			role = identity.RoleController
+		}
+		cert, key, err := auth.Issue(node.Name, []string{node.ManagementIP}, role, 24*time.Hour)
 		if err != nil {
 			return nil, fmt.Errorf("issue certificate for %s: %w", node.Name, err)
 		}
@@ -233,6 +237,7 @@ func (d *RealmDeployer) stageNode(node model.NodeSpec, binaries map[string]strin
 		{binaries["titanus-agent"], "/tmp/titanus-agent"},
 		{binaries["titanus-init"], "/tmp/titanus-init"},
 		{ca, "/tmp/titanus-ca.crt"},
+		{filepath.Join(filepath.Dir(ca), "ca.crl"), "/tmp/titanus-ca.crl"},
 		{cert, "/tmp/titanus-node.crt"},
 		{key, "/tmp/titanus-node.key"},
 		{daemonUnit, "/tmp/titanusd.service"},
@@ -257,6 +262,7 @@ func (d *RealmDeployer) installNode(node model.NodeSpec, installCAKey bool) erro
 		"$SUDO install -m 0755 /tmp/titanus-agent /usr/local/sbin/titanus-agent",
 		"$SUDO install -m 0755 /tmp/titanus-init /usr/local/libexec/titanus-init",
 		"$SUDO install -m 0644 /tmp/titanus-ca.crt /etc/titanus/pki/ca.crt",
+		"$SUDO install -m 0644 /tmp/titanus-ca.crl /etc/titanus/pki/ca.crl",
 		"$SUDO install -m 0644 /tmp/titanus-node.crt /etc/titanus/pki/node.crt",
 		"$SUDO install -m 0600 /tmp/titanus-node.key /etc/titanus/pki/node.key",
 		"$SUDO install -m 0600 /tmp/titanus-daemon.env /etc/titanus/daemon.env",

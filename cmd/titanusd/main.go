@@ -75,7 +75,12 @@ func main() {
 		log.Fatalf("lease recovery: %v", err)
 	}
 	defer leaseManager.Close()
-	controlapi.New(store, runtimeManager, sourceManager, leaseManager).Register(mux)
+	api := controlapi.New(store, runtimeManager, sourceManager, leaseManager)
+	api.CAPath = envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
+	if envBool("TITANUS_CONTROLLER_MODE") {
+		api.Authority = &identity.Authority{Dir: filepath.Dir(api.CAPath), CertPath: api.CAPath, KeyPath: filepath.Join(filepath.Dir(api.CAPath), "ca.key"), Realm: realmName}
+	}
+	api.Register(mux)
 
 	unixListener, err := unixSocket()
 	if err != nil {
@@ -86,7 +91,7 @@ func main() {
 		_ = os.Remove(socketPath)
 	}()
 
-	servers := []*http.Server{newHTTPServer(mux)}
+	servers := []*http.Server{newHTTPServer(identity.LocalManagement(mux))}
 	listeners := []net.Listener{unixListener}
 
 	ca := envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
@@ -103,7 +108,7 @@ func main() {
 			log.Fatalf("Realm TCP listener: %v", err)
 		}
 		listeners = append(listeners, listener)
-		servers = append(servers, newHTTPServer(mux))
+		servers = append(servers, newHTTPServer(identity.Authenticate(mux, ca)))
 		log.Printf("Titanus Realm mTLS API listening on %s", clusterListen)
 	}
 
@@ -111,6 +116,9 @@ func main() {
 	defer cancel()
 
 	go healthLoop(ctx, store)
+	if api.Authority != nil {
+		go api.Authority.MaintainCRL(ctx)
+	}
 
 	controllerMode := envBool("TITANUS_CONTROLLER_MODE")
 	gatewayMode := envBool("TITANUS_GATEWAY_MODE")

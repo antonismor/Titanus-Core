@@ -25,17 +25,17 @@ import (
 )
 
 type config struct {
-	NodeID       string
+	NodeID        string
 	Address       string
 	FabricAddress string
-	Controller   string
-	CA           string
-	Cert         string
-	Key          string
-	StateRoot    string
-	Interval     time.Duration
-	Capabilities []model.Capability
-	Labels       map[string]string
+	Controller    string
+	CA            string
+	Cert          string
+	Key           string
+	StateRoot     string
+	Interval      time.Duration
+	Capabilities  []model.Capability
+	Labels        map[string]string
 }
 
 func main() {
@@ -71,7 +71,7 @@ func main() {
 		log.Fatal(err)
 	}
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		Transport: &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true},
 		Timeout:   10 * time.Second,
 	}
 
@@ -95,6 +95,12 @@ func main() {
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
 	for {
+		if err := identity.RenewIfNeeded(client, strings.TrimRight(cfg.Controller, "/"), cfg.CA, cfg.Cert, cfg.Key); err != nil {
+			log.Printf("certificate renewal failed: %v", err)
+		}
+		if err := syncCRL(client, cfg); err != nil {
+			log.Printf("CRL sync failed: %v", err)
+		}
 		if err := sendPulse(client, cfg); err != nil {
 			log.Printf("Pulse failed: %v", err)
 		}
@@ -120,7 +126,7 @@ func register(client *http.Client, cfg config) (realm.Node, error) {
 		ID: cfg.NodeID, Address: cfg.Address, FabricAddress: cfg.FabricAddress,
 		Capabilities: cfg.Capabilities, Labels: cfg.Labels,
 		Resources: pulse.Discover(cfg.StateRoot),
-		State: realm.NodeReady,
+		State:     realm.NodeReady,
 	}
 	var registered realm.Node
 	err := requestJSON(client, http.MethodPost, strings.TrimRight(cfg.Controller, "/")+"/v1/realm/nodes", node, &registered)
@@ -341,4 +347,23 @@ func parseLabels(args []string) map[string]string {
 		}
 	}
 	return labels
+}
+
+func syncCRL(client *http.Client, cfg config) error {
+	response, err := client.Get(strings.TrimRight(cfg.Controller, "/") + "/v1/identity/crl")
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("CRL sync: %s", response.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+	if err != nil {
+		return err
+	}
+	if err := identity.InstallCRL(cfg.CA, data); err != nil {
+		return err
+	}
+	return nil
 }
