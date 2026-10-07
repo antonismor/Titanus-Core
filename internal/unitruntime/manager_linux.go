@@ -166,7 +166,14 @@ func (m *Manager) Start(id string) (State, error) {
 		return m.fail(state, fmt.Errorf("create runtime readiness pipe: %w", err))
 	}
 
-	args := []string{"--unit-child", rootfs, spec.Hostname, "3", "--"}
+	args := []string{
+		"--unit-child", rootfs, spec.Hostname, "3",
+		spec.Security.Profile,
+		strconv.Itoa(spec.Security.RunAsUID),
+		strconv.Itoa(spec.Security.RunAsGID),
+		strconv.FormatBool(spec.Security.ReadOnlyRootFS),
+		"--",
+	}
 	args = append(args, spec.Command...)
 	cmd := exec.Command(m.cfg.InitBinary, args...)
 	cmd.Stdout = logFile
