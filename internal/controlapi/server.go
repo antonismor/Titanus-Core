@@ -3,6 +3,7 @@ package controlapi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -140,7 +141,7 @@ func authorizeNode(r *http.Request, nodeID string) error {
 
 func decodeJSON(r *http.Request, target any) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<20))
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 4<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
