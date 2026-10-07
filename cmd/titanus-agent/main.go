@@ -123,8 +123,11 @@ func syncFabric(client *http.Client, cfg config, registered realm.Node) error {
 		return err
 	}
 	manager := fabric.NewManager(cfg.StateRoot)
-	if _, err := manager.Init(registered.FabricCIDR, "titanus0"); err != nil {
-		return err
+	current, configErr := manager.Config()
+	if configErr != nil || current.CIDR != registered.FabricCIDR || current.Bridge != "titanus0" {
+		if _, err := manager.Init(registered.FabricCIDR, "titanus0"); err != nil {
+			return err
+		}
 	}
 	peers := make([]fabric.Peer, 0)
 	for _, node := range state.Nodes {
