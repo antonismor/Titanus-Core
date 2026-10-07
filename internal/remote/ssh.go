@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -28,6 +29,46 @@ func NewSSHExecutor() *SSHExecutor {
 		ConnectTimeout: 5 * time.Second,
 		CommandTimeout: 20 * time.Second,
 	}
+}
+
+func (e *SSHExecutor) CopyFile(node model.NodeSpec, localPath, remotePath string) error {
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", localPath)
+	}
+	timeout := e.CommandTimeout
+	if timeout < 2*time.Minute {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	connectSeconds := int(e.ConnectTimeout.Seconds())
+	if connectSeconds < 1 {
+		connectSeconds = 5
+	}
+	target := node.SSHUser + "@" + node.ManagementIP + ":" + remotePath
+	args := []string{
+		"-q",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "ConnectTimeout=" + strconv.Itoa(connectSeconds),
+		"-P", strconv.Itoa(node.SSHPort),
+		localPath,
+		target,
+	}
+	cmd := exec.CommandContext(ctx, "scp", args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("SCP timed out after %s", timeout)
+	}
+	if err != nil {
+		return fmt.Errorf("scp %s to %s: %w: %s", localPath, node.Name, err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func (e *SSHExecutor) Run(node model.NodeSpec, command string) (Result, error) {
