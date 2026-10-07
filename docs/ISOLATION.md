@@ -30,8 +30,9 @@ behind a mapped-owner 0700 gate. Init resolves this path in its own mount
 namespace, and the parent removes the access mount on startup completion/failure.
 Host state directories and directory descriptors are not exposed. Init binds the
 rootfs onto a private child staging mount (avoiding the inherited locked mount),
-mounts its fresh PID proc while the inherited full proc is visible, pivots into
-it and detaches the entire old root before masking proc and applying policy. The host monitor
+mounts fresh PID proc and binds safe devices while their source mounts are
+visible, pivots into it and detaches the entire old root before masking proc
+and applying policy. The host monitor
 alone writes durable exit records.
 
 Writable Disks retain their real ownership. Provision them for the mapped UID/GID

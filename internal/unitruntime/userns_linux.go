@@ -162,6 +162,9 @@ func cleanupRootAccess(run string) {
 		}
 	}
 	directory := filepath.Join("/run/titanus-roots", run)
-	_ = syscall.Unmount(filepath.Join(directory, "rootfs"), syscall.MNT_DETACH)
-	_ = os.RemoveAll(directory)
+	target := filepath.Join(directory, "rootfs")
+	if err := syscall.Unmount(target, syscall.MNT_DETACH); err != nil && err != syscall.EINVAL && err != syscall.ENOENT { return }
+	// Never recursively remove a path which may still contain mounted data.
+	_ = os.Remove(target)
+	_ = os.Remove(directory)
 }

@@ -150,27 +150,18 @@ func runUnitChild(args []string) (result error) {
 	if err := syscall.Sethostname([]byte(hostname)); err != nil {
 		return fmt.Errorf("set hostname: %w", err)
 	}
-	devices, err := openDevices()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		for _, fd := range devices {
-			_ = syscall.Close(fd)
-		}
-	}()
 	// A user-namespace proc mount must be created while the inherited full
 	// proc is still visible; mounting it after detaching the old root is denied.
 	if err := mountProc(rootfs); err != nil {
+		return err
+	}
+	if err := mountDevices(rootfs); err != nil {
 		return err
 	}
 	if err := pivotInto(rootfs); err != nil {
 		return err
 	}
 	if err := protectProc(); err != nil {
-		return err
-	}
-	if err := mountDevices(devices); err != nil {
 		return err
 	}
 	if err := mountTmp(); err != nil {
@@ -257,61 +248,36 @@ func mountProc(rootfs string) error {
 	return nil
 }
 
-func openDevices() (map[string]int, error) {
-	devices := map[string]int{}
-	for _, name := range []string{"null", "zero", "full", "random", "urandom", "tty"} {
-		fd, err := syscall.Open("/dev/"+name, 0x200000|syscall.O_CLOEXEC, 0)
-		if err != nil {
-			for _, f := range devices {
-				_ = syscall.Close(f)
-			}
-			return nil, err
-		}
-		devices[name] = fd
-	}
-	return devices, nil
-}
-
-func mountDevices(devices map[string]int) error {
-	if err := os.MkdirAll("/dev", 0755); err != nil {
-		return err
-	}
-	if err := syscall.Mount("tmpfs", "/dev", "tmpfs", uintptr(syscall.MS_NOSUID), "mode=755,size=16m"); err != nil {
+func mountDevices(rootfs string) error {
+	directory := filepath.Join(rootfs, "dev")
+	if info, err := os.Lstat(directory); err == nil {
+		if !info.IsDir() { return fmt.Errorf("Source dev path must be a directory") }
+	} else if os.IsNotExist(err) {
+		if err := os.Mkdir(directory, 0755); err != nil { return err }
+	} else { return err }
+	if err := syscall.Mount("tmpfs", directory, "tmpfs", syscall.MS_NOSUID, "mode=755,size=16m"); err != nil {
 		return fmt.Errorf("mount /dev tmpfs: %w", err)
 	}
-
-	for name, fd := range devices {
-		target := "/dev/" + name
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
-		if err != nil {
-			return err
-		}
-		_ = f.Close()
-		if err := syscall.Mount(fmt.Sprintf("/proc/self/fd/%d", fd), target, "", syscall.MS_BIND, ""); err != nil {
+	// Bind while source devices are attached in this mount namespace.
+	// Detached source descriptors cannot be bound after pivot_root.
+	for _, name := range []string{"null", "zero", "full", "random", "urandom", "tty"} {
+		target := filepath.Join(directory, name)
+		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
+		if err != nil { return err }
+		_ = file.Close()
+		if err := syscall.Mount("/dev/"+name, target, "", syscall.MS_BIND, ""); err != nil {
 			return fmt.Errorf("bind safe device %s: %w", name, err)
 		}
-		if err := syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_NOSUID|syscall.MS_NOEXEC, ""); err != nil {
-			return err
-		}
+		if err := syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_NOSUID|syscall.MS_NOEXEC, ""); err != nil { return err }
 	}
-
-	if err := os.MkdirAll("/dev/pts", 0755); err != nil {
-		return err
-	}
-	if err := syscall.Mount("devpts", "/dev/pts", "devpts", uintptr(syscall.MS_NOSUID|syscall.MS_NOEXEC), "newinstance,ptmxmode=0666,mode=0620,max=256"); err != nil {
+	pts := filepath.Join(directory, "pts")
+	if err := os.Mkdir(pts, 0755); err != nil { return err }
+	if err := syscall.Mount("devpts", pts, "devpts", syscall.MS_NOSUID|syscall.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0620,max=256"); err != nil {
 		return fmt.Errorf("mount private devpts: %w", err)
 	}
-	if err := os.Symlink("pts/ptmx", "/dev/ptmx"); err != nil {
-		return err
-	}
-
-	for name, target := range map[string]string{
-		"/dev/fd":     "/proc/self/fd",
-		"/dev/stdin":  "/proc/self/fd/0",
-		"/dev/stdout": "/proc/self/fd/1",
-		"/dev/stderr": "/proc/self/fd/2",
-	} {
-		_ = os.Symlink(target, name)
+	if err := os.Symlink("pts/ptmx", filepath.Join(directory, "ptmx")); err != nil { return err }
+	for name, target := range map[string]string{"fd":"/proc/self/fd", "stdin":"/proc/self/fd/0", "stdout":"/proc/self/fd/1", "stderr":"/proc/self/fd/2"} {
+		if err := os.Symlink(target, filepath.Join(directory, name)); err != nil { return err }
 	}
 	return nil
 }
