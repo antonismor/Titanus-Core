@@ -698,7 +698,24 @@ func runRealm(args []string) error {
 		ansi.OK(fmt.Sprintf("Realm %s network seeded: Fabric=%s Services=%s", *name, *fabricCIDR, *serviceCIDR))
 		return nil
 
+	case "consensus":
+		result, err := localclient.New("/run/titanus/titanus.sock").ConsensusStatus()
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
 	case "status":
+		if _, e := os.Stat(filepath.Join(stateRoot(), "realm", "consensus", "membership.json")); e == nil {
+			result, err := localclient.New("/run/titanus/titanus.sock").RealmState()
+			if err != nil {
+				return err
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
 		store, err := realm.Open(stateRoot(), "TITANUS-REALM")
 		if err != nil {
 			return err
@@ -882,8 +899,8 @@ func runFleet(args []string) error {
 		fs := flag.NewFlagSet("fleet create", flag.ContinueOnError)
 		sourceName := fs.String("source", "", "Titanus Source")
 		instances := fs.Int("instances", 1, "desired Unit count")
-		maxSurge := fs.Int("max-surge",1,"maximum extra Units during rollout")
- minAvailable := fs.Int("minimum", 1, "minimum desired availability")
+		maxSurge := fs.Int("max-surge", 1, "maximum extra Units during rollout")
+		minAvailable := fs.Int("minimum", 1, "minimum desired availability")
 		memory := fs.String("memory", "512M", "memory per Unit")
 		cpu := fs.Int("cpu", 100, "CPU percentage per Unit")
 		pids := fs.Int("pids", 256, "maximum processes per Unit")
@@ -942,7 +959,7 @@ func runFleet(args []string) error {
 			}
 		}
 		fleet := realm.Fleet{
-			MaxSurge:*maxSurge, Name: name, Instances: *instances, MinimumAvailable: *minAvailable,
+			MaxSurge: *maxSurge, Name: name, Instances: *instances, MinimumAvailable: *minAvailable,
 			RequiredLabels: labels, SpreadLabel: strings.TrimSpace(*spread),
 			Template: realm.UnitTemplate{
 				Source: *sourceName, Command: fs.Args(),
@@ -984,19 +1001,44 @@ func runFleet(args []string) error {
 		fmt.Println(string(data))
 		return nil
 
-case "apply":
- if len(args)!=2{return fmt.Errorf("usage: titanus fleet apply FLEET.json")}
- data,err:=os.ReadFile(args[1]);if err!=nil{return err}
- var fleet realm.Fleet
- if err:=json.Unmarshal(data,&fleet);err!=nil{return err}
- result,err:=client.CreateFleet(fleet);if err!=nil{return err}
- data,_=json.MarshalIndent(result,"","  ");fmt.Println(string(data));return nil
-case "rollback":
- if len(args)<2 || len(args)>3{return fmt.Errorf("usage: titanus fleet rollback NAME [GENERATION]")}
- var generation uint64
- if len(args)==3{var err error;generation,err=strconv.ParseUint(args[2],10,64);if err!=nil{return err}}
- fleet,err:=client.RollbackFleet(args[1],generation);if err!=nil{return err}
- data,_:=json.MarshalIndent(fleet,"","  ");fmt.Println(string(data));return nil
+	case "apply":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus fleet apply FLEET.json")
+		}
+		data, err := os.ReadFile(args[1])
+		if err != nil {
+			return err
+		}
+		var fleet realm.Fleet
+		if err := json.Unmarshal(data, &fleet); err != nil {
+			return err
+		}
+		result, err := client.CreateFleet(fleet)
+		if err != nil {
+			return err
+		}
+		data, _ = json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case "rollback":
+		if len(args) < 2 || len(args) > 3 {
+			return fmt.Errorf("usage: titanus fleet rollback NAME [GENERATION]")
+		}
+		var generation uint64
+		if len(args) == 3 {
+			var err error
+			generation, err = strconv.ParseUint(args[2], 10, 64)
+			if err != nil {
+				return err
+			}
+		}
+		fleet, err := client.RollbackFleet(args[1], generation)
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(fleet, "", "  ")
+		fmt.Println(string(data))
+		return nil
 
 	case "scale":
 		if len(args) != 3 {
@@ -1784,6 +1826,7 @@ func runRealmDeploy(args []string) error {
 	nodePrefix := fs.Int("node-prefix", 24, "per-Node Unit subnet prefix")
 	vxlanID := fs.Int("vxlan-id", 4242, "Titanus Realm VXLAN ID")
 	clusterPort := fs.Int("cluster-port", 9443, "mTLS Realm API port")
+	raftPort := fs.Int("raft-port", 9444, "mTLS Raft port for 3/5 CONTROL nodes")
 	noStart := fs.Bool("no-start", false, "install but do not start services")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -1801,7 +1844,7 @@ func runRealmDeploy(args []string) error {
 	return deployRealm(plan, deploy.RealmDeployOptions{
 		BinDir: *binDir, PKIDir: *pkiDir,
 		NodePrefix: *nodePrefix, VXLANID: *vxlanID,
-		ClusterPort: *clusterPort, StartServices: !*noStart,
+		ClusterPort: *clusterPort, RaftPort: *raftPort, StartServices: !*noStart,
 	})
 }
 

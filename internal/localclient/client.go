@@ -105,10 +105,10 @@ func (c *Client) ScaleFleet(name string, instances int) (realm.Fleet, error) {
 	return fleet, err
 }
 
-func(c *Client) RollbackFleet(name string,g uint64)(realm.Fleet,error) {
- var f realm.Fleet
- err:=c.do(http.MethodPost,"/v1/realm/fleets/"+url.PathEscape(name)+"/rollback",map[string]uint64{"generation":g},&f)
- return f,err
+func (c *Client) RollbackFleet(name string, g uint64) (realm.Fleet, error) {
+	var f realm.Fleet
+	err := c.do(http.MethodPost, "/v1/realm/fleets/"+url.PathEscape(name)+"/rollback", map[string]uint64{"generation": g}, &f)
+	return f, err
 }
 
 func (c *Client) DeleteFleet(name string) error {
@@ -150,4 +150,10 @@ func (c *Client) do(method, path string, requestBody, response any) error {
 		return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(response)
 	}
 	return nil
+}
+
+func (c *Client) ConsensusStatus() (map[string]string, error) {
+	var out map[string]string
+	err := c.do(http.MethodGet, "/v1/realm/consensus", nil, &out)
+	return out, err
 }

@@ -147,3 +147,13 @@ DISCOVER -> ASK -> PLAN -> VALIDATE -> SIMULATE -> CONFIRM -> DEPLOY -> VERIFY
 ```
 
 Destructive storage actions require explicit confirmation and must not be inferred from simple setup input.
+
+## Replicated Realm state
+
+Multi-controller plans with 3 or 5 CONTROL nodes embed the Go Raft library and a
+fsync-enabled BoltDB adapter in `titanusd`. Titanus supplies the Realm FSM,
+revision validation, static membership, mTLS peer binding and guarded reconciler.
+These are explicitly declared libraries; no external orchestrator is used.
+Only quorum-committed state is exposed as the live HA Realm, with leader barriers
+for API access. See [Control-plane HA](CONTROL_PLANE_HA.md) for its operational
+bounds and the state/assets that are outside this replicated FSM.
