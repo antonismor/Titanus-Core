@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 )
 
@@ -119,7 +120,12 @@ func (m *Manager) Start(id string) (State, error) {
 	if err := m.mountOverlay(spec); err != nil {
 		return m.fail(state, fmt.Errorf("OverlayFS: %w", err))
 	}
+	if err := m.prepareDiskMounts(spec); err != nil {
+		_ = m.unmountRootfs(spec.ID)
+		return m.fail(state, fmt.Errorf("Disk mounts: %w", err))
+	}
 	if err := m.prepareCgroup(spec); err != nil {
+		m.cleanupDiskMounts(spec)
 		_ = m.unmountRootfs(spec.ID)
 		return m.fail(state, fmt.Errorf("cgroup: %w", err))
 	}
@@ -302,6 +308,64 @@ func (m *Manager) LogsPath(id string) (string, error) {
 	return filepath.Join(m.unitDir(id), "logs", "unit.log"), nil
 }
 
+func (m *Manager) prepareDiskMounts(spec Spec) error {
+	if len(spec.Mounts) == 0 {
+		return nil
+	}
+	manager := disk.NewManager(m.cfg.StateRoot)
+	rootfs := filepath.Join(m.unitDir(spec.ID), "rootfs")
+	mountedTargets := make([]string, 0, len(spec.Mounts))
+
+	for _, mount := range spec.Mounts {
+		source, err := manager.Resolve(mount.Disk)
+		if err != nil {
+			for i := len(mountedTargets) - 1; i >= 0; i-- {
+				_ = syscall.Unmount(mountedTargets[i], syscall.MNT_DETACH)
+			}
+			return fmt.Errorf("resolve Disk %s: %w", mount.Disk, err)
+		}
+		target, err := unitMountTarget(rootfs, mount.Target)
+		if err != nil {
+			for i := len(mountedTargets) - 1; i >= 0; i-- {
+				_ = syscall.Unmount(mountedTargets[i], syscall.MNT_DETACH)
+			}
+			return err
+		}
+		if err := disk.Bind(source, target, mount.ReadOnly); err != nil {
+			for i := len(mountedTargets) - 1; i >= 0; i-- {
+				_ = syscall.Unmount(mountedTargets[i], syscall.MNT_DETACH)
+			}
+			return fmt.Errorf("bind Disk %s to %s: %w", mount.Disk, mount.Target, err)
+		}
+		mountedTargets = append(mountedTargets, target)
+	}
+	return nil
+}
+
+func (m *Manager) cleanupDiskMounts(spec Spec) {
+	rootfs := filepath.Join(m.unitDir(spec.ID), "rootfs")
+	for i := len(spec.Mounts) - 1; i >= 0; i-- {
+		target, err := unitMountTarget(rootfs, spec.Mounts[i].Target)
+		if err == nil {
+			_ = syscall.Unmount(target, syscall.MNT_DETACH)
+		}
+	}
+}
+
+func unitMountTarget(rootfs, target string) (string, error) {
+	cleanTarget := filepath.Clean(target)
+	if !filepath.IsAbs(cleanTarget) || cleanTarget == "/" {
+		return "", fmt.Errorf("invalid Unit mount target %q", target)
+	}
+	relative := strings.TrimPrefix(cleanTarget, string(os.PathSeparator))
+	full := filepath.Join(rootfs, relative)
+	cleanRoot := filepath.Clean(rootfs)
+	if full == cleanRoot || !strings.HasPrefix(full, cleanRoot+string(os.PathSeparator)) {
+		return "", fmt.Errorf("mount target %q escapes Unit rootfs", target)
+	}
+	return full, nil
+}
+
 func (m *Manager) mountOverlay(spec Spec) error {
 	unitDir := m.unitDir(spec.ID)
 	merged := filepath.Join(unitDir, "rootfs")
@@ -381,6 +445,9 @@ func enableControllers(cgroupRoot string, required []string) error {
 }
 
 func (m *Manager) cleanupAfterStop(id string) {
+	if spec, _, err := m.load(id); err == nil {
+		m.cleanupDiskMounts(spec)
+	}
 	_ = m.unmountRootfs(id)
 	_ = os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.kill"), []byte("1"), 0644)
 	_ = os.Remove(m.cgroupDir(id))
