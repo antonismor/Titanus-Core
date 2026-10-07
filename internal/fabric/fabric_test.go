@@ -164,3 +164,96 @@ func TestRenderedNATRulesPassNftCheck(t *testing.T) {
 		t.Fatalf("nft rejected Titanus rules: %v\n%s\nRules:\n%s", err, string(output), rules)
 	}
 }
+
+
+func TestNormalizePoliciesCanonicalizesSourcesAndPorts(t *testing.T) {
+	policies, err := normalizePolicies([]Policy{{
+		Name: "web-ingress",
+		Destinations: []string{"10.240.2.10", "10.240.2.10"},
+		DefaultDeny: true,
+		Rules: []PolicyRule{{
+			Sources: []string{"10.240.1.55/24", "10.240.1.0/24"},
+			Protocol: "TCP",
+			Ports: []int{443, 80, 443},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policies) != 1 || len(policies[0].Destinations) != 1 {
+		t.Fatalf("unexpected normalized policies: %#v", policies)
+	}
+	rule := policies[0].Rules[0]
+	if rule.Protocol != "tcp" || len(rule.Sources) != 1 || rule.Sources[0] != "10.240.1.0/24" {
+		t.Fatalf("unexpected normalized rule: %#v", rule)
+	}
+	if len(rule.Ports) != 2 || rule.Ports[0] != 80 || rule.Ports[1] != 443 {
+		t.Fatalf("unexpected normalized ports: %#v", rule.Ports)
+	}
+}
+
+func TestRenderFilterRulesAllowsBeforeDefaultDeny(t *testing.T) {
+	policies, err := normalizePolicies([]Policy{{
+		Name: "web-ingress",
+		Destinations: []string{"10.240.2.10"},
+		DefaultDeny: true,
+		Rules: []PolicyRule{{
+			Sources: []string{"10.240.1.0/24"},
+			Protocol: "tcp",
+			Ports: []int{80, 443},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := renderFilterRules(policies)
+	if !strings.Contains(rules, "table bridge titanus_filter_bridge") ||
+		!strings.Contains(rules, "table ip titanus_filter_ip") {
+		t.Fatalf("policy rules must cover bridge and IPv4 forwarding paths:\n%s", rules)
+	}
+	allow := "ip saddr 10.240.1.0/24 ip daddr 10.240.2.10 tcp dport { 80, 443 } accept"
+	drop := "ip daddr 10.240.2.10 drop"
+	if !strings.Contains(rules, allow) || !strings.Contains(rules, drop) {
+		t.Fatalf("missing allow/default-deny policy rules:\n%s", rules)
+	}
+	for _, table := range []string{"titanus_filter_bridge", "titanus_filter_ip"} {
+		start := strings.Index(rules, table)
+		if start < 0 {
+			t.Fatalf("missing table %s", table)
+		}
+		section := rules[start:]
+		allowIndex := strings.Index(section, allow)
+		dropIndex := strings.Index(section, drop)
+		if allowIndex < 0 || dropIndex < 0 || allowIndex > dropIndex {
+			t.Fatalf("allow rule must precede default deny in %s:\n%s", table, section)
+		}
+	}
+}
+
+func TestRenderedPolicyRulesPassNftCheck(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("nft syntax validation requires root")
+	}
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Skip("nft is not installed")
+	}
+	policies, err := normalizePolicies([]Policy{{
+		Name: "web-ingress",
+		Destinations: []string{"10.240.2.10"},
+		DefaultDeny: true,
+		Rules: []PolicyRule{
+			{Sources: []string{"10.240.1.0/24"}, Protocol: "tcp", Ports: []int{80, 443}},
+			{AnySource: true, Protocol: "udp", Ports: []int{53}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := renderFilterRules(policies)
+	cmd := exec.Command(nft, "-c", "-f", "-")
+	cmd.Stdin = strings.NewReader(rules)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("nft rejected Titanus policy rules: %v\n%s\nRules:\n%s", err, string(output), rules)
+	}
+}

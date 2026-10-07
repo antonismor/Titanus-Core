@@ -58,6 +58,8 @@ func dispatch(args []string) error {
 		return runFleet(args[1:])
 	case "route":
 		return runRoute(args[1:])
+	case "policy":
+		return runPolicy(args[1:])
 	case "disk":
 		return runDisk(args[1:])
 	case "unit":
@@ -106,8 +108,14 @@ func menu() error {
 		fmt.Println("  " + ansi.Paint(ansi.Cyan, "3)") + " Run cluster pre-flight")
 		fmt.Println("  " + ansi.Paint(ansi.Cyan, "4)") + " Bootstrap Realm nodes")
 		fmt.Println("  " + ansi.Paint(ansi.Cyan, "5)") + " Manage Sources")
-		fmt.Println("  " + ansi.Paint(ansi.Cyan, "6)") + " Manage Units")
-		fmt.Println("  " + ansi.Paint(ansi.Cyan, "7)") + " Show version")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "6)") + " Manage Fabric")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "7)") + " Manage Disks")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "8)") + " Realm status / identity")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "9)") + " Manage Fleets")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "10)") + " Manage Routes")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "11)") + " Manage Network Policies")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "12)") + " Manage Units")
+		fmt.Println("  " + ansi.Paint(ansi.Cyan, "13)") + " Show version")
 		fmt.Println("  " + ansi.Paint(ansi.Cyan, "0)") + " Exit")
 		fmt.Println()
 		fmt.Print(ansi.Paint(ansi.Cyan, "Select") + ": ")
@@ -179,11 +187,16 @@ func menu() error {
 				pause(reader)
 			}
 		case "11":
-			if err := unitMenu(reader); err != nil {
+			if err := policyMenu(reader); err != nil {
 				ansi.Error(err.Error())
 				pause(reader)
 			}
 		case "12":
+			if err := unitMenu(reader); err != nil {
+				ansi.Error(err.Error())
+				pause(reader)
+			}
+		case "13":
 			fmt.Println("Titanus Core", version)
 			pause(reader)
 		case "0":
@@ -975,6 +988,199 @@ func runFleet(args []string) error {
 	}
 }
 
+func policyMenu(reader *bufio.Reader) error {
+	for {
+		ansi.Clear()
+		ansi.Banner()
+		fmt.Println(ansi.Paint(ansi.Bold+ansi.White, "Titanus Network Policies"))
+		fmt.Println()
+		fmt.Println("  1) List Policies")
+		fmt.Println("  2) Create ingress Policy")
+		fmt.Println("  3) Inspect Policy")
+		fmt.Println("  4) Delete Policy")
+		fmt.Println("  0) Back")
+		fmt.Print("\nSelect: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "1":
+			if err := runPolicy([]string{"list"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "2":
+			name, err := prompt(reader, "Policy name")
+			if err != nil {
+				return err
+			}
+			fleet, err := prompt(reader, "Protected Fleet")
+			if err != nil {
+				return err
+			}
+			fromFleet, err := promptDefault(reader, "Allow source Fleet (blank for none)", "")
+			if err != nil {
+				return err
+			}
+			fromCIDR, err := promptDefault(reader, "Allow source CIDR (blank for none)", "")
+			if err != nil {
+				return err
+			}
+			protocol, err := promptDefault(reader, "Protocol (tcp/udp/any)", "tcp")
+			if err != nil {
+				return err
+			}
+			ports, err := promptDefault(reader, "Ports, comma-separated (blank = all for protocol)", "")
+			if err != nil {
+				return err
+			}
+			command := []string{"create", name, "--fleet", fleet, "--protocol", protocol}
+			if strings.TrimSpace(fromFleet) != "" {
+				command = append(command, "--from-fleet", fromFleet)
+			}
+			if strings.TrimSpace(fromCIDR) != "" {
+				command = append(command, "--from-cidr", fromCIDR)
+			}
+			if strings.TrimSpace(ports) != "" {
+				command = append(command, "--ports", ports)
+			}
+			if strings.TrimSpace(fromFleet) == "" && strings.TrimSpace(fromCIDR) == "" {
+				command = append(command, "--allow-any")
+			}
+			if err := runPolicy(command); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "3":
+			name, err := prompt(reader, "Policy name")
+			if err != nil {
+				return err
+			}
+			if err := runPolicy([]string{"status", name}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "4":
+			name, err := prompt(reader, "Policy name")
+			if err != nil {
+				return err
+			}
+			if err := runPolicy([]string{"delete", name}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "0":
+			return nil
+		default:
+			ansi.Warn("Unknown selection")
+			pause(reader)
+		}
+	}
+}
+
+func runPolicy(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: titanus policy <create|list|status|delete>")
+	}
+	client := localclient.New("/run/titanus/titanus.sock")
+	switch args[0] {
+	case "list":
+		policies, err := client.ListPolicies()
+		if err != nil {
+			return err
+		}
+		if len(policies) == 0 {
+			fmt.Println("No Titanus Network Policies.")
+			return nil
+		}
+		fmt.Printf("%-24s %-20s %-8s %-12s\n", "POLICY", "FLEET", "RULES", "DEFAULT")
+		for _, policy := range policies {
+			defaultAction := "ALLOW"
+			if policy.DefaultDeny {
+				defaultAction = "DENY"
+			}
+			fmt.Printf("%-24s %-20s %-8d %-12s\n", policy.Name, policy.Fleet, len(policy.Ingress), defaultAction)
+		}
+		return nil
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: titanus policy create NAME --fleet FLEET [--from-fleet FLEET|--from-cidr CIDR|--allow-any] [--protocol tcp|udp|any] [--ports LIST]")
+		}
+		name := args[1]
+		fs := flag.NewFlagSet("policy create", flag.ContinueOnError)
+		fleetName := fs.String("fleet", "", "protected destination Fleet")
+		fromFleet := fs.String("from-fleet", "", "allowed source Fleet")
+		fromCIDR := fs.String("from-cidr", "", "allowed source IPv4 CIDR")
+		allowAny := fs.Bool("allow-any", false, "allow any source subject to protocol/ports")
+		protocol := fs.String("protocol", "tcp", "tcp, udp or any")
+		portsText := fs.String("ports", "", "comma-separated destination ports; blank means all ports for protocol")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*fleetName) == "" {
+			return fmt.Errorf("--fleet is required")
+		}
+		if *allowAny && (strings.TrimSpace(*fromFleet) != "" || strings.TrimSpace(*fromCIDR) != "") {
+			return fmt.Errorf("--allow-any cannot be combined with --from-fleet or --from-cidr")
+		}
+		if !*allowAny && strings.TrimSpace(*fromFleet) == "" && strings.TrimSpace(*fromCIDR) == "" {
+			return fmt.Errorf("one of --from-fleet, --from-cidr or --allow-any is required")
+		}
+		ports := make([]int, 0)
+		if strings.TrimSpace(*portsText) != "" {
+			for _, raw := range strings.Split(*portsText, ",") {
+				port, err := strconv.Atoi(strings.TrimSpace(raw))
+				if err != nil {
+					return fmt.Errorf("invalid policy port %q", raw)
+				}
+				ports = append(ports, port)
+			}
+		}
+		rule := realm.NetworkPolicyRule{
+			FromFleet: strings.TrimSpace(*fromFleet),
+			FromCIDR: strings.TrimSpace(*fromCIDR),
+			Protocol: strings.TrimSpace(*protocol),
+			Ports: ports,
+		}
+		if *allowAny {
+			rule.FromFleet = ""
+			rule.FromCIDR = ""
+		}
+		stored, err := client.CreatePolicy(realm.NetworkPolicy{
+			Name: name, Fleet: strings.TrimSpace(*fleetName),
+			DefaultDeny: true, Ingress: []realm.NetworkPolicyRule{rule},
+		})
+		if err != nil {
+			return err
+		}
+		ansi.OK(fmt.Sprintf("Network Policy %s protects Fleet %s with default deny", stored.Name, stored.Fleet))
+		return nil
+	case "status":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus policy status NAME")
+		}
+		policy, err := client.PolicyStatus(args[1])
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(policy, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	case "delete":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus policy delete NAME")
+		}
+		if err := client.DeletePolicy(args[1]); err != nil {
+			return err
+		}
+		ansi.OK("Network Policy deleted: " + args[1])
+		return nil
+	default:
+		return fmt.Errorf("unknown Network Policy action %q", args[0])
+	}
+}
+
 func routeMenu(reader *bufio.Reader) error {
 	for {
 		ansi.Clear()
@@ -1668,6 +1874,7 @@ Usage:
   titanus fabric init [--cidr CIDR] [--bridge NAME]
   titanus fabric status
   titanus fabric allocations
+  titanus fabric services
 
   titanus fleet create NAME --source SOURCE [options] -- COMMAND [ARGS...]
   titanus fleet list
@@ -1679,6 +1886,11 @@ Usage:
   titanus route list
   titanus route status NAME
   titanus route delete NAME
+
+  titanus policy create NAME --fleet FLEET [--from-fleet FLEET|--from-cidr CIDR|--allow-any]
+  titanus policy list
+  titanus policy status NAME
+  titanus policy delete NAME
 
   titanus disk create NAME --provider local|ceph-rbd|cephfs --size SIZE
   titanus disk list

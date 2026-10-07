@@ -62,6 +62,20 @@ type Service struct {
 	Backends []ServiceBackend `json:"backends,omitempty"`
 }
 
+type PolicyRule struct {
+	Sources   []string `json:"sources,omitempty"`
+	AnySource bool     `json:"any_source,omitempty"`
+	Protocol  string   `json:"protocol"`
+	Ports     []int    `json:"ports,omitempty"`
+}
+
+type Policy struct {
+	Name         string       `json:"name"`
+	Destinations []string     `json:"destinations,omitempty"`
+	DefaultDeny  bool         `json:"default_deny"`
+	Rules        []PolicyRule `json:"rules,omitempty"`
+}
+
 type state struct {
 	Allocations map[string]Allocation `json:"allocations"`
 }
@@ -539,6 +553,112 @@ func (m *Manager) Services() ([]Service, error) {
 	return append([]Service(nil), services...), nil
 }
 
+func (m *Manager) ConfigurePolicies(policies []Policy) error {
+	normalized, err := normalizePolicies(policies)
+	if err != nil {
+		return err
+	}
+	unlock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	if err := writeJSON(m.policiesPath(), normalized, 0600); err != nil {
+		unlock()
+		return err
+	}
+	unlock()
+	if os.Geteuid() == 0 {
+		return m.reconcileFilter()
+	}
+	return nil
+}
+
+func (m *Manager) Policies() ([]Policy, error) {
+	policies, err := m.loadPolicies()
+	if err != nil {
+		return nil, err
+	}
+	return append([]Policy(nil), policies...), nil
+}
+
+func normalizePolicies(policies []Policy) ([]Policy, error) {
+	out := make([]Policy, 0, len(policies))
+	for _, policy := range policies {
+		policy.Name = strings.TrimSpace(policy.Name)
+		if policy.Name == "" {
+			return nil, fmt.Errorf("Fabric Policy name is required")
+		}
+		destSeen := map[string]bool{}
+		destinations := make([]string, 0, len(policy.Destinations))
+		for _, value := range policy.Destinations {
+			ip := net.ParseIP(strings.TrimSpace(value))
+			if ip == nil || ip.To4() == nil {
+				return nil, fmt.Errorf("Fabric Policy %s has invalid destination %q", policy.Name, value)
+			}
+			text := ip.To4().String()
+			if !destSeen[text] {
+				destSeen[text] = true
+				destinations = append(destinations, text)
+			}
+		}
+		sort.Strings(destinations)
+		policy.Destinations = destinations
+
+		rules := make([]PolicyRule, 0, len(policy.Rules))
+		for index, rule := range policy.Rules {
+			rule.Protocol = strings.ToLower(strings.TrimSpace(rule.Protocol))
+			if rule.Protocol == "" {
+				rule.Protocol = "tcp"
+			}
+			if rule.Protocol != "tcp" && rule.Protocol != "udp" && rule.Protocol != "any" {
+				return nil, fmt.Errorf("Fabric Policy %s rule %d has unsupported protocol %q", policy.Name, index+1, rule.Protocol)
+			}
+			if rule.AnySource && len(rule.Sources) > 0 {
+				return nil, fmt.Errorf("Fabric Policy %s rule %d mixes any-source with source CIDRs", policy.Name, index+1)
+			}
+			sourceSeen := map[string]bool{}
+			sources := make([]string, 0, len(rule.Sources))
+			for _, value := range rule.Sources {
+				ip, network, err := net.ParseCIDR(strings.TrimSpace(value))
+				if err != nil || ip.To4() == nil {
+					return nil, fmt.Errorf("Fabric Policy %s rule %d has invalid IPv4 source %q", policy.Name, index+1, value)
+				}
+				text := network.String()
+				if !sourceSeen[text] {
+					sourceSeen[text] = true
+					sources = append(sources, text)
+				}
+			}
+			sort.Strings(sources)
+			rule.Sources = sources
+			if !rule.AnySource && len(rule.Sources) == 0 {
+				continue
+			}
+			portSeen := map[int]bool{}
+			ports := make([]int, 0, len(rule.Ports))
+			for _, port := range rule.Ports {
+				if port < 1 || port > 65535 {
+					return nil, fmt.Errorf("Fabric Policy %s rule %d has invalid port %d", policy.Name, index+1, port)
+				}
+				if !portSeen[port] {
+					portSeen[port] = true
+					ports = append(ports, port)
+				}
+			}
+			sort.Ints(ports)
+			if rule.Protocol == "any" && len(ports) > 0 {
+				return nil, fmt.Errorf("Fabric Policy %s rule %d cannot combine protocol any with ports", policy.Name, index+1)
+			}
+			rule.Ports = ports
+			rules = append(rules, rule)
+		}
+		policy.Rules = rules
+		out = append(out, policy)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func normalizeServices(network *net.IPNet, services []Service) ([]Service, error) {
 	out := make([]Service, 0, len(services))
 	seenEndpoint := map[string]string{}
@@ -719,6 +839,104 @@ func writeServiceRules(b *strings.Builder, services []Service) {
 	}
 }
 
+func (m *Manager) reconcileFilter() error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	unlock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	policies, err := m.loadPolicies()
+	if err != nil {
+		return err
+	}
+	_, _ = runOutput("nft", "delete", "table", "ip", "titanus_filter_ip")
+	_, _ = runOutput("nft", "delete", "table", "bridge", "titanus_filter_bridge")
+	if len(policies) == 0 {
+		return nil
+	}
+	rules := renderFilterRules(policies)
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(rules)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("reconcile Fabric policy nftables: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func renderFilterRules(policies []Policy) string {
+	var b strings.Builder
+	writePolicyTable(&b, "bridge", "titanus_filter_bridge", policies)
+	writePolicyTable(&b, "ip", "titanus_filter_ip", policies)
+	return b.String()
+}
+
+func writePolicyTable(b *strings.Builder, family, table string, policies []Policy) {
+	fmt.Fprintf(b, "table %s %s {\n", family, table)
+	b.WriteString(" chain forward { type filter hook forward priority 0; policy accept;\n")
+	b.WriteString("  ct state established,related accept comment \"Titanus policy established\"\n")
+	for _, policy := range policies {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(policy.Name))
+		comment := fmt.Sprintf("Titanus:policy:%08x", h.Sum32())
+		for _, destination := range policy.Destinations {
+			for _, rule := range policy.Rules {
+				if rule.AnySource {
+					writePolicyAccept(b, "", destination, rule, comment)
+					continue
+				}
+				for _, source := range rule.Sources {
+					writePolicyAccept(b, source, destination, rule, comment)
+				}
+			}
+		}
+	}
+	dropped := map[string]bool{}
+	for _, policy := range policies {
+		if !policy.DefaultDeny {
+			continue
+		}
+		for _, destination := range policy.Destinations {
+			if dropped[destination] {
+				continue
+			}
+			dropped[destination] = true
+			fmt.Fprintf(b, "  ip daddr %s drop comment \"Titanus policy default deny\"\n", destination)
+		}
+	}
+	b.WriteString(" }\n")
+	b.WriteString("}\n")
+}
+
+func writePolicyAccept(b *strings.Builder, source, destination string, rule PolicyRule, comment string) {
+	b.WriteString("  ")
+	if source != "" {
+		fmt.Fprintf(b, "ip saddr %s ", source)
+	}
+	fmt.Fprintf(b, "ip daddr %s ", destination)
+	switch rule.Protocol {
+	case "tcp", "udp":
+		if len(rule.Ports) == 0 {
+			fmt.Fprintf(b, "ip protocol %s ", rule.Protocol)
+		} else if len(rule.Ports) == 1 {
+			fmt.Fprintf(b, "%s dport %d ", rule.Protocol, rule.Ports[0])
+		} else {
+			fmt.Fprintf(b, "%s dport { ", rule.Protocol)
+			for i, port := range rule.Ports {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(b, "%d", port)
+			}
+			b.WriteString(" } ")
+		}
+	}
+	fmt.Fprintf(b, "accept comment \"%s\"\n", comment)
+}
+
 func sortedActive(st state) []Allocation {
 	items := make([]Allocation, 0)
 	for _, allocation := range st.Allocations {
@@ -829,6 +1047,18 @@ func (m *Manager) fabricDir() string { return filepath.Join(m.StateRoot, "fabric
 func (m *Manager) configPath() string { return filepath.Join(m.fabricDir(), "config.json") }
 func (m *Manager) statePath() string { return filepath.Join(m.fabricDir(), "allocations.json") }
 func (m *Manager) servicesPath() string { return filepath.Join(m.fabricDir(), "services.json") }
+func (m *Manager) policiesPath() string { return filepath.Join(m.fabricDir(), "policies.json") }
+
+func (m *Manager) loadPolicies() ([]Policy, error) {
+	var policies []Policy
+	if err := readJSON(m.policiesPath(), &policies); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Policy{}, nil
+		}
+		return nil, err
+	}
+	return policies, nil
+}
 
 func (m *Manager) loadServices() ([]Service, error) {
 	var services []Service

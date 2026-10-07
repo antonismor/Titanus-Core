@@ -38,6 +38,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/realm/fleets/", s.fleetObject)
 	mux.HandleFunc("/v1/realm/routes", s.routes)
 	mux.HandleFunc("/v1/realm/routes/", s.routeObject)
+	mux.HandleFunc("/v1/realm/policies", s.policies)
+	mux.HandleFunc("/v1/realm/policies/", s.policyObject)
 	mux.HandleFunc("/v1/node/units", s.units)
 	mux.HandleFunc("/v1/node/units/", s.unitAction)
 	mux.HandleFunc("/v1/node/sources", s.sources)
@@ -312,6 +314,57 @@ func (s *Server) pulse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accepted": true, "revision": s.Store.Snapshot().Revision})
+}
+
+func (s *Server) policies(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		state := s.Store.Snapshot()
+		items := make([]realm.NetworkPolicy, 0, len(state.Policies))
+		for _, policy := range state.Policies {
+			items = append(items, policy)
+		}
+		writeJSON(w, http.StatusOK, items)
+	case http.MethodPost:
+		var policy realm.NetworkPolicy
+		if err := decodeJSON(r, &policy); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		stored, err := s.Store.PutPolicy(policy)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, stored)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) policyObject(w http.ResponseWriter, r *http.Request) {
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/realm/policies/"), "/")
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid Network Policy name"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		policy, ok := s.Store.GetPolicy(name)
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("Network Policy %s not found", name))
+			return
+		}
+		writeJSON(w, http.StatusOK, policy)
+	case http.MethodDelete:
+		if err := s.Store.DeletePolicy(name); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 func (s *Server) routes(w http.ResponseWriter, r *http.Request) {

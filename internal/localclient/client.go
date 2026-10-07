@@ -36,6 +36,28 @@ func New(socketPath string) *Client {
 	}
 }
 
+func (c *Client) ListPolicies() ([]realm.NetworkPolicy, error) {
+	var policies []realm.NetworkPolicy
+	err := c.do(http.MethodGet, "/v1/realm/policies", nil, &policies)
+	return policies, err
+}
+
+func (c *Client) CreatePolicy(policy realm.NetworkPolicy) (realm.NetworkPolicy, error) {
+	var stored realm.NetworkPolicy
+	err := c.do(http.MethodPost, "/v1/realm/policies", policy, &stored)
+	return stored, err
+}
+
+func (c *Client) PolicyStatus(name string) (realm.NetworkPolicy, error) {
+	var policy realm.NetworkPolicy
+	err := c.do(http.MethodGet, "/v1/realm/policies/"+url.PathEscape(name), nil, &policy)
+	return policy, err
+}
+
+func (c *Client) DeletePolicy(name string) error {
+	return c.do(http.MethodDelete, "/v1/realm/policies/"+url.PathEscape(name), nil, nil)
+}
+
 func (c *Client) ListRoutes() ([]realm.Route, error) {
 	var routes []realm.Route
 	err := c.do(http.MethodGet, "/v1/realm/routes", nil, &routes)
