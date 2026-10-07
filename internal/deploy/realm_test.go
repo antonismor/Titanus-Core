@@ -16,7 +16,7 @@ func TestDaemonEnvironmentPublishesControllerEndpoint(t *testing.T) {
 	for _, wanted := range []string{
 		"TITANUS_NODE_ID=gateway-1",
 		"TITANUS_GATEWAY_MODE=true",
-		"TITANUS_CONTROLLER_ENDPOINT=https://10.0.0.100:9443",
+		"TITANUS_CONTROLLER_ENDPOINT=https://10.0.0.10:9443",
 	} {
 		if !strings.Contains(env, wanted) {
 			t.Fatalf("daemon environment missing %q:\n%s", wanted, env)
@@ -35,7 +35,7 @@ func TestAgentEnvironmentUsesDedicatedFabricAddress(t *testing.T) {
 	env := agentEnvironment(plan, node, primary, RealmDeployOptions{ClusterPort: 9443})
 	for _, wanted := range []string{
 		"TITANUS_NODE_FABRIC_ADDRESS=192.0.2.21",
-		"TITANUS_CONTROLLER=https://10.0.0.100:9443",
+		"TITANUS_CONTROLLER=https://10.0.0.10:9443",
 	} {
 		if !strings.Contains(env, wanted) {
 			t.Fatalf("agent environment missing %q:\n%s", wanted, env)
