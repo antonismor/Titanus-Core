@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/antonismor/Titanus-Core/internal/security"
 	"net"
 	"os"
 	"path/filepath"
@@ -44,30 +45,31 @@ type RealmNetwork struct {
 }
 
 type Node struct {
-	ID           string             `json:"id"`
+	ID            string             `json:"id"`
 	Address       string             `json:"address"`
-	FabricAddress string           `json:"fabric_address,omitempty"`
-	FabricCIDR   string             `json:"fabric_cidr,omitempty"`
-	Capabilities []model.Capability `json:"capabilities"`
-	Labels       map[string]string  `json:"labels,omitempty"`
-	Resources    Resources          `json:"resources"`
-	State        NodeState          `json:"state"`
-	LastPulse    time.Time          `json:"last_pulse"`
-	JoinedAt     time.Time          `json:"joined_at"`
-	Failures     uint64             `json:"failures"`
-	Successes    uint64             `json:"successes"`
+	FabricAddress string             `json:"fabric_address,omitempty"`
+	FabricCIDR    string             `json:"fabric_cidr,omitempty"`
+	Capabilities  []model.Capability `json:"capabilities"`
+	Labels        map[string]string  `json:"labels,omitempty"`
+	Resources     Resources          `json:"resources"`
+	State         NodeState          `json:"state"`
+	LastPulse     time.Time          `json:"last_pulse"`
+	JoinedAt      time.Time          `json:"joined_at"`
+	Failures      uint64             `json:"failures"`
+	Successes     uint64             `json:"successes"`
 }
 
 type UnitTemplate struct {
-	Source      string        `json:"source"`
-	Command     []string      `json:"command"`
-	Environment []string      `json:"environment,omitempty"`
-	MemoryBytes int64         `json:"memory_bytes"`
-	CPUPercent  int           `json:"cpu_percent"`
-	PidsMax     int           `json:"pids_max"`
-	Fabric      bool          `json:"fabric"`
-	Ports       []fabric.Port `json:"ports,omitempty"`
-	Mounts      []disk.Mount  `json:"mounts,omitempty"`
+	Source      string          `json:"source"`
+	Command     []string        `json:"command"`
+	Environment []string        `json:"environment,omitempty"`
+	MemoryBytes int64           `json:"memory_bytes"`
+	CPUPercent  int             `json:"cpu_percent"`
+	PidsMax     int             `json:"pids_max"`
+	Fabric      bool            `json:"fabric"`
+	Ports       []fabric.Port   `json:"ports,omitempty"`
+	Mounts      []disk.Mount    `json:"mounts,omitempty"`
+	Security    security.Policy `json:"security"`
 }
 
 type Fleet struct {
@@ -129,12 +131,12 @@ type NetworkPolicy struct {
 }
 
 type Assignment struct {
-	ID         string          `json:"id"`
-	Fleet      string          `json:"fleet"`
-	NodeID     string          `json:"node_id"`
-	State      AssignmentState `json:"state"`
-	Generation uint64          `json:"generation"`
-	CreatedAt  time.Time       `json:"created_at"`
+	ID             string          `json:"id"`
+	Fleet          string          `json:"fleet"`
+	NodeID         string          `json:"node_id"`
+	State          AssignmentState `json:"state"`
+	Generation     uint64          `json:"generation"`
+	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
 	LeaseToken     string          `json:"lease_token,omitempty"`
 	LeaseExpiresAt time.Time       `json:"lease_expires_at,omitempty"`
@@ -143,12 +145,12 @@ type Assignment struct {
 }
 
 type State struct {
-	Name        string                `json:"name"`
-	Network     RealmNetwork          `json:"network"`
-	Revision    uint64                `json:"revision"`
-	Nodes       map[string]Node       `json:"nodes"`
-	Fleets      map[string]Fleet      `json:"fleets"`
-	Assignments map[string]Assignment `json:"assignments"`
+	Name        string                   `json:"name"`
+	Network     RealmNetwork             `json:"network"`
+	Revision    uint64                   `json:"revision"`
+	Nodes       map[string]Node          `json:"nodes"`
+	Fleets      map[string]Fleet         `json:"fleets"`
+	Assignments map[string]Assignment    `json:"assignments"`
 	Routes      map[string]Route         `json:"routes"`
 	Policies    map[string]NetworkPolicy `json:"policies"`
 	UpdatedAt   time.Time                `json:"updated_at"`
@@ -444,6 +446,10 @@ func (s *Store) PutFleet(fleet Fleet) error {
 	}
 	if len(fleet.Template.Command) == 0 || strings.TrimSpace(fleet.Template.Source) == "" {
 		return fmt.Errorf("Fleet requires Source and command")
+	}
+	fleet.Template.Security.Normalize()
+	if err := fleet.Template.Security.Validate(); err != nil {
+		return fmt.Errorf("Fleet security: %w", err)
 	}
 	if err := fabric.ValidatePorts(fleet.Template.Ports); err != nil {
 		return err

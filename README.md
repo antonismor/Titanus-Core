@@ -83,6 +83,11 @@ Titanus deliberately uses its own object model:
 
 ## Runtime direction
 
+Native Unit starts enforce `no_new_privs`, a seccomp allowlist and zero Linux
+capabilities by default. Explicit application capabilities are supported in
+Unit and Fleet specifications. See [Runtime security](docs/RUNTIME_SECURITY.md)
+for the policy, compatibility requirements, tested scope and remaining boundaries.
+
 The Titanus runtime is intended to use Linux primitives directly:
 
 - Linux namespaces

@@ -1,12 +1,16 @@
 package unitruntime
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/antonismor/Titanus-Core/internal/security"
+)
 
 func TestParseBytes(t *testing.T) {
 	tests := map[string]int64{
-		"512M":   512 * 1024 * 1024,
-		"1GiB":   1024 * 1024 * 1024,
-		"2GB":    2 * 1000 * 1000 * 1000,
+		"512M":    512 * 1024 * 1024,
+		"1GiB":    1024 * 1024 * 1024,
+		"2GB":     2 * 1000 * 1000 * 1000,
 		"1048576": 1048576,
 	}
 	for input, expected := range tests {
@@ -25,5 +29,25 @@ func TestSpecValidation(t *testing.T) {
 	s.Normalize()
 	if err := s.Validate(); err != nil {
 		t.Fatalf("valid spec rejected: %v", err)
+	}
+}
+
+func TestSpecDefaultsToRestrictedSecurity(t *testing.T) {
+	spec := Spec{ID: "secure01", Source: "busybox", Command: []string{"/bin/sh"}}
+	spec.Normalize()
+	if spec.Security.Profile != security.ProfileRestricted {
+		t.Fatalf("expected restricted Security Profile, got %#v", spec.Security)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSpecRejectsUnknownSecurityProfile(t *testing.T) {
+	spec := Spec{ID: "secure02", Source: "busybox", Command: []string{"/bin/sh"}}
+	spec.Normalize()
+	spec.Security.Profile = "unknown"
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected invalid Security Profile to be rejected")
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 var objectName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
@@ -22,22 +23,23 @@ type NetworkSpec struct {
 }
 
 type Spec struct {
-	ID          string      `json:"id"`
-	Source      string      `json:"source"`
-	Hostname    string      `json:"hostname"`
-	Command     []string    `json:"command"`
-	Environment []string    `json:"environment,omitempty"`
-	MemoryBytes int64       `json:"memory_bytes"`
-	CPUPercent  int         `json:"cpu_percent"`
-	PidsMax     int         `json:"pids_max"`
-	Network     NetworkSpec  `json:"network"`
-	Mounts      []disk.Mount `json:"mounts,omitempty"`
+	ID          string          `json:"id"`
+	Source      string          `json:"source"`
+	Hostname    string          `json:"hostname"`
+	Command     []string        `json:"command"`
+	Environment []string        `json:"environment,omitempty"`
+	MemoryBytes int64           `json:"memory_bytes"`
+	CPUPercent  int             `json:"cpu_percent"`
+	PidsMax     int             `json:"pids_max"`
+	Network     NetworkSpec     `json:"network"`
+	Mounts      []disk.Mount    `json:"mounts,omitempty"`
+	Security    security.Policy `json:"security"`
 }
 
 type Status string
 
 const (
-	StatusCreated Status = "CREATED"
+	StatusCreated  Status = "CREATED"
 	StatusStarting Status = "STARTING"
 	StatusActive   Status = "ACTIVE"
 	StatusStopped  Status = "STOPPED"
@@ -45,17 +47,18 @@ const (
 )
 
 type State struct {
-	ID        string    `json:"id"`
-	Status    Status    `json:"status"`
-	PID       int       `json:"pid,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	StoppedAt time.Time `json:"stopped_at,omitempty"`
+	ID             string    `json:"id"`
+	Status         Status    `json:"status"`
+	PID            int       `json:"pid,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	StartedAt      time.Time `json:"started_at,omitempty"`
+	StoppedAt      time.Time `json:"stopped_at,omitempty"`
 	LastError      string    `json:"last_error,omitempty"`
 	NetworkAddress string    `json:"network_address,omitempty"`
 }
 
 func (s *Spec) Normalize() {
+	s.Security.Normalize()
 	s.ID = strings.TrimSpace(s.ID)
 	s.Source = strings.TrimSpace(s.Source)
 	if strings.TrimSpace(s.Hostname) == "" {
@@ -73,6 +76,9 @@ func (s *Spec) Normalize() {
 }
 
 func (s Spec) Validate() error {
+	if err := s.Security.Validate(); err != nil {
+		return fmt.Errorf("Unit %s security: %w", s.ID, err)
+	}
 	if !objectName.MatchString(s.ID) {
 		return fmt.Errorf("invalid Unit ID %q", s.ID)
 	}
