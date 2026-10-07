@@ -1,6 +1,8 @@
 package realm
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -129,5 +131,51 @@ func TestRealmNetworkRejectsOverlappingFabricAndServiceCIDRs(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected overlapping Fabric and Service CIDRs to be rejected")
+	}
+}
+
+
+func TestOpenMigratesLegacyRoutesToServiceCIDR(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(root, "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConfigureNetwork(RealmNetwork{
+		FabricCIDR: "10.240.0.0/16", ServiceCIDR: "10.250.0.0/24",
+		NodePrefix: 24, VXLANID: 4242,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutFleet(Fleet{
+		Name: "web", Instances: 1, MinimumAvailable: 1,
+		Template: UnitTemplate{Source: "web", Command: []string{"/bin/app"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	route, err := store.PutRoute(Route{Name: "web", Fleet: "web", ListenPort: 8080, TargetPort: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := store.Snapshot()
+	r := legacy.Routes["web"]
+	r.ServiceIP = ""
+	legacy.Routes["web"] = r
+	data, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.path, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(root, "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated := reopened.Snapshot().Routes["web"]
+	if migrated.ServiceIP != route.ServiceIP {
+		t.Fatalf("expected migrated Service IP %s, got %s", route.ServiceIP, migrated.ServiceIP)
 	}
 }
