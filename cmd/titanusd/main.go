@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/antonismor/Titanus-Core/internal/consensus"
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
@@ -77,8 +78,33 @@ func main() {
 	defer leaseManager.Close()
 	api := controlapi.New(store, runtimeManager, sourceManager, leaseManager)
 	api.CAPath = envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
-	if envBool("TITANUS_CONTROLLER_MODE") {
+	if _, e := os.Stat(filepath.Join(filepath.Dir(api.CAPath), "ca.key")); envBool("TITANUS_CONTROLLER_MODE") && e == nil {
 		api.Authority = &identity.Authority{Dir: filepath.Dir(api.CAPath), CertPath: api.CAPath, KeyPath: filepath.Join(filepath.Dir(api.CAPath), "ca.key"), Realm: realmName}
+	}
+	if _, e := os.Stat(filepath.Join(stateRoot, "realm", "consensus", "membership.json")); e == nil && strings.TrimSpace(os.Getenv("TITANUS_HA_CONFIG")) == "" {
+		log.Fatal("HA-managed Realm cannot start without TITANUS_HA_CONFIG")
+	}
+	var quorum *consensus.Node
+	if configPath := strings.TrimSpace(os.Getenv("TITANUS_HA_CONFIG")); configPath != "" {
+		if !envBool("TITANUS_CONTROLLER_MODE") {
+			log.Fatal("HA requires controller mode")
+		}
+		cfg, e := consensus.LoadConfig(configPath)
+		if e != nil {
+			log.Fatal(e)
+		}
+		if cfg.Realm != realmName || cfg.ID != os.Getenv("TITANUS_NODE_ID") {
+			log.Fatal("HA config must match daemon Realm and Node identity")
+		}
+		quorum, e = consensus.Open(stateRoot, cfg, store.Snapshot(), api.CAPath, envDefault("TITANUS_CERT", "/etc/titanus/pki/node.crt"), envDefault("TITANUS_KEY", "/etc/titanus/pki/node.key"))
+		if e != nil {
+			log.Fatalf("Realm consensus: %v", e)
+		}
+		defer quorum.Close()
+		if e = store.EnableConsensus(quorum); e != nil {
+			log.Fatal(e)
+		}
+		api.Consensus = quorum
 	}
 	api.Register(mux)
 
@@ -115,6 +141,20 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
+	if quorum != nil {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				_ = quorum.Initialize()
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
 	go healthLoop(ctx, store)
 	go runtimeManager.RunHealth(ctx)
 	if api.Authority != nil {
@@ -136,7 +176,13 @@ func main() {
 	if gatewayMode {
 		var routeManager *route.Manager
 		if controllerMode {
-			routeManager = route.NewManager(store)
+			if quorum != nil {
+				routeManager = route.NewManagerWithStateProvider(func() (realm.State, error) {
+					return clusterClient.RealmState(controllerEndpoint)
+				})
+			} else {
+				routeManager = route.NewManager(store)
+			}
 			log.Printf("Titanus Route gateway enabled with local controller state")
 		} else if controllerEndpoint != "" {
 			routeManager = route.NewManagerWithStateProvider(func() (realm.State, error) {
@@ -152,7 +198,11 @@ func main() {
 	}
 
 	if controllerMode {
-		controller := &reconcile.Controller{Store: store, Nodes: clusterClient, Sources: sourceManager, Interval: 5 * time.Second}
+		var nodes reconcile.NodeRuntime = clusterClient
+		if quorum != nil {
+			nodes = &reconcile.GuardedNodes{NodeRuntime: clusterClient, Check: quorum.CheckLeader}
+		}
+		controller := &reconcile.Controller{Store: store, Nodes: nodes, Sources: sourceManager, Interval: 5 * time.Second}
 		go controller.Run(ctx)
 		log.Printf("Titanus Fleet reconciler enabled")
 	}
@@ -226,6 +276,9 @@ func healthLoop(ctx context.Context, store *realm.Store) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			if e := store.CheckLeader(); e != nil {
+				continue
+			}
 			changed, err := store.EvaluateHealth(now.UTC(), 30*time.Second, 90*time.Second)
 			if err != nil {
 				log.Printf("Realm health evaluation failed: %v", err)

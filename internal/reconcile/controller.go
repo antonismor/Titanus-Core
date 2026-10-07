@@ -47,56 +47,108 @@ func (c *Controller) Run(ctx context.Context) {
 }
 
 func (c *Controller) Once() error {
- if c.Store==nil || c.Nodes==nil {return fmt.Errorf("Realm reconciler is not configured")}
- c.Store.Orchestration.Lock();defer c.Store.Orchestration.Unlock()
- state:=c.Store.Snapshot()
- if err:=c.cleanupDeletedFleets(state);err!=nil{return err}
- engine:=realm.NewPlacementEngine()
- for name:=range state.Fleets {
-  state=c.Store.Snapshot();fleet:=state.Fleets[name]
-  // Refresh readiness before deciding which old Units can be retired.
-  for _,a:=range assignmentsForFleet(state,name) {if a.State!=realm.AssignmentStopped {c.syncAssignment(state,fleet,a)}}
-  state=c.Store.Snapshot();plan:=engine.Rolling(state,fleet,time.Now().UTC())
-  retained:=append([]realm.Assignment(nil),plan.Keep...)
-  for _,a:=range plan.Retire {
-   if err:=c.cleanupAssignment(state,a);err!=nil {
-    // Stop may have succeeded before delete failed. Preserve the latest
-    // state so the partially retired application is never restarted.
-    retained=append(retained,c.Store.Snapshot().Assignments[a.ID])
-   }
-  }
-  retained=append(retained,plan.Create...)
-  if err:=c.Store.SetAssignments(name,retained);err!=nil{return err}
-  state=c.Store.Snapshot()
-  for _,a:=range plan.Create {c.syncAssignment(state,fleet,a)}
- }
- return nil
+	if c.Store == nil || c.Nodes == nil {
+		return fmt.Errorf("Realm reconciler is not configured")
+	}
+	c.Store.Orchestration.Lock()
+	defer c.Store.Orchestration.Unlock()
+	if err := c.Store.CheckLeader(); err != nil {
+		return err
+	}
+	state := c.Store.Snapshot()
+	if err := c.cleanupDeletedFleets(state); err != nil {
+		return err
+	}
+	engine := realm.NewPlacementEngine()
+	for name := range state.Fleets {
+		state = c.Store.Snapshot()
+		fleet := state.Fleets[name]
+		// Refresh readiness before deciding which old Units can be retired.
+		for _, a := range assignmentsForFleet(state, name) {
+			if a.State != realm.AssignmentStopped {
+				c.syncAssignment(state, fleet, a)
+			}
+		}
+		state = c.Store.Snapshot()
+		plan := engine.Rolling(state, fleet, time.Now().UTC())
+		retained := append([]realm.Assignment(nil), plan.Keep...)
+		for _, a := range plan.Retire {
+			if err := c.cleanupAssignment(state, a); err != nil {
+				// Stop may have succeeded before delete failed. Preserve the latest
+				// state so the partially retired application is never restarted.
+				retained = append(retained, c.Store.Snapshot().Assignments[a.ID])
+			}
+		}
+		retained = append(retained, plan.Create...)
+		if err := c.Store.SetAssignments(name, retained); err != nil {
+			return err
+		}
+		state = c.Store.Snapshot()
+		for _, a := range plan.Create {
+			c.syncAssignment(state, fleet, a)
+		}
+	}
+	return nil
 }
-func (c *Controller) syncAssignment(state realm.State,fleet realm.Fleet,assignment realm.Assignment) {
- node,ok:=state.Nodes[assignment.NodeID];if !ok || node.State!=realm.NodeReady {return}
- now:=time.Now().UTC()
- if !assignment.StartAfter.IsZero() && now.Before(assignment.StartAfter) {return}
- revision,err:=fleet.ForGeneration(assignment.Generation)
- if err!=nil {_=c.Store.UpdateAssignmentState(assignment.ID,realm.AssignmentImpaired);return}
- token:=assignment.LeaseToken
- if token=="" {token,err=lease.NewToken();if err!=nil{return}}
- const leaseTTL=20*time.Second
- record,err:=c.Nodes.RenewLease(node.Address,assignment.ID,token,leaseTTL)
- if err!=nil {_=c.Store.UpdateAssignmentState(assignment.ID,realm.AssignmentImpaired);return}
- // Response latency must not extend the node's authoritative lease deadline.
- deadline:=record.ExpiresAt
- if deadline.IsZero() || deadline.After(now.Add(leaseTTL)) {deadline=now.Add(leaseTTL)}
- if err:=c.Store.RenewAssignmentLease(assignment.ID,token,deadline);err!=nil {
-  _=c.Nodes.RevokeLease(node.Address,assignment.ID,token);_=c.Store.UpdateAssignmentState(assignment.ID,realm.AssignmentImpaired);return
- }
- spec:=unitSpec(revision,assignment)
- if err:=c.Nodes.EnsureSource(node.Address,spec.Source,c.Sources);err!=nil {_=c.Store.UpdateAssignmentState(assignment.ID,realm.AssignmentImpaired);return}
- if _,err:=c.Nodes.EnsureUnit(node.Address,spec);err!=nil {_=c.Store.UpdateAssignmentState(assignment.ID,realm.AssignmentImpaired);return}
- runtimeState,err:=c.Nodes.StartUnit(node.Address,assignment.ID)
- if err!=nil {_=c.Store.UpdateAssignmentState(assignment.ID,realm.AssignmentImpaired);return}
- status:=realm.AssignmentStarting
- if runtimeState.Status==unitruntime.StatusActive && runtimeState.Ready {status=realm.AssignmentActive}
- _=c.Store.UpdateAssignmentRuntime(assignment.ID,runtimeState.NetworkAddress,status)
+func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assignment realm.Assignment) {
+	node, ok := state.Nodes[assignment.NodeID]
+	if !ok || node.State != realm.NodeReady {
+		return
+	}
+	if err := c.Store.CheckLeader(); err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	if !assignment.StartAfter.IsZero() && now.Before(assignment.StartAfter) {
+		return
+	}
+	revision, err := fleet.ForGeneration(assignment.Generation)
+	if err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	token := assignment.LeaseToken
+	if token == "" {
+		token, err = lease.NewToken()
+		if err != nil {
+			return
+		}
+	}
+	const leaseTTL = 20 * time.Second
+	record, err := c.Nodes.RenewLease(node.Address, assignment.ID, token, leaseTTL)
+	if err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	// Response latency must not extend the node's authoritative lease deadline.
+	deadline := record.ExpiresAt
+	if deadline.IsZero() || deadline.After(now.Add(leaseTTL)) {
+		deadline = now.Add(leaseTTL)
+	}
+	if err := c.Store.RenewAssignmentLease(assignment.ID, token, deadline); err != nil {
+		_ = c.Nodes.RevokeLease(node.Address, assignment.ID, token)
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	spec := unitSpec(revision, assignment)
+	if err := c.Nodes.EnsureSource(node.Address, spec.Source, c.Sources); err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	if _, err := c.Nodes.EnsureUnit(node.Address, spec); err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	runtimeState, err := c.Nodes.StartUnit(node.Address, assignment.ID)
+	if err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	status := realm.AssignmentStarting
+	if runtimeState.Status == unitruntime.StatusActive && runtimeState.Ready {
+		status = realm.AssignmentActive
+	}
+	_ = c.Store.UpdateAssignmentRuntime(assignment.ID, runtimeState.NetworkAddress, status)
 }
 
 func (c *Controller) cleanupDeletedFleets(state realm.State) error {
@@ -106,30 +158,58 @@ func (c *Controller) cleanupDeletedFleets(state realm.State) error {
 			groups[assignment.Fleet] = append(groups[assignment.Fleet], assignment)
 		}
 	}
- for name,assignments:=range groups {
- retained:=[]realm.Assignment{}
- for _,a:=range assignments {if err:=c.cleanupAssignment(state,a);err!=nil{retained=append(retained,c.Store.Snapshot().Assignments[a.ID])}}
- if err:=c.Store.SetAssignments(name,retained);err!=nil{return err}
- }
+	for name, assignments := range groups {
+		retained := []realm.Assignment{}
+		for _, a := range assignments {
+			if err := c.cleanupAssignment(state, a); err != nil {
+				retained = append(retained, c.Store.Snapshot().Assignments[a.ID])
+			}
+		}
+		if err := c.Store.SetAssignments(name, retained); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
-func (c *Controller) cleanupAssignment(state realm.State,assignment realm.Assignment) error {
- node,ok:=state.Nodes[assignment.NodeID]
- if !ok || node.State==realm.NodeUnreachable || node.Address=="" {
-  fleet,exists:=state.Fleets[assignment.Fleet]
-  if !exists {return fmt.Errorf("deleted Fleet requires acknowledged node cleanup")}
-  previous,err:=fleet.ForGeneration(assignment.Generation);if err!=nil{return err}
-  // Writable storage cannot be released by a time-based scheduling lease.
-  for _,m:=range previous.Template.Mounts {if !m.ReadOnly{return fmt.Errorf("writable Disk needs node fencing")}}
-  if assignment.LeaseExpiresAt.IsZero() || time.Now().Before(assignment.LeaseExpiresAt.Add(2*time.Second)) {return fmt.Errorf("node lease has not expired")}
-  return nil
- }
- if _,err:=c.Nodes.StopUnit(node.Address,assignment.ID);err!=nil{return err}
- if err:=c.Store.UpdateAssignmentState(assignment.ID,realm.AssignmentStopped);err!=nil{return err}
- if assignment.LeaseToken!="" {if err:=c.Nodes.RevokeLease(node.Address,assignment.ID,assignment.LeaseToken);err!=nil{return err}}
- return c.Nodes.DeleteUnit(node.Address,assignment.ID)
+func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assignment) error {
+	if err := c.Store.CheckLeader(); err != nil {
+		return err
+	}
+	node, ok := state.Nodes[assignment.NodeID]
+	if !ok || node.State == realm.NodeUnreachable || node.Address == "" {
+		fleet, exists := state.Fleets[assignment.Fleet]
+		if !exists {
+			return fmt.Errorf("deleted Fleet requires acknowledged node cleanup")
+		}
+		previous, err := fleet.ForGeneration(assignment.Generation)
+		if err != nil {
+			return err
+		}
+		// Writable storage cannot be released by a time-based scheduling lease.
+		for _, m := range previous.Template.Mounts {
+			if !m.ReadOnly {
+				return fmt.Errorf("writable Disk needs node fencing")
+			}
+		}
+		if assignment.LeaseExpiresAt.IsZero() || time.Now().Before(assignment.LeaseExpiresAt.Add(2*time.Second)) {
+			return fmt.Errorf("node lease has not expired")
+		}
+		return nil
+	}
+	if _, err := c.Nodes.StopUnit(node.Address, assignment.ID); err != nil {
+		return err
+	}
+	if err := c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentStopped); err != nil {
+		return err
+	}
+	if assignment.LeaseToken != "" {
+		if err := c.Nodes.RevokeLease(node.Address, assignment.ID, assignment.LeaseToken); err != nil {
+			return err
+		}
+	}
+	return c.Nodes.DeleteUnit(node.Address, assignment.ID)
 }
 
 func staleAssignments(current, desired []realm.Assignment) []realm.Assignment {

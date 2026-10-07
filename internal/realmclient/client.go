@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
+	"github.com/antonismor/Titanus-Core/internal/controllerclient"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/realm"
@@ -38,7 +39,21 @@ func New(ca, cert, key string) (*Client, error) {
 
 func (c *Client) RealmState(address string) (realm.State, error) {
 	var state realm.State
-	err := c.doJSON(http.MethodGet, endpoint(address)+"/v1/realm/state", nil, &state)
+	endpoints := strings.Split(address, ",")
+	origins := make([]string, 0, len(endpoints))
+	for _, value := range endpoints {
+		origins = append(origins, endpoint(value))
+	}
+	failover, err := controllerclient.New(c.http.Transport, strings.Join(origins, ","))
+	if err != nil {
+		return state, err
+	}
+	httpCopy := *c.http
+	httpCopy.Transport = failover
+	httpCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	clientCopy := *c
+	clientCopy.http = &httpCopy
+	err = clientCopy.doJSON(http.MethodGet, origins[0]+"/v1/realm/state", nil, &state)
 	return state, err
 }
 

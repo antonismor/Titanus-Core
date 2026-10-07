@@ -15,7 +15,14 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
+type LeaderGate interface {
+	CheckLeader() error
+	LeaderAPI() string
+	Status() map[string]string
+}
+
 type Server struct {
+	Consensus LeaderGate
 	Store     *realm.Store
 	Runtime   *unitruntime.Manager
 	Sources   *source.Manager
@@ -34,6 +41,17 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/realm/consensus", s.authorize(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		if s.Consensus == nil {
+			writeJSON(w, http.StatusOK, map[string]string{"state": "standalone"})
+			return
+		}
+		writeJSON(w, http.StatusOK, s.Consensus.Status())
+	}))
 	mux.HandleFunc("/v1/identity/crl", s.authorize(s.certificateRevocations))
 	mux.HandleFunc("/v1/identity/renew", s.authorize(s.certificateRenewal))
 	mux.HandleFunc("/v1/realm/state", s.authorize(s.state))
@@ -301,7 +319,9 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
 		for name, fleet := range state.Fleets {
 			fleet.Template.Environment = nil
- for i:=range fleet.History {fleet.History[i].Template.Environment=nil}
+			for i := range fleet.History {
+				fleet.History[i].Template.Environment = nil
+			}
 			state.Fleets[name] = fleet
 		}
 		for id, assignment := range state.Assignments {
@@ -498,7 +518,7 @@ func (s *Server) fleetObject(w http.ResponseWriter, r *http.Request) {
 				assignments = append(assignments, assignment)
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"fleet": fleet, "assignments": assignments,"rollout":realm.NewPlacementEngine().Rolling(state,fleet,time.Now().UTC())})
+		writeJSON(w, http.StatusOK, map[string]any{"fleet": fleet, "assignments": assignments, "rollout": realm.NewPlacementEngine().Rolling(state, fleet, time.Now().UTC())})
 	case r.Method == http.MethodPost && action == "scale":
 		var req ScaleFleetRequest
 		if err := decodeJSON(r, &req); err != nil {
@@ -511,14 +531,22 @@ func (s *Server) fleetObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, fleet)
-	case r.Method==http.MethodPost && action=="rollback":
- var req struct {Generation uint64 `json:"generation"`}
- if err:=decodeJSON(r,&req);err!=nil{writeError(w,http.StatusBadRequest,err);return}
- fleet,err:=s.Store.RollbackFleet(name,req.Generation)
- if err!=nil{writeError(w,http.StatusConflict,err);return}
- writeJSON(w,http.StatusOK,fleet)
- case r.Method == http.MethodDelete && action == "":
- if err := s.Store.DeleteFleet(name); err != nil {
+	case r.Method == http.MethodPost && action == "rollback":
+		var req struct {
+			Generation uint64 `json:"generation"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		fleet, err := s.Store.RollbackFleet(name, req.Generation)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, fleet)
+	case r.Method == http.MethodDelete && action == "":
+		if err := s.Store.DeleteFleet(name); err != nil {
 			writeError(w, http.StatusNotFound, err)
 			return
 		}
@@ -549,8 +577,12 @@ func (s *Server) fleets(w http.ResponseWriter, r *http.Request) {
 		}
 		state := s.Store.Snapshot()
 		fleet = state.Fleets[fleet.Name]
- assignments:=make([]realm.Assignment,0)
- for _,a:=range state.Assignments {if a.Fleet==fleet.Name{assignments=append(assignments,a)}}
+		assignments := make([]realm.Assignment, 0)
+		for _, a := range state.Assignments {
+			if a.Fleet == fleet.Name {
+				assignments = append(assignments, a)
+			}
+		}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"fleet": fleet, "assignments": assignments, "revision": s.Store.Snapshot().Revision,
 		})
@@ -606,6 +638,14 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 		if !ok || !identity.Allowed(principal, r.Method, r.URL.Path) {
 			writeError(w, http.StatusForbidden, fmt.Errorf("role does not permit this operation"))
 			return
+		}
+		if s.Consensus != nil && strings.HasPrefix(r.URL.Path, "/v1/realm/") && r.URL.Path != "/v1/realm/consensus" {
+			if err := s.Consensus.CheckLeader(); err != nil {
+				w.Header().Set("X-Titanus-Rejected", "true")
+				w.Header().Set("X-Titanus-Leader", s.Consensus.LeaderAPI())
+				writeError(w, http.StatusServiceUnavailable, err)
+				return
+			}
 		}
 		next(w, r)
 	}

@@ -8,10 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"encoding/json"
+	"github.com/antonismor/Titanus-Core/internal/consensus"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
 	"github.com/antonismor/Titanus-Core/internal/remote"
+	"net"
+	"strconv"
 )
 
 type RealmDeployOptions struct {
@@ -20,6 +24,7 @@ type RealmDeployOptions struct {
 	NodePrefix    int
 	VXLANID       int
 	ClusterPort   int
+	RaftPort      int
 	StartServices bool
 }
 
@@ -56,6 +61,16 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 	}
 	if opts.ClusterPort == 0 {
 		opts.ClusterPort = 9443
+	}
+	if opts.RaftPort == 0 {
+		opts.RaftPort = opts.ClusterPort + 1
+	}
+	if opts.RaftPort < 1 || opts.RaftPort > 65535 || opts.RaftPort == opts.ClusterPort {
+		return nil, fmt.Errorf("Raft port must be distinct and between 1 and 65535")
+	}
+	peers := controllerPeers(plan, opts)
+	if len(peers) > 1 && len(peers) != 3 && len(peers) != 5 {
+		return nil, fmt.Errorf("HA requires 3 or 5 CONTROL nodes")
 	}
 	if opts.PKIDir == "" {
 		opts.PKIDir = filepath.Join(".", ".titanus-pki", plan.RealmName)
@@ -151,7 +166,7 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		if err != nil {
 			return nil, fmt.Errorf("issue certificate for %s: %w", node.Name, err)
 		}
-		controller := node.Name == primary.Name
+		controller := hasCapability(node, model.CapabilityControl)
 		gateway := hasCapability(node, model.CapabilityGateway) || (!gatewayExplicit && controller)
 
 		daemonEnvPath := filepath.Join(tempDir, node.Name+"-daemon.env")
@@ -161,6 +176,17 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		}
 		if err := os.WriteFile(agentEnvPath, []byte(agentEnvironment(plan, node, primary, opts)), 0600); err != nil {
 			return nil, err
+		}
+		if controller && len(peers) > 1 {
+			config := consensus.Config{ID: node.Name, Realm: plan.RealmName, Peers: peers, Bootstrap: node.Name == primary.Name}
+			if err := config.Validate(); err != nil {
+				return nil, err
+			}
+			b, _ := json.Marshal(config)
+			configPath := filepath.Join(tempDir, node.Name+"-ha.json")
+			if err := os.WriteFile(configPath, b, 0600); err != nil {
+				return nil, err
+			}
 		}
 		prepared = append(prepared, nodeFiles{
 			node: node, cert: cert, key: key,
@@ -174,17 +200,28 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		if err := d.stageNode(item.node, binaries, auth.CertPath, item.cert, item.key, daemonUnit, agentUnit, item.daemonEnv, item.agentEnv); err != nil {
 			return results, err
 		}
-		if item.controller {
+		if item.node.Name == primary.Name {
 			if err := d.SSH.CopyFile(item.node, auth.KeyPath, "/tmp/titanus-ca.key"); err != nil {
 				return results, fmt.Errorf("copy Realm CA key to primary %s: %w", item.node.Name, err)
 			}
 		}
-		if err := d.installNode(item.node, item.controller); err != nil {
+		if item.controller && len(peers) > 1 {
+			if err := d.SSH.CopyFile(item.node, filepath.Join(tempDir, item.node.Name+"-ha.json"), "/tmp/titanus-ha.json"); err != nil {
+				return results, err
+			}
+			if _, err := d.SSH.Run(item.node, remoteSudoPrefix+"; $SUDO install -d -m 0755 /etc/titanus; $SUDO install -m 0600 /tmp/titanus-ha.json /etc/titanus/ha.json; $SUDO rm -f /tmp/titanus-ha.json"); err != nil {
+				return results, err
+			}
+		}
+		if err := d.installNode(item.node, item.node.Name == primary.Name); err != nil {
 			return results, err
 		}
 		role := "EXECUTION"
 		if item.controller {
-			role = "PRIMARY-CONTROL"
+			role = "CONTROL-VOTER"
+			if item.node.Name == primary.Name {
+				role = "PRIMARY-CONTROL"
+			}
 		} else if hasCapability(item.node, model.CapabilityControl) {
 			role = "CONTROL-STANDBY"
 		}
@@ -197,8 +234,12 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		})
 	}
 
-	if err := d.seedRealm(primary, plan, opts); err != nil {
-		return results, err
+	for _, item := range prepared {
+		if item.controller {
+			if err := d.seedRealm(item.node, plan, opts); err != nil {
+				return results, err
+			}
+		}
 	}
 	if !opts.StartServices {
 		return results, nil
@@ -336,10 +377,22 @@ func hasCapability(node model.NodeSpec, wanted model.Capability) bool {
 }
 
 func daemonEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts RealmDeployOptions, controller, gateway bool) string {
-	return fmt.Sprintf(
+	env := fmt.Sprintf(
 		"TITANUS_STATE_ROOT=/var/lib/titanus\nTITANUS_REALM_NAME=%s\nTITANUS_NODE_ID=%s\nTITANUS_CONTROLLER_MODE=%t\nTITANUS_GATEWAY_MODE=%t\nTITANUS_CONTROLLER_ENDPOINT=https://%s:%d\nTITANUS_CLUSTER_LISTEN=0.0.0.0:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\n",
 		plan.RealmName, node.Name, controller, gateway, primary.ManagementIP, opts.ClusterPort, opts.ClusterPort,
 	)
+	peers := controllerPeers(plan, opts)
+	if len(peers) > 1 {
+		origins := []string{}
+		for _, p := range peers {
+			origins = append(origins, p.API)
+		}
+		env = strings.Replace(env, "TITANUS_CONTROLLER_ENDPOINT=https://"+primary.ManagementIP+":"+strconv.Itoa(opts.ClusterPort), "TITANUS_CONTROLLER_ENDPOINT="+strings.Join(origins, ","), 1)
+		if controller {
+			env += "TITANUS_HA_CONFIG=/etc/titanus/ha.json\n"
+		}
+	}
+	return env
 }
 
 func agentEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts RealmDeployOptions) string {
@@ -352,10 +405,32 @@ func agentEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts R
 	if fabricAddress == "" {
 		fabricAddress = node.ManagementIP
 	}
-	return fmt.Sprintf(
+	env := fmt.Sprintf(
 		"TITANUS_NODE_ID=%s\nTITANUS_NODE_ADDRESS=%s\nTITANUS_NODE_FABRIC_ADDRESS=%s\nTITANUS_CONTROLLER=https://%s:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\nTITANUS_CAPABILITIES=%s\n",
 		node.Name, node.ManagementIP, fabricAddress, primary.ManagementIP, opts.ClusterPort, strings.Join(caps, ","),
 	)
+	peers := controllerPeers(plan, opts)
+	if len(peers) > 1 {
+		origins := []string{}
+		for _, p := range peers {
+			origins = append(origins, p.API)
+		}
+		env = strings.Replace(env, "TITANUS_CONTROLLER=https://"+primary.ManagementIP+":"+strconv.Itoa(opts.ClusterPort), "TITANUS_CONTROLLER="+strings.Join(origins, ","), 1)
+	}
+	return env
+}
+func controllerPeers(plan model.RealmPlan, opts RealmDeployOptions) []consensus.Peer {
+	peers := []consensus.Peer{}
+	port := opts.RaftPort
+	if port == 0 {
+		port = opts.ClusterPort + 1
+	}
+	for _, n := range plan.Nodes {
+		if hasCapability(n, model.CapabilityControl) {
+			peers = append(peers, consensus.Peer{ID: n.Name, Address: net.JoinHostPort(n.ManagementIP, strconv.Itoa(port)), API: "https://" + net.JoinHostPort(n.ManagementIP, strconv.Itoa(opts.ClusterPort))})
+		}
+	}
+	return peers
 }
 
 func validateEnvValue(value string) error {

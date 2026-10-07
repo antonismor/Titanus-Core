@@ -272,3 +272,23 @@ certificate/key pairs before expiry and synchronize signed CRLs. Existing
 role-less certificates require reissuance; see
 [API identity and migration](docs/API_IDENTITY.md). The complete production
 milestones and remaining failure testing are tracked in issue #8.
+
+## Replicated Realm control plane
+
+Plans with 3 or 5 CONTROL nodes now use embedded Raft inside `titanusd` to elect
+one quorum-backed leader and durably replicate Realm objects, assignment state
+and Fleet rollback histories. Followers and minority partitions reject Realm
+operations. Agents and Gateways discover the available leader among explicitly
+configured mTLS endpoints; the reconciler verifies quorum before node actions.
+
+`realm deploy` configures all voters and a separate authenticated consensus port
+(default 9444). `titanus realm consensus` reports local Raft status. Standalone
+single-controller behavior remains available; HA-managed state cannot be edited
+through the old direct-file path. Native AMD64/ARM64 CI exercises real TLS quorum,
+leader loss, partition/rejoin, full log restart and snapshot recovery.
+
+See [Control-plane HA](docs/CONTROL_PLANE_HA.md) for configuration, migration and
+precise limits: 3/5 static voters, a 512 KiB Realm entry cap, Sources pre-staged on
+all controllers, designated-primary PKI signing and separate storage fencing.
+This does not mark the remaining isolation, storage, observability, UI and release
+milestones as complete.

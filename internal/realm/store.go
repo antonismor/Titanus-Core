@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/disk"
+	"github.com/antonismor/Titanus-Core/internal/durable"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/model"
- "github.com/antonismor/Titanus-Core/internal/durable"
 )
 
 type NodeState string
@@ -76,8 +76,8 @@ type UnitTemplate struct {
 }
 
 type Fleet struct {
- MaxSurge int `json:"max_surge"`
- History []FleetRevision `json:"history,omitempty"`
+	MaxSurge         int               `json:"max_surge"`
+	History          []FleetRevision   `json:"history,omitempty"`
 	Name             string            `json:"name"`
 	Instances        int               `json:"instances"`
 	MinimumAvailable int               `json:"minimum_available"`
@@ -162,11 +162,13 @@ type State struct {
 }
 
 type Store struct {
- // Serializes desired changes and physical rollout operations.
- Orchestration sync.Mutex
-	path string
-	mu   sync.Mutex
-	data State
+	// Serializes desired changes and physical rollout operations.
+	Orchestration sync.Mutex
+	path          string
+	mu            sync.Mutex
+	data          State
+	consensus     Consensus
+	haManaged     bool
 }
 
 func Open(stateRoot, realmName string) (*Store, error) {
@@ -174,7 +176,11 @@ func Open(stateRoot, realmName string) (*Store, error) {
 		stateRoot = "/var/lib/titanus"
 	}
 	path := filepath.Join(stateRoot, "realm", "state.json")
-	store := &Store{path: path}
+	_, haErr := os.Stat(filepath.Join(stateRoot, "realm", "consensus", "membership.json"))
+	if haErr != nil && !os.IsNotExist(haErr) {
+		return nil, haErr
+	}
+	store := &Store{path: path, haManaged: haErr == nil}
 	if err := store.load(realmName); err != nil {
 		return nil, err
 	}
@@ -182,14 +188,14 @@ func Open(stateRoot, realmName string) (*Store, error) {
 }
 
 func (s *Store) Snapshot() State {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	return cloneState(s.data)
 }
 
 func (s *Store) UpsertNode(node Node) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	if strings.TrimSpace(node.ID) == "" {
 		return fmt.Errorf("node ID is required")
 	}
@@ -236,8 +242,8 @@ func (s *Store) UpsertNode(node Node) error {
 }
 
 func (s *Store) ConfigureNetwork(network RealmNetwork) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	if network.NodePrefix == 0 {
 		network.NodePrefix = 24
 	}
@@ -391,8 +397,8 @@ func uintIPv4(value uint32) net.IP {
 }
 
 func (s *Store) Pulse(nodeID string, resources Resources) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	node, ok := s.data.Nodes[nodeID]
 	if !ok {
 		return fmt.Errorf("unknown Realm Node %s", nodeID)
@@ -408,8 +414,8 @@ func (s *Store) Pulse(nodeID string, resources Resources) error {
 }
 
 func (s *Store) EvaluateHealth(now time.Time, suspectAfter, unreachableAfter time.Duration) ([]Node, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	changed := make([]Node, 0)
 	for id, node := range s.data.Nodes {
 		if node.State == NodeDisabled || node.State == NodeDraining {
@@ -440,12 +446,13 @@ func (s *Store) EvaluateHealth(now time.Time, suspectAfter, unreachableAfter tim
 }
 
 func (s *Store) PutFleet(fleet Fleet) error {
- s.Orchestration.Lock();defer s.Orchestration.Unlock()
- return s.putFleet(fleet)
+	s.Orchestration.Lock()
+	defer s.Orchestration.Unlock()
+	return s.putFleet(fleet)
 }
 func (s *Store) putFleet(fleet Fleet) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	if strings.TrimSpace(fleet.Name) == "" {
 		return fmt.Errorf("Fleet name is required")
 	}
@@ -455,9 +462,13 @@ func (s *Store) putFleet(fleet Fleet) error {
 	if fleet.MinimumAvailable < 0 || fleet.MinimumAvailable > fleet.Instances {
 		return fmt.Errorf("Fleet minimum_available must be between 0 and instances")
 	}
-	if fleet.MaxSurge == 0 {fleet.MaxSurge=1}
- if fleet.MaxSurge < 1 || fleet.MaxSurge > 100 {return fmt.Errorf("max_surge must be between 1 and 100")}
- if len(fleet.Template.Command) == 0 || strings.TrimSpace(fleet.Template.Source) == "" {
+	if fleet.MaxSurge == 0 {
+		fleet.MaxSurge = 1
+	}
+	if fleet.MaxSurge < 1 || fleet.MaxSurge > 100 {
+		return fmt.Errorf("max_surge must be between 1 and 100")
+	}
+	if len(fleet.Template.Command) == 0 || strings.TrimSpace(fleet.Template.Source) == "" {
 		return fmt.Errorf("Fleet requires Source and command")
 	}
 	fleet.Template.Health.Normalize("always")
@@ -476,19 +487,25 @@ func (s *Store) putFleet(fleet Fleet) error {
 	}
 	if existing, ok := s.data.Fleets[fleet.Name]; ok {
 		fleet.Generation = existing.Generation + 1
- fleet.History=append(append([]FleetRevision(nil),existing.History...),revisionOf(existing))
- if len(fleet.History)>10 {
-  kept:=fleet.History[:0]
-  for i,r:=range fleet.History {
-   used:=i>=len(fleet.History)-10
-   for _,a:=range s.data.Assignments {if a.Fleet==fleet.Name && a.Generation==r.Generation {used=true}}
-   if used {kept=append(kept,r)}
-  }
-  fleet.History=kept
- }
+		fleet.History = append(append([]FleetRevision(nil), existing.History...), revisionOf(existing))
+		if len(fleet.History) > 10 {
+			kept := fleet.History[:0]
+			for i, r := range fleet.History {
+				used := i >= len(fleet.History)-10
+				for _, a := range s.data.Assignments {
+					if a.Fleet == fleet.Name && a.Generation == r.Generation {
+						used = true
+					}
+				}
+				if used {
+					kept = append(kept, r)
+				}
+			}
+			fleet.History = kept
+		}
 	} else {
 		fleet.Generation = 1
- fleet.History=nil
+		fleet.History = nil
 	}
 	fleet.UpdatedAt = time.Now().UTC()
 	s.data.Fleets[fleet.Name] = fleet
@@ -496,8 +513,8 @@ func (s *Store) putFleet(fleet Fleet) error {
 }
 
 func (s *Store) PutRoute(route Route) (Route, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	route.Name = strings.TrimSpace(route.Name)
 	route.Fleet = strings.TrimSpace(route.Fleet)
 	route.ServiceIP = strings.TrimSpace(route.ServiceIP)
@@ -560,8 +577,8 @@ func (s *Store) PutRoute(route Route) (Route, error) {
 }
 
 func (s *Store) PutPolicy(policy NetworkPolicy) (NetworkPolicy, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 
 	policy.Name = strings.TrimSpace(policy.Name)
 	policy.Fleet = strings.TrimSpace(policy.Fleet)
@@ -673,15 +690,15 @@ func (s *Store) PutPolicy(policy NetworkPolicy) (NetworkPolicy, error) {
 }
 
 func (s *Store) GetPolicy(name string) (NetworkPolicy, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	policy, ok := s.data.Policies[name]
 	return policy, ok
 }
 
 func (s *Store) DeletePolicy(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	if _, ok := s.data.Policies[name]; !ok {
 		return fmt.Errorf("unknown Network Policy %s", name)
 	}
@@ -690,8 +707,8 @@ func (s *Store) DeletePolicy(name string) error {
 }
 
 func (s *Store) DeleteRoute(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	if _, ok := s.data.Routes[name]; !ok {
 		return fmt.Errorf("unknown Route %s", name)
 	}
@@ -700,15 +717,15 @@ func (s *Store) DeleteRoute(name string) error {
 }
 
 func (s *Store) GetRoute(name string) (Route, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	route, ok := s.data.Routes[name]
 	return route, ok
 }
 
 func (s *Store) UpdateAssignmentRuntime(id, address string, state AssignmentState) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	assignment, ok := s.data.Assignments[id]
 	if !ok {
 		return fmt.Errorf("unknown assignment %s", id)
@@ -721,16 +738,17 @@ func (s *Store) UpdateAssignmentRuntime(id, address string, state AssignmentStat
 }
 
 func (s *Store) GetFleet(name string) (Fleet, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	fleet, ok := s.data.Fleets[name]
 	return fleet, ok
 }
 
 func (s *Store) ScaleFleet(name string, instances int) (Fleet, error) {
- s.Orchestration.Lock();defer s.Orchestration.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Orchestration.Lock()
+	defer s.Orchestration.Unlock()
+	s.lock()
+	defer s.unlock()
 	fleet, ok := s.data.Fleets[name]
 	if !ok {
 		return Fleet{}, fmt.Errorf("unknown Fleet %s", name)
@@ -751,9 +769,10 @@ func (s *Store) ScaleFleet(name string, instances int) (Fleet, error) {
 }
 
 func (s *Store) DeleteFleet(name string) error {
- s.Orchestration.Lock();defer s.Orchestration.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Orchestration.Lock()
+	defer s.Orchestration.Unlock()
+	s.lock()
+	defer s.unlock()
 	if _, ok := s.data.Fleets[name]; !ok {
 		return fmt.Errorf("unknown Fleet %s", name)
 	}
@@ -777,8 +796,8 @@ func (s *Store) DeleteFleet(name string) error {
 }
 
 func (s *Store) SetAssignments(fleetName string, assignments []Assignment) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	for id, assignment := range s.data.Assignments {
 		if assignment.Fleet == fleetName {
 			delete(s.data.Assignments, id)
@@ -791,8 +810,8 @@ func (s *Store) SetAssignments(fleetName string, assignments []Assignment) error
 }
 
 func (s *Store) RenewAssignmentLease(id, token string, expiresAt time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	assignment, ok := s.data.Assignments[id]
 	if !ok {
 		return fmt.Errorf("unknown assignment %s", id)
@@ -808,8 +827,8 @@ func (s *Store) RenewAssignmentLease(id, token string, expiresAt time.Time) erro
 }
 
 func (s *Store) UpdateAssignmentState(id string, next AssignmentState) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	assignment, ok := s.data.Assignments[id]
 	if !ok {
 		return fmt.Errorf("unknown assignment %s", id)
@@ -885,9 +904,15 @@ func (s *Store) load(realmName string) error {
 }
 
 func (s *Store) commitLocked() error {
+	if s.haManaged && s.consensus == nil {
+		return fmt.Errorf("HA-managed Realm requires the daemon consensus API")
+	}
 	s.data.Revision++
 	s.data.UpdatedAt = time.Now().UTC()
- return durable.WriteJSON(s.path,s.data,0600)
+	if s.consensus != nil {
+		return s.consensus.Apply(cloneState(s.data))
+	}
+	return durable.WriteJSON(s.path, s.data, 0600)
 }
 
 func cloneState(in State) State {

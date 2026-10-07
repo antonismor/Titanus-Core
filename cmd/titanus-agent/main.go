@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
+	"github.com/antonismor/Titanus-Core/internal/controllerclient"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/fabricdns"
 	"github.com/antonismor/Titanus-Core/internal/identity"
@@ -44,7 +45,7 @@ func main() {
 	flag.StringVar(&cfg.NodeID, "node", "", "Titanus Node ID")
 	flag.StringVar(&cfg.Address, "address", "", "Node management address")
 	flag.StringVar(&cfg.FabricAddress, "fabric-address", "", "Node VXLAN underlay address; defaults to management address")
-	flag.StringVar(&cfg.Controller, "controller", "", "Realm controller URL, e.g. https://10.0.0.10:9443")
+	flag.StringVar(&cfg.Controller, "controller", "", "comma-separated Realm controller URLs, e.g. https://10.0.0.10:9443")
 	flag.StringVar(&cfg.CA, "ca", "/etc/titanus/pki/ca.crt", "Realm CA certificate")
 	flag.StringVar(&cfg.Cert, "cert", "/etc/titanus/pki/node.crt", "Node certificate")
 	flag.StringVar(&cfg.Key, "key", "/etc/titanus/pki/node.key", "Node private key")
@@ -70,9 +71,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	failover, e := controllerclient.New(&http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, TLSHandshakeTimeout: 2 * time.Second, ResponseHeaderTimeout: 3 * time.Second}, cfg.Controller)
+	if e != nil {
+		log.Fatal(e)
+	}
+	cfg.Controller = strings.TrimSpace(strings.Split(cfg.Controller, ",")[0])
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true},
-		Timeout:   10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport:     failover,
+		Timeout:       10 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
