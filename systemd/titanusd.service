@@ -1,0 +1,21 @@
+[Unit]
+Description=Titanus Core Realm Daemon
+Documentation=https://github.com/antonismor/Titanus-Core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/titanusd
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=titanus
+RuntimeDirectoryMode=0755
+LimitNOFILE=1048576
+
+# The runtime will progressively tighten this profile as required kernel
+# operations are implemented. Titanus does not depend on Docker/containerd.
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target
