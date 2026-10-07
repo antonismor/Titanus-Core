@@ -1,8 +1,10 @@
 package fabric
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +63,61 @@ func TestNormalizedPeersRejectIPv6ForFabricV1(t *testing.T) {
 	}, "192.0.2.1")
 	if len(peers) != 1 || peers[0].NodeID != "good" {
 		t.Fatalf("unexpected peers: %#v", peers)
+	}
+}
+
+
+func TestNormalizeServicesSortsAndDeduplicatesBackends(t *testing.T) {
+	_, network, err := net.ParseCIDR("10.250.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	services, err := normalizeServices(network, []Service{{
+		Name: "web", Address: "10.250.0.10", Protocol: "TCP", Port: 8080,
+		Backends: []ServiceBackend{
+			{Address: "10.240.2.10", Port: 80},
+			{Address: "10.240.1.10", Port: 80},
+			{Address: "10.240.1.10", Port: 80},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(services) != 1 || services[0].Protocol != "tcp" || len(services[0].Backends) != 2 {
+		t.Fatalf("unexpected services: %#v", services)
+	}
+	if services[0].Backends[0].Address != "10.240.1.10" {
+		t.Fatalf("backends were not sorted: %#v", services[0].Backends)
+	}
+}
+
+func TestWriteServiceRulesUsesHealthyPrimaryBackend(t *testing.T) {
+	var b strings.Builder
+	writeServiceRules(&b, []Service{{
+		Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 8080,
+		Backends: []ServiceBackend{
+			{Address: "10.240.1.10", Port: 80},
+			{Address: "10.240.2.10", Port: 80},
+		},
+	}})
+	rules := b.String()
+	if !strings.Contains(rules, "ip daddr 10.250.0.10 tcp dport 8080 dnat to 10.240.1.10:80") {
+		t.Fatalf("unexpected service rules: %s", rules)
+	}
+	if strings.Contains(rules, "10.240.2.10:80") {
+		t.Fatalf("v1 failover rule should install one active backend: %s", rules)
+	}
+}
+
+func TestNormalizeServicesRejectsAddressOutsideServiceCIDR(t *testing.T) {
+	_, network, err := net.ParseCIDR("10.250.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = normalizeServices(network, []Service{{
+		Name: "web", Address: "10.251.0.10", Protocol: "tcp", Port: 80,
+	}})
+	if err == nil {
+		t.Fatal("expected service address outside CIDR to be rejected")
 	}
 }
