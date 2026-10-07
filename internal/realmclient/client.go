@@ -30,7 +30,7 @@ func New(ca, cert, key string) (*Client, error) {
 	}
 	return &Client{
 		http: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+			Transport: &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true},
 			Timeout:   20 * time.Second,
 		},
 	}, nil

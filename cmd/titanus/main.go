@@ -49,6 +49,8 @@ func dispatch(args []string) error {
 	switch args[0] {
 	case "setup":
 		return runSetup()
+	case "identity":
+		return runIdentity(args[1:])
 	case "realm":
 		return runRealm(args[1:])
 	case "source":
@@ -634,7 +636,7 @@ func runRealm(args []string) error {
 		if err != nil {
 			return err
 		}
-		cert, key, err := auth.IssueNode(*nodeID, []string{*address})
+		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.RoleController, 24*time.Hour)
 		if err != nil {
 			return err
 		}
@@ -711,6 +713,7 @@ func runRealm(args []string) error {
 		address := fs.String("address", "", "Node address")
 		realmName := fs.String("realm", "TITANUS-REALM", "Realm name")
 		pkiDir := fs.String("pki-dir", "/etc/titanus/pki", "Titanus PKI directory")
+		role := fs.String("role", "node", "node or controller certificate role")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -724,7 +727,7 @@ func runRealm(args []string) error {
 		if err != nil {
 			return err
 		}
-		cert, key, err := auth.IssueNode(*nodeID, []string{*address})
+		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.Role(*role), 24*time.Hour)
 		if err != nil {
 			return err
 		}
