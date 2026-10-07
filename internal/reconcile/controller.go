@@ -9,6 +9,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
@@ -17,11 +18,13 @@ type NodeRuntime interface {
 	StartUnit(address, id string) (unitruntime.State, error)
 	StopUnit(address, id string) (unitruntime.State, error)
 	DeleteUnit(address, id string) error
+	EnsureSource(address, name string, local *source.Manager) error
 }
 
 type Controller struct {
 	Store    *realm.Store
 	Nodes    NodeRuntime
+	Sources  *source.Manager
 	Interval time.Duration
 }
 
@@ -67,6 +70,10 @@ func (c *Controller) Once() error {
 				continue
 			}
 			spec := unitSpec(fleet, assignment)
+			if err := c.Nodes.EnsureSource(node.Address, spec.Source, c.Sources); err != nil {
+				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+				continue
+			}
 			if _, err := c.Nodes.EnsureUnit(node.Address, spec); err != nil {
 				_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 				continue
