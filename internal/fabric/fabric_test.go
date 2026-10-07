@@ -91,7 +91,7 @@ func TestNormalizeServicesSortsAndDeduplicatesBackends(t *testing.T) {
 	}
 }
 
-func TestWriteServiceRulesUsesHealthyPrimaryBackend(t *testing.T) {
+func TestWriteServiceRulesLoadBalancesHealthyBackends(t *testing.T) {
 	var b strings.Builder
 	writeServiceRules(&b, []Service{{
 		Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 8080,
@@ -101,11 +101,8 @@ func TestWriteServiceRulesUsesHealthyPrimaryBackend(t *testing.T) {
 		},
 	}})
 	rules := b.String()
-	if !strings.Contains(rules, "ip daddr 10.250.0.10 tcp dport 8080 dnat to 10.240.1.10:80") {
+	if !strings.Contains(rules, "ip daddr 10.250.0.10 tcp dport 8080 dnat to numgen inc mod 2 map { 0 : 10.240.1.10, 1 : 10.240.2.10 } : 80") {
 		t.Fatalf("unexpected service rules: %s", rules)
-	}
-	if strings.Contains(rules, "10.240.2.10:80") {
-		t.Fatalf("v1 failover rule should install one active backend: %s", rules)
 	}
 }
 
@@ -119,5 +116,23 @@ func TestNormalizeServicesRejectsAddressOutsideServiceCIDR(t *testing.T) {
 	}})
 	if err == nil {
 		t.Fatal("expected service address outside CIDR to be rejected")
+	}
+}
+
+
+func TestNormalizeServicesRejectsMixedBackendPorts(t *testing.T) {
+	_, network, err := net.ParseCIDR("10.250.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = normalizeServices(network, []Service{{
+		Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 8080,
+		Backends: []ServiceBackend{
+			{Address: "10.240.1.10", Port: 80},
+			{Address: "10.240.2.10", Port: 81},
+		},
+	}})
+	if err == nil {
+		t.Fatal("expected mixed backend ports to be rejected")
 	}
 }
