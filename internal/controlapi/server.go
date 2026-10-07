@@ -233,7 +233,8 @@ func (s *Server) nodes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, node)
+		stored := s.Store.Snapshot().Nodes[node.ID]
+		writeJSON(w, http.StatusCreated, stored)
 	default:
 		methodNotAllowed(w)
 	}
