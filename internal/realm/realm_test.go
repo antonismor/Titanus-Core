@@ -265,3 +265,69 @@ func TestFleetDeleteBlockedWhileReferencedByNetworkPolicy(t *testing.T) {
 		t.Fatal("expected protected destination Fleet deletion to be blocked")
 	}
 }
+
+func TestNetworkPolicyValidatesAndPersistsEgressRules(t *testing.T) {
+	store, err := Open(t.TempDir(), "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fleetName := range []string{"api", "db"} {
+		if err := store.PutFleet(Fleet{
+			Name: fleetName, Instances: 1, MinimumAvailable: 1,
+			Template: UnitTemplate{Source: fleetName, Command: []string{"/bin/app"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy, err := store.PutPolicy(NetworkPolicy{
+		Name: "api-egress", Fleet: "api",
+		Egress: []NetworkPolicyEgressRule{
+			{ToFleet: "db", Protocol: "TCP", Ports: []int{5432, 5432}},
+			{ToCIDR: "192.0.2.55/24", Protocol: "udp", Ports: []int{53}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.DefaultDeny {
+		t.Fatal("egress-only policy must not implicitly deny ingress")
+	}
+	if !policy.DefaultDenyEgress {
+		t.Fatal("egress rules must enable default-deny egress")
+	}
+	if policy.Egress[0].Protocol != "tcp" || len(policy.Egress[0].Ports) != 1 || policy.Egress[0].Ports[0] != 5432 {
+		t.Fatalf("unexpected normalized egress rule: %#v", policy.Egress[0])
+	}
+	if policy.Egress[1].ToCIDR != "192.0.2.0/24" {
+		t.Fatalf("expected normalized destination CIDR, got %s", policy.Egress[1].ToCIDR)
+	}
+	stored, ok := store.GetPolicy("api-egress")
+	if !ok || !stored.DefaultDenyEgress {
+		t.Fatalf("egress policy not persisted: %#v", stored)
+	}
+}
+
+func TestFleetDeleteBlockedByEgressPolicyReference(t *testing.T) {
+	store, err := Open(t.TempDir(), "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fleetName := range []string{"api", "db"} {
+		if err := store.PutFleet(Fleet{
+			Name: fleetName, Instances: 1, MinimumAvailable: 1,
+			Template: UnitTemplate{Source: fleetName, Command: []string{"/bin/app"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.PutPolicy(NetworkPolicy{
+		Name: "api-egress", Fleet: "api",
+		Egress: []NetworkPolicyEgressRule{{ToFleet: "db", Protocol: "tcp", Ports: []int{5432}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteFleet("db"); err == nil {
+		t.Fatal("expected egress destination Fleet deletion to be blocked")
+	}
+}
+

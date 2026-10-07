@@ -110,13 +110,22 @@ type NetworkPolicyRule struct {
 	Ports     []int  `json:"ports,omitempty"`
 }
 
+type NetworkPolicyEgressRule struct {
+	ToFleet  string `json:"to_fleet,omitempty"`
+	ToCIDR   string `json:"to_cidr,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Ports    []int  `json:"ports,omitempty"`
+}
+
 type NetworkPolicy struct {
-	Name        string              `json:"name"`
-	Fleet       string              `json:"fleet"`
-	DefaultDeny bool                `json:"default_deny"`
-	Ingress     []NetworkPolicyRule `json:"ingress,omitempty"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	Name              string                    `json:"name"`
+	Fleet             string                    `json:"fleet"`
+	DefaultDeny       bool                      `json:"default_deny"`
+	DefaultDenyEgress bool                      `json:"default_deny_egress,omitempty"`
+	Ingress           []NetworkPolicyRule       `json:"ingress,omitempty"`
+	Egress            []NetworkPolicyEgressRule `json:"egress,omitempty"`
+	CreatedAt         time.Time                 `json:"created_at"`
+	UpdatedAt         time.Time                 `json:"updated_at"`
 }
 
 type Assignment struct {
@@ -528,7 +537,11 @@ func (s *Store) PutPolicy(policy NetworkPolicy) (NetworkPolicy, error) {
 	if _, ok := s.data.Fleets[policy.Fleet]; !ok {
 		return NetworkPolicy{}, fmt.Errorf("unknown Fleet %s", policy.Fleet)
 	}
-	policy.DefaultDeny = true
+	policy.DefaultDeny = policy.DefaultDeny || len(policy.Ingress) > 0
+	policy.DefaultDenyEgress = policy.DefaultDenyEgress || len(policy.Egress) > 0
+	if !policy.DefaultDeny && !policy.DefaultDenyEgress {
+		return NetworkPolicy{}, fmt.Errorf("Network Policy %s must protect ingress, egress or both", policy.Name)
+	}
 	for i, rule := range policy.Ingress {
 		rule.FromFleet = strings.TrimSpace(rule.FromFleet)
 		rule.FromCIDR = strings.TrimSpace(rule.FromCIDR)
@@ -564,8 +577,52 @@ func (s *Store) PutPolicy(policy NetworkPolicy) (NetworkPolicy, error) {
 			ports = append(ports, port)
 		}
 		sort.Ints(ports)
+		if rule.Protocol == "any" && len(ports) > 0 {
+			return NetworkPolicy{}, fmt.Errorf("Network Policy %s ingress rule %d cannot combine protocol any with ports", policy.Name, i+1)
+		}
 		rule.Ports = ports
 		policy.Ingress[i] = rule
+	}
+	for i, rule := range policy.Egress {
+		rule.ToFleet = strings.TrimSpace(rule.ToFleet)
+		rule.ToCIDR = strings.TrimSpace(rule.ToCIDR)
+		rule.Protocol = strings.ToLower(strings.TrimSpace(rule.Protocol))
+		if rule.Protocol == "" {
+			rule.Protocol = "tcp"
+		}
+		if rule.Protocol != "tcp" && rule.Protocol != "udp" && rule.Protocol != "any" {
+			return NetworkPolicy{}, fmt.Errorf("Network Policy %s egress rule %d has unsupported protocol %q", policy.Name, i+1, rule.Protocol)
+		}
+		if rule.ToFleet != "" {
+			if _, ok := s.data.Fleets[rule.ToFleet]; !ok {
+				return NetworkPolicy{}, fmt.Errorf("Network Policy %s references unknown destination Fleet %s", policy.Name, rule.ToFleet)
+			}
+		}
+		if rule.ToCIDR != "" {
+			ip, network, err := net.ParseCIDR(rule.ToCIDR)
+			if err != nil || ip.To4() == nil {
+				return NetworkPolicy{}, fmt.Errorf("Network Policy %s egress rule %d has invalid IPv4 destination CIDR %q", policy.Name, i+1, rule.ToCIDR)
+			}
+			rule.ToCIDR = network.String()
+		}
+		seenPorts := map[int]bool{}
+		ports := make([]int, 0, len(rule.Ports))
+		for _, port := range rule.Ports {
+			if port < 1 || port > 65535 {
+				return NetworkPolicy{}, fmt.Errorf("Network Policy %s egress rule %d has invalid port %d", policy.Name, i+1, port)
+			}
+			if seenPorts[port] {
+				continue
+			}
+			seenPorts[port] = true
+			ports = append(ports, port)
+		}
+		sort.Ints(ports)
+		if rule.Protocol == "any" && len(ports) > 0 {
+			return NetworkPolicy{}, fmt.Errorf("Network Policy %s egress rule %d cannot combine protocol any with ports", policy.Name, i+1)
+		}
+		rule.Ports = ports
+		policy.Egress[i] = rule
 	}
 	now := time.Now().UTC()
 	if existing, ok := s.data.Policies[policy.Name]; ok {
@@ -670,6 +727,11 @@ func (s *Store) DeleteFleet(name string) error {
 		}
 		for _, rule := range policy.Ingress {
 			if rule.FromFleet == name {
+				return fmt.Errorf("Fleet %s is referenced by Network Policy %s", name, policyName)
+			}
+		}
+		for _, rule := range policy.Egress {
+			if rule.ToFleet == name {
 				return fmt.Errorf("Fleet %s is referenced by Network Policy %s", name, policyName)
 			}
 		}

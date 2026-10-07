@@ -200,10 +200,13 @@ func servicesFromState(state realm.State) []fabric.Service {
 func policiesFromState(state realm.State) []fabric.Policy {
 	policies := make([]fabric.Policy, 0, len(state.Policies))
 	for _, policy := range state.Policies {
+		protected := fleetAddresses(state, policy.Fleet, false)
 		projected := fabric.Policy{
-			Name:         policy.Name,
-			Destinations: fleetAddresses(state, policy.Fleet, false),
-			DefaultDeny:  policy.DefaultDeny,
+			Name:              policy.Name,
+			Destinations:      append([]string(nil), protected...),
+			Sources:           append([]string(nil), protected...),
+			DefaultDeny:       policy.DefaultDeny,
+			DefaultDenyEgress: policy.DefaultDenyEgress,
 		}
 		for _, rule := range policy.Ingress {
 			projectedRule := fabric.PolicyRule{
@@ -220,6 +223,22 @@ func policiesFromState(state realm.State) []fabric.Policy {
 			}
 			projectedRule.AnySource = rule.FromFleet == "" && rule.FromCIDR == ""
 			projected.Rules = append(projected.Rules, projectedRule)
+		}
+		for _, rule := range policy.Egress {
+			projectedRule := fabric.EgressRule{
+				Protocol: rule.Protocol,
+				Ports:    append([]int(nil), rule.Ports...),
+			}
+			if rule.ToFleet != "" {
+				for _, address := range fleetAddresses(state, rule.ToFleet, false) {
+					projectedRule.Destinations = append(projectedRule.Destinations, address+"/32")
+				}
+			}
+			if rule.ToCIDR != "" {
+				projectedRule.Destinations = append(projectedRule.Destinations, rule.ToCIDR)
+			}
+			projectedRule.AnyDestination = rule.ToFleet == "" && rule.ToCIDR == ""
+			projected.Egress = append(projected.Egress, projectedRule)
 		}
 		policies = append(policies, projected)
 	}
