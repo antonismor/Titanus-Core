@@ -22,6 +22,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/security"
 	"github.com/antonismor/Titanus-Core/internal/setup"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -887,6 +888,10 @@ func runFleet(args []string) error {
 		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro]")
 		spread := fs.String("spread", "", "label key used to spread replicas")
 		require := fs.String("require", "", "comma-separated label=value placement requirements")
+		securityProfile := fs.String("security", security.ProfileRestricted, "Unit Security Profile: restricted or unconfined")
+		runAsUID := fs.Int("uid", 0, "Unit process UID")
+		runAsGID := fs.Int("gid", 0, "Unit process GID")
+		readOnlyRootFS := fs.Bool("read-only-rootfs", false, "remount Unit root filesystem read-only before exec")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -935,6 +940,10 @@ func runFleet(args []string) error {
 				MemoryBytes: memBytes, CPUPercent: *cpu, PidsMax: *pids,
 				Fabric: *fabricEnabled || len(ports) > 0,
 				Ports: ports, Mounts: mounts,
+				Security: security.Spec{
+					Profile: *securityProfile, RunAsUID: *runAsUID, RunAsGID: *runAsGID,
+					ReadOnlyRootFS: *readOnlyRootFS,
+				},
 			},
 		}
 		result, err := client.CreateFleet(fleet)
@@ -1551,6 +1560,10 @@ func runUnit(args []string) error {
 		fabricEnabled := fs.Bool("fabric", false, "attach Unit to Titanus Fabric")
 		publish := fs.String("publish", "", "comma-separated HOST:UNIT[/tcp|udp] mappings")
 		mountText := fs.String("mount", "", "comma-separated DISK:/path[:ro] mounts")
+		securityProfile := fs.String("security", security.ProfileRestricted, "Security Profile: restricted or unconfined")
+		runAsUID := fs.Int("uid", 0, "process UID inside the Unit")
+		runAsGID := fs.Int("gid", 0, "process GID inside the Unit")
+		readOnlyRootFS := fs.Bool("read-only-rootfs", false, "remount Unit root filesystem read-only before exec")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -1598,6 +1611,10 @@ func runUnit(args []string) error {
 				Ports:  ports,
 			},
 			Mounts: mounts,
+			Security: security.Spec{
+				Profile: *securityProfile, RunAsUID: *runAsUID, RunAsGID: *runAsGID,
+				ReadOnlyRootFS: *readOnlyRootFS,
+			},
 		}
 		state, err := manager.Create(spec)
 		if err != nil {
@@ -1990,6 +2007,10 @@ Unit create options:
   --fabric             Attach Unit to Titanus Fabric
   --publish MAPS       Comma-separated HOST:UNIT[/tcp|udp] mappings
   --mount MOUNTS       Comma-separated DISK:/path[:ro] mounts
+  --security PROFILE    restricted (default) or unconfined
+  --uid UID             Run Unit process as numeric UID (default: 0)
+  --gid GID             Run Unit process as numeric GID (default: 0)
+  --read-only-rootfs    Remount root filesystem read-only before exec
 
 Development overrides:
   TITANUS_STATE_ROOT
