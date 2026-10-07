@@ -94,6 +94,7 @@ const (
 type Route struct {
 	Name       string    `json:"name"`
 	Fleet      string    `json:"fleet"`
+	ServiceIP  string    `json:"service_ip,omitempty"`
 	ListenIP   string    `json:"listen_ip"`
 	ListenPort int       `json:"listen_port"`
 	TargetPort int       `json:"target_port"`
@@ -211,19 +212,27 @@ func (s *Store) ConfigureNetwork(network RealmNetwork) error {
 	if network.VXLANID < 1 || network.VXLANID > 16777215 {
 		return fmt.Errorf("VXLAN ID must be between 1 and 16777215")
 	}
-	if _, fabricNet, err := net.ParseCIDR(network.FabricCIDR); err != nil {
+	fabricIP, fabricNet, err := net.ParseCIDR(network.FabricCIDR)
+	if err != nil {
 		return fmt.Errorf("invalid Realm Fabric CIDR: %w", err)
-	} else {
-		ones, bits := fabricNet.Mask.Size()
-		if bits != 32 || network.NodePrefix <= ones || network.NodePrefix > 30 {
-			return fmt.Errorf("Node prefix /%d is incompatible with Fabric %s", network.NodePrefix, network.FabricCIDR)
-		}
-		network.FabricCIDR = fabricNet.String()
 	}
-	if _, serviceNet, err := net.ParseCIDR(network.ServiceCIDR); err != nil {
+	ones, bits := fabricNet.Mask.Size()
+	if bits != 32 || fabricIP.To4() == nil || network.NodePrefix <= ones || network.NodePrefix > 30 {
+		return fmt.Errorf("Node prefix /%d is incompatible with IPv4 Fabric %s", network.NodePrefix, network.FabricCIDR)
+	}
+	network.FabricCIDR = fabricNet.String()
+
+	serviceIP, serviceNet, err := net.ParseCIDR(network.ServiceCIDR)
+	if err != nil {
 		return fmt.Errorf("invalid Realm Service CIDR: %w", err)
-	} else {
-		network.ServiceCIDR = serviceNet.String()
+	}
+	serviceOnes, serviceBits := serviceNet.Mask.Size()
+	if serviceBits != 32 || serviceIP.To4() == nil || serviceOnes > 30 {
+		return fmt.Errorf("Realm Service CIDR must be IPv4 with at least two usable addresses")
+	}
+	network.ServiceCIDR = serviceNet.String()
+	if cidrsOverlap(fabricNet, serviceNet) {
+		return fmt.Errorf("Realm Fabric CIDR %s overlaps Service CIDR %s", network.FabricCIDR, network.ServiceCIDR)
 	}
 	s.data.Network = network
 	return s.commitLocked()
@@ -258,6 +267,71 @@ func (s *Store) allocateNodeSubnetLocked() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("Realm Fabric %s has no free Node subnets", s.data.Network.FabricCIDR)
+}
+
+func cidrsOverlap(a, b *net.IPNet) bool {
+	return a.Contains(b.IP) || b.Contains(a.IP)
+}
+
+func (s *Store) allocateServiceIPLocked(routeName string) (string, error) {
+	_, network, err := net.ParseCIDR(s.data.Network.ServiceCIDR)
+	if err != nil {
+		return "", fmt.Errorf("Realm Service CIDR is not configured: %w", err)
+	}
+	ones, bits := network.Mask.Size()
+	if bits != 32 {
+		return "", fmt.Errorf("Titanus Service Fabric v1 requires IPv4")
+	}
+	hostCount := uint64(1) << uint(bits-ones)
+	start := uint64(10)
+	if hostCount <= start+1 {
+		start = 1
+	}
+	used := map[string]bool{}
+	for name, route := range s.data.Routes {
+		if name != routeName && route.ServiceIP != "" {
+			used[route.ServiceIP] = true
+		}
+	}
+	base := ipv4Uint(network.IP.To4())
+	for offset := start; offset+1 < hostCount; offset++ {
+		candidate := uintIPv4(base + uint32(offset))
+		if candidate == nil || !network.Contains(candidate) {
+			continue
+		}
+		text := candidate.String()
+		if !used[text] {
+			return text, nil
+		}
+	}
+	return "", fmt.Errorf("Realm Service CIDR %s has no free Route addresses", s.data.Network.ServiceCIDR)
+}
+
+func (s *Store) validateServiceIPLocked(routeName, value string) error {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil || ip.To4() == nil {
+		return fmt.Errorf("invalid Route service IP %q", value)
+	}
+	_, network, err := net.ParseCIDR(s.data.Network.ServiceCIDR)
+	if err != nil {
+		return fmt.Errorf("Realm Service CIDR is not configured: %w", err)
+	}
+	ip = ip.To4()
+	if !network.Contains(ip) {
+		return fmt.Errorf("Route service IP %s is outside Realm Service CIDR %s", ip.String(), network.String())
+	}
+	ones, bits := network.Mask.Size()
+	hostCount := uint64(1) << uint(bits-ones)
+	offset := uint64(ipv4Uint(ip) - ipv4Uint(network.IP.To4()))
+	if offset == 0 || offset+1 >= hostCount {
+		return fmt.Errorf("Route service IP %s is not a usable address in %s", ip.String(), network.String())
+	}
+	for name, existing := range s.data.Routes {
+		if name != routeName && existing.ServiceIP == ip.String() {
+			return fmt.Errorf("Route %s already uses service IP %s", name, ip.String())
+		}
+	}
+	return nil
 }
 
 func ipv4Uint(ip net.IP) uint32 {
@@ -357,6 +431,7 @@ func (s *Store) PutRoute(route Route) (Route, error) {
 	defer s.mu.Unlock()
 	route.Name = strings.TrimSpace(route.Name)
 	route.Fleet = strings.TrimSpace(route.Fleet)
+	route.ServiceIP = strings.TrimSpace(route.ServiceIP)
 	route.Protocol = strings.ToLower(strings.TrimSpace(route.Protocol))
 	if route.Name == "" || route.Fleet == "" {
 		return Route{}, fmt.Errorf("Route name and Fleet are required")
@@ -385,8 +460,24 @@ func (s *Store) PutRoute(route Route) (Route, error) {
 			return Route{}, fmt.Errorf("Route %s already uses %s:%d/%s", name, route.ListenIP, route.ListenPort, route.Protocol)
 		}
 	}
+
+	existing, existed := s.data.Routes[route.Name]
+	if route.ServiceIP == "" && existed {
+		route.ServiceIP = existing.ServiceIP
+	}
+	if route.ServiceIP == "" {
+		serviceIP, err := s.allocateServiceIPLocked(route.Name)
+		if err != nil {
+			return Route{}, err
+		}
+		route.ServiceIP = serviceIP
+	}
+	if err := s.validateServiceIPLocked(route.Name, route.ServiceIP); err != nil {
+		return Route{}, err
+	}
+
 	now := time.Now().UTC()
-	if existing, ok := s.data.Routes[route.Name]; ok {
+	if existed {
 		route.CreatedAt = existing.CreatedAt
 	} else {
 		route.CreatedAt = now
