@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/antonismor/Titanus-Core/internal/fabric"
 )
 
 type Config struct {
@@ -130,12 +132,20 @@ func (m *Manager) Start(id string) (State, error) {
 	}
 
 	rootfs := filepath.Join(m.unitDir(id), "rootfs")
-	args := []string{"--unit-child", rootfs, spec.Hostname, "--"}
+	readyRead, readyWrite, err := os.Pipe()
+	if err != nil {
+		_ = logFile.Close()
+		m.cleanupAfterStop(id)
+		return m.fail(state, fmt.Errorf("create runtime readiness pipe: %w", err))
+	}
+
+	args := []string{"--unit-child", rootfs, spec.Hostname, "3", "--"}
 	args = append(args, spec.Command...)
 	cmd := exec.Command(m.cfg.InitBinary, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(), spec.Environment...)
+	cmd.ExtraFiles = []*os.File{readyRead}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUTS |
 			syscall.CLONE_NEWPID |
@@ -146,27 +156,46 @@ func (m *Manager) Start(id string) (State, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = readyRead.Close()
+		_ = readyWrite.Close()
 		_ = logFile.Close()
 		m.cleanupAfterStop(id)
 		return m.fail(state, fmt.Errorf("start titanus-init: %w", err))
 	}
+	_ = readyRead.Close()
 	pid := cmd.Process.Pid
 
-	if err := os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.procs"), []byte(strconv.Itoa(pid)), 0644); err != nil {
+	failStarted := func(cause error) (State, error) {
+		_ = readyWrite.Close()
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		_ = logFile.Close()
+		_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
 		m.cleanupAfterStop(id)
-		return m.fail(state, fmt.Errorf("assign process to cgroup: %w", err))
+		return m.fail(state, cause)
 	}
+
+	if err := os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.procs"), []byte(strconv.Itoa(pid)), 0644); err != nil {
+		return failStarted(fmt.Errorf("assign process to cgroup: %w", err))
+	}
+
+	if spec.Network.Fabric {
+		allocation, err := fabric.NewManager(m.cfg.StateRoot).Attach(id, pid, spec.Network.Ports)
+		if err != nil {
+			return failStarted(fmt.Errorf("Fabric attach: %w", err))
+		}
+		state.NetworkAddress = allocation.Address
+	}
+
+	if _, err := readyWrite.Write([]byte{1}); err != nil {
+		return failStarted(fmt.Errorf("release Unit startup barrier: %w", err))
+	}
+	_ = readyWrite.Close()
 
 	state.PID = pid
 	state.Status = StatusActive
 	state.StartedAt = time.Now().UTC()
 	if err := m.saveState(state); err != nil {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		_ = logFile.Close()
-		m.cleanupAfterStop(id)
-		return State{}, err
+		return failStarted(err)
 	}
 
 	_ = logFile.Close()
@@ -195,6 +224,9 @@ func (m *Manager) Stop(id string, timeout time.Duration) (State, error) {
 		}
 	}
 
+	if spec, _, loadErr := m.load(id); loadErr == nil && spec.Network.Fabric {
+		_ = fabric.NewManager(m.cfg.StateRoot).Detach(id)
+	}
 	m.cleanupAfterStop(id)
 	state.PID = 0
 	state.Status = StatusStopped
@@ -231,6 +263,10 @@ func (m *Manager) Delete(id string) error {
 	}
 	if state.PID > 0 && processAlive(state.PID) {
 		return fmt.Errorf("Unit %s is ACTIVE; stop it before deletion", id)
+	}
+	spec, _, specErr := m.load(id)
+	if specErr == nil && spec.Network.Fabric {
+		_ = fabric.NewManager(m.cfg.StateRoot).Release(id)
 	}
 	m.cleanupAfterStop(id)
 	return os.RemoveAll(m.unitDir(id))
