@@ -56,6 +56,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y busybox-static iproute2 nftables util-linux
 
+      - name: Validate Fabric nftables rules
+        run: sudo env "PATH=$PATH" go test ./internal/fabric -run TestRenderedNATRulesPassNftCheck -v
+
       - name: Build minimal Titanus Source
         run: |
           mkdir -p /tmp/titanus-rootfs/bin
