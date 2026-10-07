@@ -3,7 +3,7 @@ set -euo pipefail
 task_state=/tmp/titanus-ci-state
 task_cgroup=/sys/fs/cgroup/titanus-ci
 export TITANUS_STATE_ROOT="$task_state" TITANUS_CGROUP_ROOT="$task_cgroup"
-export TITANUS_INIT_BINARY="$GITHUB_WORKSPACE/bin/titanus-init"
+export TITANUS_INIT_BINARY="$PWD/bin/titanus-init"
 unit() { ./bin/titanus unit "$@"; }
 daemon_pid=
 cleanup() {
