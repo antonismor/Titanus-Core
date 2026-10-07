@@ -39,6 +39,9 @@ func (p *PlacementEngine) Rank(state State, fleet Fleet, existing []Assignment) 
 		if !eligible(node, fleet) {
 			continue
 		}
+		if len(fleet.Template.Ports) > 0 && countsByNode[node.ID] > 0 {
+			continue
+		}
 		freeMemory := node.Resources.MemoryBytes - node.Resources.MemoryUsedBytes
 		if fleet.Template.MemoryBytes > 0 && freeMemory < fleet.Template.MemoryBytes {
 			continue
@@ -102,6 +105,46 @@ func (p *PlacementEngine) Plan(state State, fleet Fleet) ([]Assignment, error) {
 		working.Nodes[nodeID] = node
 	}
 	return assignments, nil
+}
+
+func (p *PlacementEngine) Reconcile(state State, fleet Fleet) ([]Assignment, error) {
+	now := time.Now().UTC()
+	existing := map[string]Assignment{}
+	for _, assignment := range state.Assignments {
+		if assignment.Fleet == fleet.Name && assignment.Generation == fleet.Generation {
+			existing[assignment.ID] = assignment
+		}
+	}
+
+	result := make([]Assignment, 0, fleet.Instances)
+	working := cloneState(state)
+	for slot := 1; slot <= fleet.Instances; slot++ {
+		id := fmt.Sprintf("%s-%03d-g%d", fleet.Name, slot, fleet.Generation)
+		if current, ok := existing[id]; ok {
+			if node, exists := working.Nodes[current.NodeID]; exists && eligible(node, fleet) {
+				result = append(result, current)
+				continue
+			}
+		}
+
+		ranked := p.Rank(working, fleet, result)
+		if len(ranked) == 0 {
+			return nil, fmt.Errorf("no eligible Node remains for Fleet %s slot %d", fleet.Name, slot)
+		}
+		nodeID := ranked[0].NodeID
+		assignment := Assignment{
+			ID: id, Fleet: fleet.Name, NodeID: nodeID,
+			State: AssignmentPlanned, Generation: fleet.Generation,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		result = append(result, assignment)
+		node := working.Nodes[nodeID]
+		node.Resources.MemoryUsedBytes += fleet.Template.MemoryBytes
+		node.Resources.CPUMilliUsed += int64(fleet.Template.CPUPercent * 10)
+		node.Resources.UnitCount++
+		working.Nodes[nodeID] = node
+	}
+	return result, nil
 }
 
 func eligible(node Node, fleet Fleet) bool {
