@@ -161,7 +161,10 @@ func syncFabric(client *http.Client, cfg config, registered realm.Node) error {
 	if _, err := manager.ConfigureMesh(cfg.FabricAddress, state.Network.VXLANID, peers); err != nil {
 		return err
 	}
-	return manager.ConfigureServices(state.Network.ServiceCIDR, servicesFromState(state))
+	if err := manager.ConfigureServices(state.Network.ServiceCIDR, servicesFromState(state)); err != nil {
+		return err
+	}
+	return manager.ConfigurePolicies(policiesFromState(state))
 }
 
 func servicesFromState(state realm.State) []fabric.Service {
@@ -192,6 +195,61 @@ func servicesFromState(state realm.State) []fabric.Service {
 		services = append(services, service)
 	}
 	return services
+}
+
+func policiesFromState(state realm.State) []fabric.Policy {
+	policies := make([]fabric.Policy, 0, len(state.Policies))
+	for _, policy := range state.Policies {
+		projected := fabric.Policy{
+			Name:         policy.Name,
+			Destinations: fleetAddresses(state, policy.Fleet, false),
+			DefaultDeny:  policy.DefaultDeny,
+		}
+		for _, rule := range policy.Ingress {
+			projectedRule := fabric.PolicyRule{
+				Protocol: rule.Protocol,
+				Ports:    append([]int(nil), rule.Ports...),
+			}
+			if rule.FromFleet != "" {
+				for _, address := range fleetAddresses(state, rule.FromFleet, true) {
+					projectedRule.Sources = append(projectedRule.Sources, address+"/32")
+				}
+			}
+			if rule.FromCIDR != "" {
+				projectedRule.Sources = append(projectedRule.Sources, rule.FromCIDR)
+			}
+			projectedRule.AnySource = rule.FromFleet == "" && rule.FromCIDR == ""
+			projected.Rules = append(projected.Rules, projectedRule)
+		}
+		policies = append(policies, projected)
+	}
+	return policies
+}
+
+func fleetAddresses(state realm.State, fleet string, healthySourcesOnly bool) []string {
+	addresses := make([]string, 0)
+	for _, assignment := range state.Assignments {
+		if assignment.Fleet != fleet || strings.TrimSpace(assignment.NetworkAddress) == "" {
+			continue
+		}
+		if healthySourcesOnly {
+			if assignment.State != realm.AssignmentActive {
+				continue
+			}
+			node, ok := state.Nodes[assignment.NodeID]
+			if !ok || node.State != realm.NodeReady {
+				continue
+			}
+		} else if assignment.State == realm.AssignmentStopped {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(assignment.NetworkAddress))
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		addresses = append(addresses, ip.To4().String())
+	}
+	return addresses
 }
 
 func startFabricDNS(ctx context.Context, cfg config) error {
