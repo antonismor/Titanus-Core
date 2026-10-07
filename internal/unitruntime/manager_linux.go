@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -95,6 +96,25 @@ func (m *Manager) Create(spec Spec) (State, error) {
 		return State{}, err
 	}
 	return state, nil
+}
+
+func (m *Manager) Ensure(spec Spec) (State, error) {
+	spec.Normalize()
+	if err := spec.Validate(); err != nil {
+		return State{}, err
+	}
+	existingSpec, state, err := m.load(spec.ID)
+	if err == nil {
+		existingSpec.Normalize()
+		if !reflect.DeepEqual(existingSpec, spec) {
+			return State{}, fmt.Errorf("Unit %s already exists with a different specification", spec.ID)
+		}
+		return state, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
+		return State{}, err
+	}
+	return m.Create(spec)
 }
 
 func (m *Manager) Start(id string) (State, error) {
