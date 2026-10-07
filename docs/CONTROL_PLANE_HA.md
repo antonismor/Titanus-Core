@@ -4,7 +4,7 @@ Titanus embeds HashiCorp Raft and its BoltDB adapter in `titanusd`. This is a
 native Go consensus library, not an external orchestrator or a separate service.
 Unit runtime, Realm objects, transport authorization, placement and reconciliation
 remain Titanus components. Dependencies and checksums are pinned in `go.mod` and
-`go.sum`; Raft uses MPL-2.0 and the adapter MIT licenses.
+`go.sum`; Raft and its BoltDB adapter use the MPL-2.0 license.
 
 ## Authority and durability
 
