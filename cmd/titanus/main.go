@@ -15,9 +15,11 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/deploy"
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
+	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/setup"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -44,6 +46,8 @@ func dispatch(args []string) error {
 	switch args[0] {
 	case "setup":
 		return runSetup()
+	case "realm":
+		return runRealm(args[1:])
 	case "source":
 		return runSource(args[1:])
 	case "fabric":
@@ -148,11 +152,16 @@ func menu() error {
 				pause(reader)
 			}
 		case "8":
-			if err := unitMenu(reader); err != nil {
+			if err := realmMenu(reader); err != nil {
 				ansi.Error(err.Error())
 				pause(reader)
 			}
 		case "9":
+			if err := unitMenu(reader); err != nil {
+				ansi.Error(err.Error())
+				pause(reader)
+			}
+		case "10":
 			fmt.Println("Titanus Core", version)
 			pause(reader)
 		case "0":
@@ -471,6 +480,165 @@ func runDisk(args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown Disk action %q", args[0])
+	}
+}
+
+func realmMenu(reader *bufio.Reader) error {
+	for {
+		ansi.Clear()
+		ansi.Banner()
+		fmt.Println(ansi.Paint(ansi.Bold+ansi.White, "Titanus Realm"))
+		fmt.Println()
+		fmt.Println("  1) Initialize local Realm controller")
+		fmt.Println("  2) Show Realm state")
+		fmt.Println("  3) Issue certificate for another Node")
+		fmt.Println("  0) Back")
+		fmt.Print("\nSelect: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "1":
+			name, err := promptDefault(reader, "Realm name", "TITANUS-REALM")
+			if err != nil {
+				return err
+			}
+			node, err := promptDefault(reader, "This Node ID", "titanus01")
+			if err != nil {
+				return err
+			}
+			address, err := prompt(reader, "This Node management IP")
+			if err != nil {
+				return err
+			}
+			if err := runRealm([]string{"init", "--name", name, "--node", node, "--address", address}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "2":
+			if err := runRealm([]string{"status"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "3":
+			node, err := prompt(reader, "New Node ID")
+			if err != nil {
+				return err
+			}
+			address, err := prompt(reader, "New Node management IP")
+			if err != nil {
+				return err
+			}
+			if err := runRealm([]string{"issue-node", "--node", node, "--address", address}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
+		case "0":
+			return nil
+		default:
+			ansi.Warn("Unknown selection")
+			pause(reader)
+		}
+	}
+}
+
+func runRealm(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: titanus realm <init|status|issue-node>")
+	}
+	switch args[0] {
+	case "init":
+		fs := flag.NewFlagSet("realm init", flag.ContinueOnError)
+		name := fs.String("name", "TITANUS-REALM", "Realm name")
+		nodeID := fs.String("node", "", "local Node ID")
+		address := fs.String("address", "", "local management address")
+		listen := fs.String("listen", "0.0.0.0:9443", "mTLS Realm listen address")
+		pkiDir := fs.String("pki-dir", "/etc/titanus/pki", "Titanus PKI directory")
+		capText := fs.String("capabilities", "CONTROL,EXECUTION", "Node capabilities")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("Realm initialization requires root")
+		}
+		if strings.TrimSpace(*nodeID) == "" || strings.TrimSpace(*address) == "" {
+			return fmt.Errorf("--node and --address are required")
+		}
+		caps, err := model.ParseCapabilities(*capText)
+		if err != nil {
+			return err
+		}
+		auth, err := identity.InitAuthority(*pkiDir, *name)
+		if err != nil {
+			return err
+		}
+		cert, key, err := auth.IssueNode(*nodeID, []string{*address})
+		if err != nil {
+			return err
+		}
+		store, err := realm.Open(stateRoot(), *name)
+		if err != nil {
+			return err
+		}
+		if err := store.UpsertNode(realm.Node{
+			ID: *nodeID, Address: *address, Capabilities: caps,
+			State: realm.NodeReady, Labels: map[string]string{},
+		}); err != nil {
+			return err
+		}
+		if err := os.MkdirAll("/etc/titanus", 0755); err != nil {
+			return err
+		}
+		daemonEnv := fmt.Sprintf("TITANUS_STATE_ROOT=%s\nTITANUS_REALM_NAME=%s\nTITANUS_CLUSTER_LISTEN=%s\nTITANUS_CA=%s\nTITANUS_CERT=%s\nTITANUS_KEY=%s\n",
+			stateRoot(), *name, *listen, auth.CertPath, cert, key)
+		if err := os.WriteFile("/etc/titanus/daemon.env", []byte(daemonEnv), 0600); err != nil {
+			return err
+		}
+		agentEnv := fmt.Sprintf("TITANUS_NODE_ID=%s\nTITANUS_NODE_ADDRESS=%s\nTITANUS_CONTROLLER=https://%s:9443\nTITANUS_CA=%s\nTITANUS_CERT=%s\nTITANUS_KEY=%s\nTITANUS_CAPABILITIES=%s\n",
+			*nodeID, *address, *address, auth.CertPath, cert, key, *capText)
+		if err := os.WriteFile("/etc/titanus/agent.env", []byte(agentEnv), 0600); err != nil {
+			return err
+		}
+		ansi.OK(fmt.Sprintf("Realm %s initialized. Node=%s CA=%s", *name, *nodeID, auth.CertPath))
+		return nil
+
+	case "status":
+		store, err := realm.Open(stateRoot(), "TITANUS-REALM")
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(store.Snapshot(), "", "  ")
+		fmt.Println(string(data))
+		return nil
+
+	case "issue-node":
+		fs := flag.NewFlagSet("realm issue-node", flag.ContinueOnError)
+		nodeID := fs.String("node", "", "Node ID")
+		address := fs.String("address", "", "Node address")
+		realmName := fs.String("realm", "TITANUS-REALM", "Realm name")
+		pkiDir := fs.String("pki-dir", "/etc/titanus/pki", "Titanus PKI directory")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("certificate issuance requires root")
+		}
+		if *nodeID == "" || *address == "" {
+			return fmt.Errorf("--node and --address are required")
+		}
+		auth, err := identity.InitAuthority(*pkiDir, *realmName)
+		if err != nil {
+			return err
+		}
+		cert, key, err := auth.IssueNode(*nodeID, []string{*address})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("CA:   %s\nCert: %s\nKey:  %s\n", auth.CertPath, cert, key)
+		return nil
+	default:
+		return fmt.Errorf("unknown Realm action %q", args[0])
 	}
 }
 
@@ -933,6 +1101,9 @@ func printHelp() {
 Usage:
   titanus                                      Interactive ANSI menu
   titanus setup                                Guided Realm setup
+  titanus realm init --name NAME --node ID --address IP
+  titanus realm status
+  titanus realm issue-node --node ID --address IP
 
   titanus source list                          List Sources
   titanus source import NAME ROOTFS            Import a rootfs directory
