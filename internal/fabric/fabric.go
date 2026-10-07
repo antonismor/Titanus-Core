@@ -571,6 +571,7 @@ func normalizeServices(network *net.IPNet, services []Service) ([]Service, error
 
 		seenBackend := map[string]bool{}
 		backends := make([]ServiceBackend, 0, len(service.Backends))
+		backendPort := 0
 		for _, backend := range service.Backends {
 			ip := net.ParseIP(strings.TrimSpace(backend.Address))
 			if ip == nil || ip.To4() == nil {
@@ -578,6 +579,11 @@ func normalizeServices(network *net.IPNet, services []Service) ([]Service, error
 			}
 			if backend.Port < 1 || backend.Port > 65535 {
 				return nil, fmt.Errorf("Fabric Service %s has invalid backend port %d", service.Name, backend.Port)
+			}
+			if backendPort == 0 {
+				backendPort = backend.Port
+			} else if backend.Port != backendPort {
+				return nil, fmt.Errorf("Fabric Service %s requires one target port across all backends", service.Name)
 			}
 			backend.Address = ip.To4().String()
 			key := fmt.Sprintf("%s:%d", backend.Address, backend.Port)
@@ -688,11 +694,24 @@ func writeServiceRules(b *strings.Builder, services []Service) {
 		if len(service.Backends) == 0 {
 			continue
 		}
-		backend := service.Backends[0]
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(service.Name))
-		fmt.Fprintf(b, "  ip daddr %s %s dport %d dnat to %s:%d comment \"Titanus:service:%08x\"\n",
-			service.Address, service.Protocol, service.Port, backend.Address, backend.Port, h.Sum32())
+		if len(service.Backends) == 1 {
+			backend := service.Backends[0]
+			fmt.Fprintf(b, "  ip daddr %s %s dport %d dnat to %s:%d comment \"Titanus:service:%08x\"\n",
+				service.Address, service.Protocol, service.Port, backend.Address, backend.Port, h.Sum32())
+			continue
+		}
+		fmt.Fprintf(b, "  ip daddr %s %s dport %d dnat to numgen inc mod %d map { ",
+			service.Address, service.Protocol, service.Port, len(service.Backends))
+		for i, backend := range service.Backends {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%d : %s", i, backend.Address)
+		}
+		fmt.Fprintf(b, " } : %d comment \"Titanus:service:%08x\"\n",
+			service.Backends[0].Port, h.Sum32())
 	}
 }
 
