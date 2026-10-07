@@ -24,7 +24,8 @@ import (
 
 type config struct {
 	NodeID       string
-	Address      string
+	Address       string
+	FabricAddress string
 	Controller   string
 	CA           string
 	Cert         string
@@ -40,6 +41,7 @@ func main() {
 	var caps string
 	flag.StringVar(&cfg.NodeID, "node", "", "Titanus Node ID")
 	flag.StringVar(&cfg.Address, "address", "", "Node management address")
+	flag.StringVar(&cfg.FabricAddress, "fabric-address", "", "Node VXLAN underlay address; defaults to management address")
 	flag.StringVar(&cfg.Controller, "controller", "", "Realm controller URL, e.g. https://10.0.0.10:9443")
 	flag.StringVar(&cfg.CA, "ca", "/etc/titanus/pki/ca.crt", "Realm CA certificate")
 	flag.StringVar(&cfg.Cert, "cert", "/etc/titanus/pki/node.crt", "Node certificate")
@@ -57,6 +59,9 @@ func main() {
 		log.Fatal(err)
 	}
 	cfg.Capabilities = parsedCaps
+	if strings.TrimSpace(cfg.FabricAddress) == "" {
+		cfg.FabricAddress = cfg.Address
+	}
 	cfg.Labels = parseLabels(flag.Args())
 
 	tlsConfig, err := identity.TLSConfig(cfg.CA, cfg.Cert, cfg.Key, false)
@@ -99,7 +104,7 @@ func main() {
 
 func register(client *http.Client, cfg config) (realm.Node, error) {
 	node := realm.Node{
-		ID: cfg.NodeID, Address: cfg.Address,
+		ID: cfg.NodeID, Address: cfg.Address, FabricAddress: cfg.FabricAddress,
 		Capabilities: cfg.Capabilities, Labels: cfg.Labels,
 		Resources: pulse.Discover(cfg.StateRoot),
 		State: realm.NodeReady,
@@ -134,9 +139,13 @@ func syncFabric(client *http.Client, cfg config, registered realm.Node) error {
 		if node.ID == cfg.NodeID || node.Address == "" || node.FabricCIDR == "" || node.State == realm.NodeDisabled {
 			continue
 		}
-		peers = append(peers, fabric.Peer{NodeID: node.ID, VTEP: node.Address, CIDR: node.FabricCIDR})
+		vtep := node.FabricAddress
+		if vtep == "" {
+			vtep = node.Address
+		}
+		peers = append(peers, fabric.Peer{NodeID: node.ID, VTEP: vtep, CIDR: node.FabricCIDR})
 	}
-	_, err := manager.ConfigureMesh(cfg.Address, state.Network.VXLANID, peers)
+	_, err := manager.ConfigureMesh(cfg.FabricAddress, state.Network.VXLANID, peers)
 	return err
 }
 
