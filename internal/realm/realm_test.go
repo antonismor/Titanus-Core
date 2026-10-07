@@ -179,3 +179,89 @@ func TestOpenMigratesLegacyRoutesToServiceCIDR(t *testing.T) {
 		t.Fatalf("expected migrated Service IP %s, got %s", route.ServiceIP, migrated.ServiceIP)
 	}
 }
+
+
+func TestNetworkPolicyValidatesAndPersistsRules(t *testing.T) {
+	store, err := Open(t.TempDir(), "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fleetName := range []string{"web", "api"} {
+		if err := store.PutFleet(Fleet{
+			Name: fleetName, Instances: 1, MinimumAvailable: 1,
+			Template: UnitTemplate{Source: fleetName, Command: []string{"/bin/app"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy, err := store.PutPolicy(NetworkPolicy{
+		Name: "web-ingress", Fleet: "web",
+		Ingress: []NetworkPolicyRule{
+			{FromFleet: "api", Protocol: "TCP", Ports: []int{443, 80, 443}},
+			{FromCIDR: "192.0.2.55/24", Protocol: "any"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.DefaultDeny {
+		t.Fatal("Network Policy v1 should default to deny unmatched ingress")
+	}
+	if policy.Ingress[0].Protocol != "tcp" || len(policy.Ingress[0].Ports) != 2 ||
+		policy.Ingress[0].Ports[0] != 80 || policy.Ingress[0].Ports[1] != 443 {
+		t.Fatalf("unexpected normalized ports: %#v", policy.Ingress[0])
+	}
+	if policy.Ingress[1].FromCIDR != "192.0.2.0/24" {
+		t.Fatalf("expected normalized source CIDR, got %s", policy.Ingress[1].FromCIDR)
+	}
+	stored, ok := store.GetPolicy("web-ingress")
+	if !ok || stored.Fleet != "web" {
+		t.Fatalf("policy not persisted: %#v", stored)
+	}
+}
+
+func TestNetworkPolicyRejectsUnknownSourceFleet(t *testing.T) {
+	store, err := Open(t.TempDir(), "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutFleet(Fleet{
+		Name: "web", Instances: 1, MinimumAvailable: 1,
+		Template: UnitTemplate{Source: "web", Command: []string{"/bin/app"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutPolicy(NetworkPolicy{
+		Name: "web-ingress", Fleet: "web",
+		Ingress: []NetworkPolicyRule{{FromFleet: "missing", Protocol: "tcp", Ports: []int{80}}},
+	}); err == nil {
+		t.Fatal("expected unknown source Fleet to be rejected")
+	}
+}
+
+func TestFleetDeleteBlockedWhileReferencedByNetworkPolicy(t *testing.T) {
+	store, err := Open(t.TempDir(), "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fleetName := range []string{"web", "api"} {
+		if err := store.PutFleet(Fleet{
+			Name: fleetName, Instances: 1, MinimumAvailable: 1,
+			Template: UnitTemplate{Source: fleetName, Command: []string{"/bin/app"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.PutPolicy(NetworkPolicy{
+		Name: "web-ingress", Fleet: "web",
+		Ingress: []NetworkPolicyRule{{FromFleet: "api", Protocol: "tcp", Ports: []int{80}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteFleet("api"); err == nil {
+		t.Fatal("expected referenced source Fleet deletion to be blocked")
+	}
+	if err := store.DeleteFleet("web"); err == nil {
+		t.Fatal("expected protected destination Fleet deletion to be blocked")
+	}
+}
