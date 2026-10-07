@@ -248,6 +248,7 @@ func fabricMenu(reader *bufio.Reader) error {
 		fmt.Println("  1) Initialize / update local Fabric")
 		fmt.Println("  2) Show Fabric status")
 		fmt.Println("  3) Show Unit allocations")
+		fmt.Println("  4) Show Service Fabric endpoints")
 		fmt.Println("  0) Back")
 		fmt.Print("\nSelect: ")
 		line, err := reader.ReadString('\n')
@@ -278,6 +279,11 @@ func fabricMenu(reader *bufio.Reader) error {
 				ansi.Error(err.Error())
 			}
 			pause(reader)
+		case "4":
+			if err := runFabric([]string{"services"}); err != nil {
+				ansi.Error(err.Error())
+			}
+			pause(reader)
 		case "0":
 			return nil
 		default:
@@ -289,7 +295,7 @@ func fabricMenu(reader *bufio.Reader) error {
 
 func runFabric(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: titanus fabric <init|status|allocations>")
+		return fmt.Errorf("usage: titanus fabric <init|status|allocations|services>")
 	}
 	manager := fabric.NewManager(stateRoot())
 	switch args[0] {
@@ -311,7 +317,7 @@ func runFabric(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Bridge:  %s\nCIDR:    %s\nGateway: %s\n", cfg.Bridge, cfg.CIDR, cfg.Gateway)
+		fmt.Printf("Bridge:      %s\nCIDR:        %s\nGateway:     %s\nServiceCIDR: %s\n", cfg.Bridge, cfg.CIDR, cfg.Gateway, cfg.ServiceCIDR)
 		return nil
 	case "allocations":
 		items, err := manager.Allocations()
@@ -325,6 +331,21 @@ func runFabric(args []string) error {
 		fmt.Printf("%-24s %-16s %-12s %-8s\n", "UNIT", "ADDRESS", "HOST-IF", "ACTIVE")
 		for _, item := range items {
 			fmt.Printf("%-24s %-16s %-12s %-8t\n", item.UnitID, item.Address, item.HostIf, item.Active)
+		}
+		return nil
+	case "services":
+		items, err := manager.Services()
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			fmt.Println("No Fabric Services.")
+			return nil
+		}
+		fmt.Printf("%-20s %-22s %-10s %-8s\n", "SERVICE", "ENDPOINT", "BACKENDS", "PROTOCOL")
+		for _, item := range items {
+			fmt.Printf("%-20s %-22s %-10d %-8s\n",
+				item.Name, net.JoinHostPort(item.Address, strconv.Itoa(item.Port)), len(item.Backends), item.Protocol)
 		}
 		return nil
 	default:
@@ -1043,10 +1064,11 @@ func runRoute(args []string) error {
 			fmt.Println("No Titanus Routes.")
 			return nil
 		}
-		fmt.Printf("%-20s %-20s %-20s %-12s\n", "ROUTE", "FLEET", "LISTEN", "TARGET")
+		fmt.Printf("%-20s %-20s %-22s %-20s %-12s\n", "ROUTE", "FLEET", "SERVICE", "LISTEN", "TARGET")
 		for _, route := range routes {
-			fmt.Printf("%-20s %-20s %-20s %-12s\n",
+			fmt.Printf("%-20s %-20s %-22s %-20s %-12s\n",
 				route.Name, route.Fleet,
+				net.JoinHostPort(route.ServiceIP, strconv.Itoa(route.ListenPort)),
 				net.JoinHostPort(route.ListenIP, strconv.Itoa(route.ListenPort)),
 				strconv.Itoa(route.TargetPort))
 		}
@@ -1058,21 +1080,23 @@ func runRoute(args []string) error {
 		name := args[1]
 		fs := flag.NewFlagSet("route create", flag.ContinueOnError)
 		fleetName := fs.String("fleet", "", "target Fleet")
-		listenIP := fs.String("listen", "0.0.0.0", "listen IP")
-		listenPort := fs.Int("port", 0, "listen port")
+		listenIP := fs.String("listen", "0.0.0.0", "gateway listen IP")
+		serviceIP := fs.String("service-ip", "", "optional stable Service CIDR IP; auto-allocated by default")
+		listenPort := fs.Int("port", 0, "service/gateway listen port")
 		targetPort := fs.Int("target-port", 0, "target Unit port")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
 		stored, err := client.CreateRoute(realm.Route{
-			Name: name, Fleet: *fleetName, ListenIP: *listenIP,
+			Name: name, Fleet: *fleetName, ServiceIP: *serviceIP, ListenIP: *listenIP,
 			ListenPort: *listenPort, TargetPort: *targetPort, Protocol: "tcp",
 		})
 		if err != nil {
 			return err
 		}
-		ansi.OK(fmt.Sprintf("Route %s: %s:%d -> Fleet %s:%d",
-			stored.Name, stored.ListenIP, stored.ListenPort, stored.Fleet, stored.TargetPort))
+		ansi.OK(fmt.Sprintf("Route %s: service=%s:%d gateway=%s:%d -> Fleet %s:%d",
+			stored.Name, stored.ServiceIP, stored.ListenPort,
+			stored.ListenIP, stored.ListenPort, stored.Fleet, stored.TargetPort))
 		return nil
 	case "status":
 		if len(args) != 2 {

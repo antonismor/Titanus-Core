@@ -26,6 +26,7 @@ type Config struct {
 	Bridge         string `json:"bridge"`
 	CIDR           string `json:"cidr"`
 	Gateway        string `json:"gateway"`
+	ServiceCIDR    string `json:"service_cidr,omitempty"`
 	Mode           string `json:"mode,omitempty"`
 	MTU            int    `json:"mtu,omitempty"`
 	VXLANInterface string `json:"vxlan_interface,omitempty"`
@@ -46,6 +47,19 @@ type Allocation struct {
 	HostIf  string `json:"host_if"`
 	Active  bool   `json:"active"`
 	Ports   []Port `json:"ports,omitempty"`
+}
+
+type ServiceBackend struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+}
+
+type Service struct {
+	Name     string           `json:"name"`
+	Address  string           `json:"address"`
+	Protocol string           `json:"protocol"`
+	Port     int              `json:"port"`
+	Backends []ServiceBackend `json:"backends,omitempty"`
 }
 
 type state struct {
@@ -482,6 +496,116 @@ func (m *Manager) Allocations() ([]Allocation, error) {
 	return out, nil
 }
 
+func (m *Manager) ConfigureServices(serviceCIDR string, services []Service) error {
+	cfg, err := m.Config()
+	if err != nil {
+		return err
+	}
+	ip, network, err := net.ParseCIDR(strings.TrimSpace(serviceCIDR))
+	if err != nil || ip.To4() == nil {
+		return fmt.Errorf("invalid IPv4 Service CIDR %q", serviceCIDR)
+	}
+	normalized, err := normalizeServices(network, services)
+	if err != nil {
+		return err
+	}
+
+	unlock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	cfg.ServiceCIDR = network.String()
+	if err := writeJSON(m.configPath(), cfg, 0600); err != nil {
+		unlock()
+		return err
+	}
+	if err := writeJSON(m.servicesPath(), normalized, 0600); err != nil {
+		unlock()
+		return err
+	}
+	unlock()
+
+	if os.Geteuid() == 0 {
+		return m.reconcileNAT(cfg)
+	}
+	return nil
+}
+
+func (m *Manager) Services() ([]Service, error) {
+	services, err := m.loadServices()
+	if err != nil {
+		return nil, err
+	}
+	return append([]Service(nil), services...), nil
+}
+
+func normalizeServices(network *net.IPNet, services []Service) ([]Service, error) {
+	out := make([]Service, 0, len(services))
+	seenEndpoint := map[string]string{}
+	for _, service := range services {
+		service.Name = strings.TrimSpace(service.Name)
+		service.Address = strings.TrimSpace(service.Address)
+		service.Protocol = strings.ToLower(strings.TrimSpace(service.Protocol))
+		if service.Protocol == "" {
+			service.Protocol = "tcp"
+		}
+		if service.Name == "" {
+			return nil, fmt.Errorf("Fabric Service name is required")
+		}
+		ip := net.ParseIP(service.Address)
+		if ip == nil || ip.To4() == nil || !network.Contains(ip.To4()) {
+			return nil, fmt.Errorf("Fabric Service %s address %q is outside %s", service.Name, service.Address, network.String())
+		}
+		service.Address = ip.To4().String()
+		if service.Protocol != "tcp" && service.Protocol != "udp" {
+			return nil, fmt.Errorf("Fabric Service %s has unsupported protocol %q", service.Name, service.Protocol)
+		}
+		if service.Port < 1 || service.Port > 65535 {
+			return nil, fmt.Errorf("Fabric Service %s has invalid port %d", service.Name, service.Port)
+		}
+		endpointKey := fmt.Sprintf("%s/%s/%d", service.Address, service.Protocol, service.Port)
+		if owner, ok := seenEndpoint[endpointKey]; ok {
+			return nil, fmt.Errorf("Fabric Services %s and %s share endpoint %s", owner, service.Name, endpointKey)
+		}
+		seenEndpoint[endpointKey] = service.Name
+
+		seenBackend := map[string]bool{}
+		backends := make([]ServiceBackend, 0, len(service.Backends))
+		backendPort := 0
+		for _, backend := range service.Backends {
+			ip := net.ParseIP(strings.TrimSpace(backend.Address))
+			if ip == nil || ip.To4() == nil {
+				return nil, fmt.Errorf("Fabric Service %s has invalid backend address %q", service.Name, backend.Address)
+			}
+			if backend.Port < 1 || backend.Port > 65535 {
+				return nil, fmt.Errorf("Fabric Service %s has invalid backend port %d", service.Name, backend.Port)
+			}
+			if backendPort == 0 {
+				backendPort = backend.Port
+			} else if backend.Port != backendPort {
+				return nil, fmt.Errorf("Fabric Service %s requires one target port across all backends", service.Name)
+			}
+			backend.Address = ip.To4().String()
+			key := fmt.Sprintf("%s:%d", backend.Address, backend.Port)
+			if seenBackend[key] {
+				continue
+			}
+			seenBackend[key] = true
+			backends = append(backends, backend)
+		}
+		sort.Slice(backends, func(i, j int) bool {
+			if backends[i].Address == backends[j].Address {
+				return backends[i].Port < backends[j].Port
+			}
+			return backends[i].Address < backends[j].Address
+		})
+		service.Backends = backends
+		out = append(out, service)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func (m *Manager) ensureHostFabric(cfg Config) error {
 	for _, binary := range []string{"ip", "bridge", "nft", "nsenter"} {
 		if _, err := exec.LookPath(binary); err != nil {
@@ -515,15 +639,37 @@ func (m *Manager) reconcileNAT(cfg Config) error {
 	if os.Geteuid() != 0 {
 		return nil
 	}
+	unlock, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	st, err := m.loadState()
 	if err != nil {
 		return err
 	}
+	services, err := m.loadServices()
+	if err != nil {
+		return err
+	}
 	_, _ = runOutput("nft", "delete", "table", "ip", "titanus_nat")
+	rules := renderNATRules(cfg, st, services)
 
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(rules)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("reconcile nftables: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func renderNATRules(cfg Config, st state, services []Service) string {
 	var b strings.Builder
 	b.WriteString("table ip titanus_nat {\n")
 	b.WriteString(" chain prerouting { type nat hook prerouting priority dstnat; policy accept;\n")
+	writeServiceRules(&b, services)
 	for _, allocation := range sortedActive(st) {
 		for _, port := range allocation.Ports {
 			fmt.Fprintf(&b, "  %s dport %d dnat to %s:%d comment \"Titanus:%s\"\n",
@@ -532,6 +678,7 @@ func (m *Manager) reconcileNAT(cfg Config) error {
 	}
 	b.WriteString(" }\n")
 	b.WriteString(" chain output { type nat hook output priority dstnat; policy accept;\n")
+	writeServiceRules(&b, services)
 	for _, allocation := range sortedActive(st) {
 		for _, port := range allocation.Ports {
 			fmt.Fprintf(&b, "  ip daddr 127.0.0.1 %s dport %d dnat to %s:%d comment \"Titanus:%s\"\n",
@@ -543,14 +690,33 @@ func (m *Manager) reconcileNAT(cfg Config) error {
 	fmt.Fprintf(&b, "  ip saddr %s oifname != \"%s\" masquerade comment \"Titanus Fabric NAT\"\n", cfg.CIDR, cfg.Bridge)
 	b.WriteString(" }\n")
 	b.WriteString("}\n")
+	return b.String()
+}
 
-	cmd := exec.Command("nft", "-f", "-")
-	cmd.Stdin = strings.NewReader(b.String())
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("reconcile nftables: %w: %s", err, strings.TrimSpace(string(output)))
+func writeServiceRules(b *strings.Builder, services []Service) {
+	for _, service := range services {
+		if len(service.Backends) == 0 {
+			continue
+		}
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(service.Name))
+		if len(service.Backends) == 1 {
+			backend := service.Backends[0]
+			fmt.Fprintf(b, "  ip daddr %s %s dport %d dnat to %s:%d comment \"Titanus:service:%08x\"\n",
+				service.Address, service.Protocol, service.Port, backend.Address, backend.Port, h.Sum32())
+			continue
+		}
+		fmt.Fprintf(b, "  ip daddr %s %s dport %d dnat to numgen inc mod %d map { ",
+			service.Address, service.Protocol, service.Port, len(service.Backends))
+		for i, backend := range service.Backends {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%d : %s", i, backend.Address)
+		}
+		fmt.Fprintf(b, " } : %d comment \"Titanus:service:%08x\"\n",
+			service.Backends[0].Port, h.Sum32())
 	}
-	return nil
 }
 
 func sortedActive(st state) []Allocation {
@@ -662,6 +828,18 @@ func (m *Manager) lock() (func(), error) {
 func (m *Manager) fabricDir() string { return filepath.Join(m.StateRoot, "fabric") }
 func (m *Manager) configPath() string { return filepath.Join(m.fabricDir(), "config.json") }
 func (m *Manager) statePath() string { return filepath.Join(m.fabricDir(), "allocations.json") }
+func (m *Manager) servicesPath() string { return filepath.Join(m.fabricDir(), "services.json") }
+
+func (m *Manager) loadServices() ([]Service, error) {
+	var services []Service
+	if err := readJSON(m.servicesPath(), &services); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []Service{}, nil
+		}
+		return nil, err
+	}
+	return services, nil
+}
 
 func writeJSON(path string, value any, mode os.FileMode) error {
 	data, err := json.MarshalIndent(value, "", "  ")
