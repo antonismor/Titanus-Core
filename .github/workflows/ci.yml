@@ -1,0 +1,36 @@
+name: Titanus Core CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Go build and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Titanus
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+
+      - name: Format check
+        run: |
+          test -z "$(gofmt -l ./cmd ./internal)"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: make build
+
+      - name: Smoke CLI
+        run: ./bin/titanus version
