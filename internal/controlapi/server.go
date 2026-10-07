@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
 
 type Server struct {
 	Store   *realm.Store
 	Runtime *unitruntime.Manager
+	Sources *source.Manager
 }
 
 type PulseRequest struct {
@@ -22,8 +24,8 @@ type PulseRequest struct {
 	Resources realm.Resources `json:"resources"`
 }
 
-func New(store *realm.Store, runtime *unitruntime.Manager) *Server {
-	return &Server{Store: store, Runtime: runtime}
+func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manager) *Server {
+	return &Server{Store: store, Runtime: runtime, Sources: sources}
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
@@ -33,6 +35,87 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/realm/fleets", s.fleets)
 	mux.HandleFunc("/v1/node/units", s.units)
 	mux.HandleFunc("/v1/node/units/", s.unitAction)
+	mux.HandleFunc("/v1/node/sources", s.sources)
+	mux.HandleFunc("/v1/node/sources/", s.sourceObject)
+}
+
+func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
+	if s.Sources == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("Source manager unavailable"))
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	items, err := s.Sources.List()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) sourceObject(w http.ResponseWriter, r *http.Request) {
+	if s.Sources == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("Source manager unavailable"))
+		return
+	}
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/node/sources/"), "/")
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid Source name"))
+		return
+	}
+	switch r.Method {
+	case http.MethodHead:
+		exists, err := s.Sources.Exists(name)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodGet:
+		exists, err := s.Sources.Exists(name)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !exists {
+			writeError(w, http.StatusNotFound, fmt.Errorf("Source %s not found", name))
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.titanus.source+gzip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name+".titanus"))
+		if err := s.Sources.Export(name, w); err != nil {
+			// Headers may already be committed; connection termination still
+			// causes the receiving integrity verification to fail safely.
+			return
+		}
+	case http.MethodPut:
+		manifest, err := s.Sources.ImportBundle(io.LimitReader(r.Body, 64<<30))
+		if err != nil {
+			if strings.Contains(err.Error(), "already exists") {
+				exists, existsErr := s.Sources.Exists(name)
+				if existsErr == nil && exists {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if manifest.Name != name {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("bundle Source %q does not match URL %q", manifest.Name, name))
+			return
+		}
+		writeJSON(w, http.StatusCreated, manifest)
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 func (s *Server) units(w http.ResponseWriter, r *http.Request) {
