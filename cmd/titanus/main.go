@@ -556,6 +556,10 @@ func runRealm(args []string) error {
 		listen := fs.String("listen", "0.0.0.0:9443", "mTLS Realm listen address")
 		pkiDir := fs.String("pki-dir", "/etc/titanus/pki", "Titanus PKI directory")
 		capText := fs.String("capabilities", "CONTROL,EXECUTION", "Node capabilities")
+		fabricCIDR := fs.String("fabric-cidr", "10.240.0.0/16", "Realm Unit Fabric CIDR")
+		serviceCIDR := fs.String("service-cidr", "10.250.0.0/16", "Realm service CIDR")
+		nodePrefix := fs.Int("node-prefix", 24, "per-Node Fabric prefix")
+		vxlanID := fs.Int("vxlan-id", 4242, "Titanus VXLAN ID")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -579,6 +583,12 @@ func runRealm(args []string) error {
 		}
 		store, err := realm.Open(stateRoot(), *name)
 		if err != nil {
+			return err
+		}
+		if err := store.ConfigureNetwork(realm.RealmNetwork{
+			FabricCIDR: *fabricCIDR, ServiceCIDR: *serviceCIDR,
+			NodePrefix: *nodePrefix, VXLANID: *vxlanID,
+		}); err != nil {
 			return err
 		}
 		if err := store.UpsertNode(realm.Node{
