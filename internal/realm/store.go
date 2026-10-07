@@ -45,7 +45,8 @@ type RealmNetwork struct {
 
 type Node struct {
 	ID           string             `json:"id"`
-	Address      string             `json:"address"`
+	Address       string             `json:"address"`
+	FabricAddress string           `json:"fabric_address,omitempty"`
 	FabricCIDR   string             `json:"fabric_cidr,omitempty"`
 	Capabilities []model.Capability `json:"capabilities"`
 	Labels       map[string]string  `json:"labels,omitempty"`
@@ -165,6 +166,9 @@ func (s *Store) UpsertNode(node Node) error {
 		}
 	}
 	if existed {
+		if node.FabricAddress == "" {
+			node.FabricAddress = existing.FabricAddress
+		}
 		if node.FabricCIDR == "" {
 			node.FabricCIDR = existing.FabricCIDR
 		}
