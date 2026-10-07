@@ -608,7 +608,7 @@ func runRealm(args []string) error {
 		if err := os.MkdirAll("/etc/titanus", 0755); err != nil {
 			return err
 		}
-		daemonEnv := fmt.Sprintf("TITANUS_STATE_ROOT=%s\nTITANUS_REALM_NAME=%s\nTITANUS_CONTROLLER_MODE=true\nTITANUS_CLUSTER_LISTEN=%s\nTITANUS_CA=%s\nTITANUS_CERT=%s\nTITANUS_KEY=%s\n",
+		daemonEnv := fmt.Sprintf("TITANUS_STATE_ROOT=%s\nTITANUS_REALM_NAME=%s\nTITANUS_CONTROLLER_MODE=true\nTITANUS_GATEWAY_MODE=true\nTITANUS_CLUSTER_LISTEN=%s\nTITANUS_CA=%s\nTITANUS_CERT=%s\nTITANUS_KEY=%s\n",
 			stateRoot(), *name, *listen, auth.CertPath, cert, key)
 		if err := os.WriteFile("/etc/titanus/daemon.env", []byte(daemonEnv), 0600); err != nil {
 			return err
