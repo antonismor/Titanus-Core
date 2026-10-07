@@ -97,6 +97,8 @@ jobs:
           grep -q '"network_address": "10.249.0.10"' /tmp/titanus-inspect.json
 
           sudo nsenter -t "$(jq -r '.state.pid' /tmp/titanus-inspect.json)" -n ip addr show eth0 | grep -q '10.249.0.10/24'
+          sudo grep -q 'search titanus' "$STATE/units/smoke/rootfs/etc/resolv.conf"
+          sudo grep -q 'nameserver 10.249.0.1' "$STATE/units/smoke/rootfs/etc/resolv.conf"
 
           sudo env TITANUS_STATE_ROOT="$STATE" TITANUS_CGROUP_ROOT="$CGROUP" TITANUS_INIT_BINARY="$INIT" \
             ./bin/titanus unit logs smoke | grep -q TITANUS_RUNTIME_OK
