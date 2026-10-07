@@ -171,6 +171,9 @@ func runUnitChild(args []string) (result error) {
 		return fmt.Errorf("bring loopback up: %w", err)
 	}
 
+	if err := security.SealRootFS(policy); err != nil {
+		return fmt.Errorf("workload rootfs: %w", err)
+	}
 	if err := security.ApplyLandlock(policy, int(executable.Fd())); err != nil {
 		return fmt.Errorf("workload LSM: %w", err)
 	}

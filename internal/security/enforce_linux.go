@@ -9,6 +9,17 @@ import (
 	"unsafe"
 )
 
+// SealRootFS completes mount changes before Landlock locks filesystem topology.
+// The Unit init calls this after private mounts and before ApplyLandlock/Apply.
+func SealRootFS(p Policy) error {
+	if p.ReadOnlyRootFS {
+		if err := syscall.Mount("", "/", "", uintptr(syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NODEV), ""); err != nil {
+			return fmt.Errorf("remount Unit rootfs read-only: %w", err)
+		}
+	}
+	return nil
+}
+
 // Apply must be called on a locked OS thread immediately before syscall.Exec.
 // Capabilities and no_new_privs are thread attributes; exec keeps the locked
 // thread and discards the remaining Go runtime threads. Seccomp uses TSYNC so
@@ -21,11 +32,6 @@ func Apply(p Policy) error {
 	filter, err := DefaultFilter(runtime.GOARCH)
 	if err != nil {
 		return err
-	}
-	if p.ReadOnlyRootFS {
-		if err := syscall.Mount("", "/", "", uintptr(syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NODEV), ""); err != nil {
-			return fmt.Errorf("remount Unit rootfs read-only: %w", err)
-		}
 	}
 	if err := prctl(38, 1, 0); err != nil {
 		return fmt.Errorf("set no_new_privs: %w", err)
