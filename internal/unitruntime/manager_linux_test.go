@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrepareFabricResolverReplacesSourceResolverSafely(t *testing.T) {
@@ -41,5 +42,33 @@ func TestPrepareFabricResolverReplacesSourceResolverSafely(t *testing.T) {
 func TestPrepareFabricResolverRejectsIPv6Gateway(t *testing.T) {
 	if err := prepareFabricResolver(t.TempDir(), "fd00::1/64"); err == nil {
 		t.Fatal("expected IPv6 gateway to be rejected by Fabric v1 resolver")
+	}
+}
+
+func TestWaitForExecStatusTreatsCleanEOFAsSuccessfulExec(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = write.Close()
+	defer read.Close()
+	if err := waitForExecStatus(read, time.Second); err != nil {
+		t.Fatalf("clean exec-status EOF rejected: %v", err)
+	}
+}
+
+func TestWaitForExecStatusSurfacesPreExecFailure(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := write.WriteString("apply Unit Security Profile: operation not permitted\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = write.Close()
+	defer read.Close()
+	err = waitForExecStatus(read, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "operation not permitted") {
+		t.Fatalf("expected child startup error, got %v", err)
 	}
 }
