@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -452,8 +453,9 @@ func randomUUID() (string, error) {
 	}
 	data[6] = (data[6] & 0x0f) | 0x40
 	data[8] = (data[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		data[0:4], data[4:6], data[6:8], data[8:10], data[10:16]), nil
+	hexValue := hex.EncodeToString(data[:])
+	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" +
+		hexValue[16:20] + "-" + hexValue[20:32], nil
 }
 
 func sanitizeDevice(device string) string {
