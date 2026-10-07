@@ -654,7 +654,18 @@ func (m *Manager) reconcileNAT(cfg Config) error {
 		return err
 	}
 	_, _ = runOutput("nft", "delete", "table", "ip", "titanus_nat")
+	rules := renderNATRules(cfg, st, services)
 
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(rules)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("reconcile nftables: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func renderNATRules(cfg Config, st state, services []Service) string {
 	var b strings.Builder
 	b.WriteString("table ip titanus_nat {\n")
 	b.WriteString(" chain prerouting { type nat hook prerouting priority dstnat; policy accept;\n")
@@ -679,14 +690,7 @@ func (m *Manager) reconcileNAT(cfg Config) error {
 	fmt.Fprintf(&b, "  ip saddr %s oifname != \"%s\" masquerade comment \"Titanus Fabric NAT\"\n", cfg.CIDR, cfg.Bridge)
 	b.WriteString(" }\n")
 	b.WriteString("}\n")
-
-	cmd := exec.Command("nft", "-f", "-")
-	cmd.Stdin = strings.NewReader(b.String())
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("reconcile nftables: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
+	return b.String()
 }
 
 func writeServiceRules(b *strings.Builder, services []Service) {
