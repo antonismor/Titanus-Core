@@ -12,6 +12,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 var objectName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
@@ -30,8 +31,9 @@ type Spec struct {
 	MemoryBytes int64       `json:"memory_bytes"`
 	CPUPercent  int         `json:"cpu_percent"`
 	PidsMax     int         `json:"pids_max"`
-	Network     NetworkSpec  `json:"network"`
-	Mounts      []disk.Mount `json:"mounts,omitempty"`
+	Network     NetworkSpec    `json:"network"`
+	Mounts      []disk.Mount   `json:"mounts,omitempty"`
+	Security    security.Spec  `json:"security"`
 }
 
 type Status string
@@ -70,6 +72,7 @@ func (s *Spec) Normalize() {
 	if s.PidsMax == 0 {
 		s.PidsMax = 256
 	}
+	s.Security.Normalize()
 }
 
 func (s Spec) Validate() error {
@@ -99,6 +102,9 @@ func (s Spec) Validate() error {
 	}
 	if err := disk.ValidateMounts(s.Mounts); err != nil {
 		return fmt.Errorf("Unit %s storage: %w", s.ID, err)
+	}
+	if err := s.Security.Validate(); err != nil {
+		return fmt.Errorf("Unit %s security: %w", s.ID, err)
 	}
 	return nil
 }
