@@ -219,7 +219,7 @@ func main() {
 		if quorum != nil {
 			nodes = &reconcile.GuardedNodes{NodeRuntime: clusterClient, Check: quorum.CheckLeader}
 		}
-		controller := &reconcile.Controller{Store: store, Nodes: nodes, Sources: sourceManager, Interval: 5 * time.Second}
+		controller := &reconcile.Controller{Storage: api.Disks, Store: store, Nodes: nodes, Sources: sourceManager, Interval: 5 * time.Second}
 		go controller.Run(ctx)
 		log.Printf("Titanus Fleet reconciler enabled")
 	}

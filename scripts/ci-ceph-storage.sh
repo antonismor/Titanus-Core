@@ -111,3 +111,12 @@ modprobe rbd
 modprobe ceph
 export TITANUS_CEPH_TEST=1 TITANUS_CEPH_CONF="$conf"
 go test ./internal/disk -run '^TestNativeCeph' -count=1 -v -timeout 12m
+
+# Same native Ceph cluster, actual namespace/cgroup workloads on independently
+# persisted node roots. This is shared-kernel CI, not final VM/host acceptance.
+mkdir -p "$root/failover-source/bin"
+cp "$(command -v busybox)" "$root/failover-source/bin/busybox"
+ln -s busybox "$root/failover-source/bin/sh"
+CGO_ENABLED=0 go build -o "$root/titanus-init" ./cmd/titanus-init
+export TITANUS_STORAGE_FAILOVER_TEST=1 TITANUS_INIT_BINARY="$root/titanus-init" TITANUS_FAILOVER_SOURCE="$root/failover-source"
+go test ./internal/reconcile -run '^TestNativeAutomaticStorageFailover$' -count=1 -v -timeout 8m

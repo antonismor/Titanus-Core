@@ -30,7 +30,7 @@ def verified(bundle,inspect_binaries=True,checksum_data=None):
  meta=json.loads((bundle/'manifest.json').read_text())
  if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',meta['version']) or not re.fullmatch('[0-9a-f]{40}',meta['revision']):raise ValueError('invalid release identity')
  arch={'x86_64':'amd64','aarch64':'arm64'}.get(platform.machine())
- if meta['os']!='linux' or meta['arch']!=arch or meta['state_profile']!='titanus-state/v1':raise ValueError('unsupported release architecture/state profile')
+ if meta['os']!='linux' or meta['arch']!=arch or meta['state_profile']!='titanus-state/v2':raise ValueError('unsupported release architecture/state profile')
  for name in (['titanus','titanusd','titanus-agent','titanus-init'] if inspect_binaries else []):
   command=[str(bundle/'bin'/name),'version','--json'] if name=='titanus' else [str(bundle/'bin'/name),'--version-json']
   if json.loads(subprocess.check_output(command,timeout=5))!=meta:raise ValueError('binary manifest identity mismatch')

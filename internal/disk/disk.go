@@ -28,6 +28,7 @@ const (
 var diskName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
 type Spec struct {
+	ManagedID     string    `json:"managed_id,omitempty"`
 	Name          string    `json:"name"`
 	Provider      Provider  `json:"provider"`
 	SizeBytes     int64     `json:"size_bytes"`
@@ -105,6 +106,9 @@ func (m *Manager) Create(spec Spec) (Spec, error) {
 	return m.create(spec)
 }
 func (m *Manager) create(spec Spec) (Spec, error) {
+	if spec.ManagedID != "" {
+		return Spec{}, fmt.Errorf("new Disk cannot impersonate managed catalog")
+	}
 	spec.Name = strings.TrimSpace(spec.Name)
 	if !diskName.MatchString(spec.Name) {
 		return Spec{}, fmt.Errorf("invalid Disk name %q", spec.Name)
@@ -307,7 +311,23 @@ func (m *Manager) Detach(name string) error {
 	defer guard()
 	a, err := m.acquire(name, "maintenance", "detach")
 	if err != nil {
-		return err
+		// Fenced clients cannot reopen their distributed lock. Only positive
+		// native blocklist evidence permits their ordinary (non-lazy) detach.
+		if spec.ManagedID == "" {
+			return err
+		}
+		w, e := m.Writer(name)
+		if e != nil {
+			return err
+		}
+		cfg, e := m.CephConfig()
+		if e != nil {
+			return e
+		}
+		if e = m.waitCephFSBlocklists(cfg, w.Address); e != nil {
+			return err
+		}
+		return m.detach(name)
 	}
 	// Runtime has stopped before detach. Release the maintenance FD so a
 	// CephFS unmount is not held busy by its own open lock inode.

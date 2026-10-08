@@ -54,7 +54,7 @@ func(p *PlacementEngine) Rolling(state State,f Fleet,now time.Time)RolloutPlan {
  available:=plan.Available
  for _,a:=range current {
   n,ok:=state.Nodes[a.NodeID]
-  valid:=a.State!=AssignmentStopped && wanted[a.ID] && a.Generation==f.Generation && ok && eligible(n,f)
+  valid:=a.State!=AssignmentStopped && wanted[a.ID] && a.Generation==f.Generation && ok && eligible(n,f) && catalogPlacement(state,n,f)
   if valid {plan.Keep=append(plan.Keep,a);delete(wanted,a.ID);plan.Updated++;continue}
   if assignmentAvailable(state,a,now) && available-1<f.MinimumAvailable {plan.Keep=append(plan.Keep,a);continue}
   plan.Retire=append(plan.Retire,a);if assignmentAvailable(state,a,now){available--}

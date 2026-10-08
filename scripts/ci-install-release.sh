@@ -12,8 +12,10 @@ trap cleanup EXIT
 # Build two independently identified compatible versions and restore the release
 # build afterward. Fixture versions never enter the publication artifact folder.
 make build
+base_version=$(./bin/titanus version --json | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
+next_version="${base_version}.install-test"
 TITANUS_RELEASE_OUTPUT="$fixture/base" bash scripts/package-release.sh
-make build VERSION=0.4.0-rc.2
+make build VERSION="$next_version"
 TITANUS_RELEASE_OUTPUT="$fixture/next" bash scripts/package-release.sh
 make build
 for kind in base next; do
@@ -29,9 +31,9 @@ mkdir -p "$stage/etc/titanus" "$stage/var/lib/titanus"
 printf '%s\n' 'CONFIG_PRESERVED' > "$stage/etc/titanus/daemon.env"
 printf '%s\n' 'MAPPING_LEDGER_PRESERVED' > "$stage/var/lib/titanus/ledger-canary"
 python3 scripts/install-release.py --root "$stage" --bundle "$next"
-"$stage/usr/local/bin/titanus" version --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]=="0.4.0-rc.2"'
+"$stage/usr/local/bin/titanus" version --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]==sys.argv[1]' "$next_version"
 python3 scripts/install-release.py --root "$stage" --rollback
-"$stage/usr/local/bin/titanus" version --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]=="0.4.0-rc.1"'
+"$stage/usr/local/bin/titanus" version --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]==sys.argv[1]' "$base_version"
 grep -q CONFIG_PRESERVED "$stage/etc/titanus/daemon.env"
 grep -q MAPPING_LEDGER_PRESERVED "$stage/var/lib/titanus/ledger-canary"
 selection=$(readlink "$stage/usr/local/lib/titanus/current")
@@ -73,10 +75,10 @@ ENV
  python3 scripts/install-release.py --bundle "$next"
  wait_health
  /usr/local/bin/titanus unit inspect install-proof | python3 -c 'import json,sys; s=json.load(sys.stdin)["state"]; assert s["status"]=="ACTIVE" and s["pid"]==int(sys.argv[1])' "$pid"
- curl -fsS --unix-socket "$fixture/live.sock" http://titanus.local/v1/version | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]=="0.4.0-rc.2"'
+ curl -fsS --unix-socket "$fixture/live.sock" http://titanus.local/v1/version | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]==sys.argv[1]' "$next_version"
  python3 scripts/install-release.py --rollback
  wait_health
  /usr/local/bin/titanus unit inspect install-proof | python3 -c 'import json,sys; s=json.load(sys.stdin)["state"]; assert s["status"]=="ACTIVE" and s["pid"]==int(sys.argv[1])' "$pid"
- curl -fsS --unix-socket "$fixture/live.sock" http://titanus.local/v1/version | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]=="0.4.0-rc.1"'
+ curl -fsS --unix-socket "$fixture/live.sock" http://titanus.local/v1/version | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]==sys.argv[1]' "$base_version"
 fi
 printf '%s\n' TITANUS_NATIVE_INSTALL_UPGRADE_ROLLBACK_OK

@@ -36,7 +36,7 @@ func (p *PlacementEngine) Rank(state State, fleet Fleet, existing []Assignment) 
 
 	scores := make([]NodeScore, 0)
 	for _, node := range state.Nodes {
-		if !eligible(node, fleet) {
+		if !eligible(node, fleet) || !catalogPlacement(state, node, fleet) {
 			continue
 		}
 		if len(fleet.Template.Ports) > 0 && countsByNode[node.ID] > 0 {
@@ -121,7 +121,7 @@ func (p *PlacementEngine) Reconcile(state State, fleet Fleet) ([]Assignment, err
 	for slot := 1; slot <= fleet.Instances; slot++ {
 		id := fmt.Sprintf("%s-%03d-g%d", fleet.Name, slot, fleet.Generation)
 		if current, ok := existing[id]; ok {
-			if node, exists := working.Nodes[current.NodeID]; exists && eligible(node, fleet) {
+			if node, exists := working.Nodes[current.NodeID]; exists && eligible(node, fleet) && catalogPlacement(state, node, fleet) {
 				result = append(result, current)
 				continue
 			}
@@ -152,7 +152,7 @@ func (p *PlacementEngine) Reconcile(state State, fleet Fleet) ([]Assignment, err
 }
 
 func eligible(node Node, fleet Fleet) bool {
-	if node.State != NodeReady {
+	if node.State != NodeReady || node.StorageQuarantined {
 		return false
 	}
 	if !hasCapability(node.Capabilities, model.CapabilityExecution) {
@@ -187,4 +187,13 @@ func ratio(free, total int64) float64 {
 		return 1
 	}
 	return value
+}
+
+func catalogPlacement(state State, node Node, fleet Fleet) bool {
+	for _, mount := range fleet.Template.Mounts {
+		if c, ok := state.Disks[mount.Disk]; ok && c.LocalNode != "" && c.LocalNode != node.ID {
+			return false
+		}
+	}
+	return true
 }
