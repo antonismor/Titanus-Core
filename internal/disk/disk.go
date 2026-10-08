@@ -1,9 +1,11 @@
 package disk
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/antonismor/Titanus-Core/internal/durable"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,12 +28,13 @@ const (
 var diskName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
 type Spec struct {
-	Name        string    `json:"name"`
-	Provider    Provider  `json:"provider"`
-	SizeBytes   int64     `json:"size_bytes"`
-	CreatedAt   time.Time `json:"created_at"`
-	Initialized bool      `json:"initialized"`
-	RemotePath  string    `json:"remote_path,omitempty"`
+	Name          string    `json:"name"`
+	Provider      Provider  `json:"provider"`
+	SizeBytes     int64     `json:"size_bytes"`
+	CreatedAt     time.Time `json:"created_at"`
+	Initialized   bool      `json:"initialized"`
+	LayoutVersion int       `json:"layout_version"`
+	RemotePath    string    `json:"remote_path,omitempty"`
 }
 
 type Mount struct {
@@ -94,6 +97,14 @@ func (m *Manager) CephConfig() (CephConfig, error) {
 }
 
 func (m *Manager) Create(spec Spec) (Spec, error) {
+	unlock, err := m.lock(spec.Name)
+	if err != nil {
+		return Spec{}, err
+	}
+	defer unlock()
+	return m.create(spec)
+}
+func (m *Manager) create(spec Spec) (Spec, error) {
 	spec.Name = strings.TrimSpace(spec.Name)
 	if !diskName.MatchString(spec.Name) {
 		return Spec{}, fmt.Errorf("invalid Disk name %q", spec.Name)
@@ -109,13 +120,14 @@ func (m *Manager) Create(spec Spec) (Spec, error) {
 	default:
 		return Spec{}, fmt.Errorf("unsupported Disk provider %q", spec.Provider)
 	}
-	if _, err := os.Stat(m.specPath(spec.Name)); err == nil {
+	if _, err := os.Lstat(m.diskDir(spec.Name)); err == nil {
 		return Spec{}, fmt.Errorf("Disk %s already exists", spec.Name)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Spec{}, err
 	}
 
 	spec.CreatedAt = time.Now().UTC()
+	spec.LayoutVersion = 1
 	if err := os.MkdirAll(m.diskDir(spec.Name), 0750); err != nil {
 		return Spec{}, err
 	}
@@ -139,7 +151,7 @@ func (m *Manager) Create(spec Spec) (Spec, error) {
 			return Spec{}, err
 		}
 		sizeMiB := (spec.SizeBytes + 1024*1024 - 1) / (1024 * 1024)
-		args := append(m.rbdBaseArgs(cfg), "create", cfg.Pool+"/"+spec.Name, "--size", strconv.FormatInt(sizeMiB, 10))
+		args := append(m.rbdBaseArgs(cfg), "create", cfg.Pool+"/"+spec.Name, "--size", strconv.FormatInt(sizeMiB, 10), "--image-feature", "layering,exclusive-lock")
 		if out, err := commandOutput("rbd", args...); err != nil {
 			_ = os.RemoveAll(m.diskDir(spec.Name))
 			return Spec{}, fmt.Errorf("create Ceph RBD: %w: %s", err, out)
@@ -175,21 +187,16 @@ func (m *Manager) Create(spec Spec) (Spec, error) {
 	return spec, nil
 }
 
+// Resolve is for offline diagnostics of local data. Runtime callers must Acquire.
 func (m *Manager) Resolve(name string) (string, error) {
 	spec, err := m.Inspect(name)
 	if err != nil {
 		return "", err
 	}
-	switch spec.Provider {
-	case ProviderLocal:
-		return m.dataPath(name), nil
-	case ProviderCephRBD:
-		return m.attachRBD(spec)
-	case ProviderCephFS:
-		return m.attachCephFS(spec)
-	default:
-		return "", fmt.Errorf("unsupported provider %q", spec.Provider)
+	if spec.Provider != ProviderLocal {
+		return "", fmt.Errorf("remote Disks require an owned attachment")
 	}
+	return m.dataPath(name), nil
 }
 
 func (m *Manager) Inspect(name string) (Spec, error) {
@@ -226,6 +233,11 @@ func (m *Manager) List() ([]Spec, error) {
 }
 
 func (m *Manager) Delete(name string, destroyData bool) error {
+	unlock, err := m.lock(name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	spec, err := m.Inspect(name)
 	if err != nil {
 		return err
@@ -234,7 +246,21 @@ func (m *Manager) Delete(name string, destroyData bool) error {
 		return fmt.Errorf("refusing to delete remote Disk %s without explicit destroy-data", name)
 	}
 
-	_ = m.Detach(name)
+	guard, err := m.guardSpec(spec)
+	if err != nil {
+		return err
+	}
+	defer guard()
+	a, err := m.acquire(name, "maintenance", "delete")
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	if spec.Provider == ProviderCephRBD {
+		if err = m.detach(name); err != nil {
+			return err
+		}
+	}
 	switch spec.Provider {
 	case ProviderCephRBD:
 		cfg, err := m.CephConfig()
@@ -255,10 +281,42 @@ func (m *Manager) Delete(name string, destroyData bool) error {
 			return fmt.Errorf("remove CephFS subvolume: %w: %s", err, out)
 		}
 	}
+	if spec.Provider == ProviderCephFS {
+		a.Close()
+		if err = m.unmountOnly(name); err != nil {
+			return err
+		}
+	}
 	return os.RemoveAll(m.diskDir(name))
 }
 
 func (m *Manager) Detach(name string) error {
+	unlock, err := m.lock(name)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	spec, err := m.Inspect(name)
+	if err != nil {
+		return err
+	}
+	guard, err := m.guardSpec(spec)
+	if err != nil {
+		return err
+	}
+	defer guard()
+	a, err := m.acquire(name, "maintenance", "detach")
+	if err != nil {
+		return err
+	}
+	// Runtime has stopped before detach. Release the maintenance FD so a
+	// CephFS unmount is not held busy by its own open lock inode.
+	if err = a.Close(); err != nil {
+		return err
+	}
+	return m.detach(name)
+}
+func (m *Manager) detach(name string) error {
 	spec, err := m.Inspect(name)
 	if err != nil {
 		return err
@@ -309,21 +367,71 @@ func (m *Manager) attachRBD(spec Spec) (string, error) {
 		return "", err
 	}
 
-	args := append(m.rbdBaseArgs(cfg), "map", cfg.Pool+"/"+spec.Name)
-	out, err := commandOutput("rbd", args...)
+	// Refuse legacy images without mandatory exclusive-lock semantics.
+	info, err := commandOutput("rbd", append(m.rbdBaseArgs(cfg), "info", cfg.Pool+"/"+spec.Name, "--format", "json")...)
 	if err != nil {
-		return "", fmt.Errorf("map Ceph RBD: %w: %s", err, out)
-	}
-	device := strings.TrimSpace(out)
-	if device == "" {
-		return "", fmt.Errorf("rbd map returned no device")
-	}
-	if err := os.WriteFile(m.devicePath(spec.Name), []byte(device+"\n"), 0600); err != nil {
 		return "", err
 	}
+	var image struct {
+		Features []string `json:"features"`
+	}
+	if err = json.Unmarshal([]byte(info), &image); err != nil {
+		return "", err
+	}
+	exclusive := false
+	for _, feature := range image.Features {
+		if feature == "exclusive-lock" {
+			exclusive = true
+		}
+	}
+	if !exclusive {
+		return "", fmt.Errorf("RBD requires exclusive-lock image feature")
+	}
+	device := ""
+	if saved, e := os.ReadFile(m.devicePath(spec.Name)); e == nil {
+		list, e := commandOutput("rbd", append(m.rbdBaseArgs(cfg), "device", "list", "--format", "json")...)
+		if e != nil {
+			return "", e
+		}
+		var mappings []struct {
+			Pool   string `json:"pool"`
+			Name   string `json:"name"`
+			Device string `json:"device"`
+		}
+		if e = json.Unmarshal([]byte(list), &mappings); e != nil {
+			return "", e
+		}
+		for _, mapping := range mappings {
+			if mapping.Device == strings.TrimSpace(string(saved)) && mapping.Pool == cfg.Pool && mapping.Name == spec.Name {
+				device = mapping.Device
+			}
+		}
+	}
+	if device == "" {
+		args := append(m.rbdBaseArgs(cfg), "device", "map", cfg.Pool+"/"+spec.Name, "--exclusive", "--options", "noshare,lock_on_read,lock_timeout=5,mount_timeout=15")
+		out, e := commandOutput("rbd", args...)
+		if e != nil {
+			return "", fmt.Errorf("map Ceph RBD: %w", e)
+		}
+		device = strings.TrimSpace(out)
+		if !strings.HasPrefix(device, "/dev/rbd") {
+			return "", fmt.Errorf("invalid mapped RBD device")
+		}
+		if e = os.WriteFile(m.devicePath(spec.Name), []byte(device+"\n"), 0600); e != nil {
+			return "", e
+		}
+	}
 
+	// Query failure must never be interpreted as an unformatted image.
 	if !spec.Initialized {
-		if format, _ := commandOutput("blkid", "-o", "value", "-s", "TYPE", device); strings.TrimSpace(format) == "" {
+		format, probeErr := commandOutput("blkid", "-p", "-o", "value", "-s", "TYPE", device)
+		if probeErr != nil {
+			exit, ok := probeErr.(*exec.ExitError)
+			if !ok || exit.ExitCode() != 2 {
+				return "", fmt.Errorf("filesystem probe failed: %w", probeErr)
+			}
+		}
+		if strings.TrimSpace(format) == "" {
 			if out, err := commandOutput("mkfs.ext4", "-F", "-L", "TITANUS-"+spec.Name, device); err != nil {
 				return "", fmt.Errorf("format Ceph RBD: %w: %s", err, out)
 			}
@@ -345,20 +453,29 @@ func (m *Manager) attachCephFS(spec Spec) (string, error) {
 		return "", fmt.Errorf("CephFS attachment requires root")
 	}
 	target := m.mountPath(spec.Name)
-	if mounted(target) {
-		return target, nil
-	}
+
 	cfg, err := m.CephConfig()
 	if err != nil {
 		return "", err
+	}
+	if err = m.verifyCephFSFencing(cfg); err != nil {
+		return "", err
+	}
+	if mounted(target) {
+		return target, nil
 	}
 	if err := os.MkdirAll(target, 0750); err != nil {
 		return "", err
 	}
 	client := strings.TrimPrefix(cfg.Client, "client.")
-	options := []string{"name=" + client, "fs=" + cfg.FSName, "conf=" + cfg.Conf}
+	options := []string{"name=" + client, "fs=" + cfg.FSName, "conf=" + cfg.Conf, "noshare", "recover_session=no"}
 	if cfg.Keyring != "" {
-		options = append(options, "keyring="+cfg.Keyring)
+		options = append(options, "secretfile="+m.cephSecretPath())
+		if out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "auth", "get-key", cfg.Client)...); err != nil {
+			return "", fmt.Errorf("get CephFS mount secret: %w", err)
+		} else if err := os.WriteFile(m.cephSecretPath(), []byte(out), 0600); err != nil {
+			return "", err
+		}
 	}
 	source := ":/" + strings.TrimPrefix(spec.RemotePath, "/")
 	if out, err := commandOutput("mount", "-t", "ceph", source, target, "-o", strings.Join(options, ",")); err != nil {
@@ -460,8 +577,18 @@ func requireCommands(names ...string) error {
 }
 
 func commandOutput(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	output, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// JSON and device paths belong to stdout. Ceph may emit transport diagnostics
+	// on stderr even for successful commands; never parse those as adapter data.
+	output, err := cmd.Output()
+	if exit, ok := err.(*exec.ExitError); ok {
+		output = append(output, exit.Stderr...)
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	return strings.TrimSpace(string(output)), err
 }
 
@@ -484,15 +611,7 @@ func writeJSON(path string, value any, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return durable.WriteJSON(path, value, mode)
 }
 
 func readJSON(path string, value any) error {
@@ -510,6 +629,7 @@ func (m *Manager) specPath(name string) string   { return filepath.Join(m.diskDi
 func (m *Manager) dataPath(name string) string   { return filepath.Join(m.diskDir(name), "data") }
 func (m *Manager) mountPath(name string) string  { return filepath.Join(m.diskDir(name), "mount") }
 func (m *Manager) devicePath(name string) string { return filepath.Join(m.diskDir(name), "device") }
+func (m *Manager) cephSecretPath() string        { return filepath.Join(m.storageDir(), "mount.secret") }
 func (m *Manager) cephConfigPath() string        { return filepath.Join(m.storageDir(), "ceph.json") }
 
 func Bind(source, target string, readOnly bool) error {

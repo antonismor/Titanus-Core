@@ -302,3 +302,12 @@ access, descendant inheritance and restart alongside the existing runtime tests.
 See [Unit isolation](docs/ISOLATION.md) for dedicated-node UID reservations,
 Landlock ABI >=3, legacy layer migration, writable Disk ownership and LSM scope.
 Storage lifecycle/fencing, observability, UI and release remain open in issue #8.
+
+### Disk lifecycle and ownership
+
+The native Disk adapter supports offline local/RBD/CephFS snapshots and restore
+to new Disks, exclusive Unit attachments retained by namespace PID 1, and explicit
+CephFS storage-level eviction. Storage administration uses CLI and authenticated
+admin APIs. Native AMD64/ARM64 Ceph integration is exercised in CI. See
+[Storage lifecycle](docs/STORAGE_LIFECYCLE.md) for migration, identity mapping,
+manual fencing and the boundary against automatic unreachable-writer failover.

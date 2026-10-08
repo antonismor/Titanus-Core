@@ -17,6 +17,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/consensus"
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
+	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/realm"
@@ -77,6 +78,7 @@ func main() {
 	}
 	defer leaseManager.Close()
 	api := controlapi.New(store, runtimeManager, sourceManager, leaseManager)
+	api.Disks = disk.NewManager(stateRoot)
 	api.CAPath = envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
 	if _, e := os.Stat(filepath.Join(filepath.Dir(api.CAPath), "ca.key")); envBool("TITANUS_CONTROLLER_MODE") && e == nil {
 		api.Authority = &identity.Authority{Dir: filepath.Dir(api.CAPath), CertPath: api.CAPath, KeyPath: filepath.Join(filepath.Dir(api.CAPath), "ca.key"), Realm: realmName}

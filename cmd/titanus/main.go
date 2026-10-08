@@ -453,7 +453,7 @@ func diskMenu(reader *bufio.Reader) error {
 
 func runDisk(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: titanus disk <create|list|inspect|delete|ceph-config>")
+		return fmt.Errorf("usage: titanus disk <create|list|inspect|delete|ceph-config|snapshot|snapshots|restore|owner|detach|fence>")
 	}
 	manager := disk.NewManager(stateRoot())
 	switch args[0] {
@@ -517,6 +517,61 @@ func runDisk(args []string) error {
 		}
 		ansi.OK("Disk deleted: " + args[1])
 		return nil
+
+	case "snapshot":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: titanus disk snapshot DISK SNAPSHOT")
+		}
+		snapshot, err := manager.Snapshot(args[1], args[2])
+		if err != nil {
+			return err
+		}
+		return printDiskJSON(snapshot)
+	case "snapshots":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus disk snapshots DISK")
+		}
+		items, err := manager.Snapshots(args[1])
+		if err != nil {
+			return err
+		}
+		return printDiskJSON(items)
+	case "restore":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: titanus disk restore DISK SNAPSHOT NEW_DISK")
+		}
+		spec, err := manager.Restore(args[1], args[2], args[3])
+		if err != nil {
+			return err
+		}
+		return printDiskJSON(spec)
+	case "owner":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: titanus disk owner DISK HOST_UID HOST_GID (empty, offline Disk only)")
+		}
+		uid, err := strconv.Atoi(args[2])
+		if err != nil {
+			return err
+		}
+		gid, err := strconv.Atoi(args[3])
+		if err != nil {
+			return err
+		}
+		return manager.ProvisionOwnership(args[1], uid, gid)
+	case "detach":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus disk detach DISK")
+		}
+		return manager.Detach(args[1])
+	case "fence":
+		if len(args) != 4 {
+			return fmt.Errorf("usage: titanus disk fence DISK CEPHFS_SESSION OBSERVED_ADDRESS")
+		}
+		session, err := strconv.ParseUint(args[2], 10, 64)
+		if err != nil {
+			return err
+		}
+		return manager.FenceCephFS(args[1], session, args[3])
 	case "ceph-config":
 		fs := flag.NewFlagSet("disk ceph-config", flag.ContinueOnError)
 		cluster := fs.String("cluster", "ceph", "Ceph cluster name")
@@ -2126,4 +2181,13 @@ func healthFlags(readiness, liveness, restart, file string) (unitruntime.Health,
 	}
 	health.Normalize("never")
 	return health, health.Validate()
+}
+
+func printDiskJSON(value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
 }

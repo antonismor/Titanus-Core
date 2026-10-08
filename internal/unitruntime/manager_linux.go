@@ -248,10 +248,16 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 	if err := m.mountOverlay(spec); err != nil {
 		return m.fail(state, fmt.Errorf("OverlayFS: %w", err))
 	}
-	if err := m.prepareDiskMounts(spec); err != nil {
+	diskFiles, diskErr := m.prepareDiskMounts(spec, state.RunID)
+	if diskErr != nil {
 		_ = m.unmountRootfs(spec.ID)
-		return m.fail(state, fmt.Errorf("Disk mounts: %w", err))
+		return m.fail(state, fmt.Errorf("Disk mounts: %w", diskErr))
 	}
+	defer func() {
+		for _, f := range diskFiles {
+			_ = f.Close()
+		}
+	}()
 	if err := m.prepareCgroup(spec); err != nil {
 		m.cleanupAfterStop(spec.ID)
 		return m.fail(state, fmt.Errorf("cgroup: %w", err))
@@ -288,7 +294,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return m.fail(state, fmt.Errorf("create startup status pipe: %w", err))
 	}
 	defer statusRead.Close()
-	args := []string{"--unit-child", access, spec.Hostname, "3", string(policyJSON), "4", "--"}
+	args := []string{"--unit-child", access, spec.Hostname, "3", string(policyJSON), "4", strconv.Itoa(len(diskFiles)), "--"}
 	args = append(args, spec.Command...)
 	controlRead, controlWrite, err := os.Pipe()
 	if err != nil {
@@ -300,7 +306,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return m.fail(state, err)
 	}
 	defer controlRead.Close()
-	monitorJSON, err := json.Marshal(MonitorConfig{Mapping: mapping, Args: args, ExitPath: filepath.Join(m.unitDir(id), "exit.json"), RunID: state.RunID})
+	monitorJSON, err := json.Marshal(MonitorConfig{DiskLocks: len(diskFiles), Mapping: mapping, Args: args, ExitPath: filepath.Join(m.unitDir(id), "exit.json"), RunID: state.RunID})
 	if err != nil {
 		_ = controlWrite.Close()
 		return m.fail(state, err)
@@ -309,7 +315,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(), spec.Environment...)
-	cmd.ExtraFiles = []*os.File{readyRead, statusWrite, controlWrite}
+	cmd.ExtraFiles = append([]*os.File{readyRead, statusWrite, controlWrite}, diskFiles...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
@@ -639,38 +645,37 @@ func prepareFabricResolver(rootfs, gatewayCIDR string) error {
 	return nil
 }
 
-func (m *Manager) prepareDiskMounts(spec Spec) error {
-	if len(spec.Mounts) == 0 {
-		return nil
-	}
+func (m *Manager) prepareDiskMounts(spec Spec, run string) (files []*os.File, result error) {
 	manager := disk.NewManager(m.cfg.StateRoot)
 	rootfs := filepath.Join(m.unitDir(spec.ID), "rootfs")
-	mountedTargets := make([]string, 0, len(spec.Mounts))
-
-	for _, mount := range spec.Mounts {
-		source, err := manager.Resolve(mount.Disk)
-		if err != nil {
-			for i := len(mountedTargets) - 1; i >= 0; i-- {
-				_ = syscall.Unmount(mountedTargets[i], syscall.MNT_DETACH)
+	targets := []string{}
+	defer func() {
+		if result != nil {
+			for i := len(targets) - 1; i >= 0; i-- {
+				_ = syscall.Unmount(targets[i], syscall.MNT_DETACH)
 			}
-			return fmt.Errorf("resolve Disk %s: %w", mount.Disk, err)
+			for _, f := range files {
+				_ = f.Close()
+			}
+			files = nil
 		}
+	}()
+	for _, mount := range spec.Mounts {
+		a, err := manager.Acquire(mount.Disk, spec.ID, run)
+		if err != nil {
+			return files, err
+		}
+		files = append(files, a.File)
 		target, err := unitMountTarget(rootfs, mount.Target)
 		if err != nil {
-			for i := len(mountedTargets) - 1; i >= 0; i-- {
-				_ = syscall.Unmount(mountedTargets[i], syscall.MNT_DETACH)
-			}
-			return err
+			return files, err
 		}
-		if err := disk.Bind(source, target, mount.ReadOnly); err != nil {
-			for i := len(mountedTargets) - 1; i >= 0; i-- {
-				_ = syscall.Unmount(mountedTargets[i], syscall.MNT_DETACH)
-			}
-			return fmt.Errorf("bind Disk %s to %s: %w", mount.Disk, mount.Target, err)
+		if err = disk.Bind(a.Path, target, mount.ReadOnly); err != nil {
+			return files, err
 		}
-		mountedTargets = append(mountedTargets, target)
+		targets = append(targets, target)
 	}
-	return nil
+	return files, nil
 }
 
 func (m *Manager) cleanupDiskMounts(spec Spec) {
@@ -817,6 +822,15 @@ func (m *Manager) cleanupAfterStop(id string) {
 	_ = os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.kill"), []byte("1"), 0644)
 	_ = m.unmountRootfs(id)
 	_ = os.Remove(m.cgroupDir(id))
+	if spec, _, err := m.load(id); err == nil {
+		seen := map[string]bool{}
+		for _, mount := range spec.Mounts {
+			if !seen[mount.Disk] {
+				seen[mount.Disk] = true
+				_ = disk.NewManager(m.cfg.StateRoot).Detach(mount.Disk)
+			}
+		}
+	}
 }
 
 func (m *Manager) fail(state State, cause error) (State, error) {

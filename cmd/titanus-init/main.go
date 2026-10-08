@@ -40,14 +40,20 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) >= 5 && os.Args[1] == "--supervise" {
+	if len(os.Args) >= 6 && os.Args[1] == "--supervise" {
 		fd, err := strconv.Atoi(os.Args[2])
-		if err != nil || fd < 3 || os.Args[3] != "--" {
+		count, countErr := strconv.Atoi(os.Args[3])
+		if err != nil || fd < 3 || countErr != nil || count < 0 || count > 64 || os.Args[4] != "--" {
 			os.Exit(64)
 		}
 		status := os.NewFile(uintptr(fd), "startup-status")
 		syscall.CloseOnExec(fd)
-		code, err := supervise(os.Args[4:], status)
+		// Empty read-only storage lock FDs stay only in PID 1. Go's child exec
+		// closes them; applications cannot unlock the inherited open description.
+		for i := 0; i < count; i++ {
+			syscall.CloseOnExec(6 + i)
+		}
+		code, err := supervise(os.Args[5:], status)
 		if err != nil {
 			fmt.Fprintln(status, "ERROR:", err)
 			fmt.Fprintln(os.Stderr, err)
@@ -67,7 +73,7 @@ func main() {
 }
 
 func runUnitChild(args []string) (result error) {
-	if len(args) < 7 {
+	if len(args) < 8 {
 		return fmt.Errorf("internal usage: titanus-init --unit-child ROOTFS HOSTNAME READY_FD SECURITY_JSON STATUS_FD -- COMMAND [ARGS...]")
 	}
 	statusFD, err := strconv.Atoi(args[4])
@@ -106,10 +112,14 @@ func runUnitChild(args []string) (result error) {
 	if err != nil || readyFD < 3 {
 		return fmt.Errorf("invalid runtime readiness fd %q", args[2])
 	}
-	if args[5] != "--" {
+	count, countErr := strconv.Atoi(args[5])
+	if countErr != nil || count < 0 || count > 64 {
+		return fmt.Errorf("invalid disk lock count")
+	}
+	if args[6] != "--" {
 		return fmt.Errorf("missing command separator")
 	}
-	command := args[6:]
+	command := args[7:]
 	if len(command) == 0 {
 		return fmt.Errorf("missing Unit command")
 	}
@@ -185,7 +195,17 @@ func runUnitChild(args []string) (result error) {
 	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(statusFD), syscall.F_SETFD, 0); errno != 0 {
 		return errno
 	}
-	argv := append([]string{"titanus-init", "--supervise", strconv.Itoa(statusFD), "--"}, command...)
+	for i := 0; i < count; i++ {
+		fd := 6 + i
+		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFL, 0)
+		if errno != 0 || int(flags)&syscall.O_ACCMODE != syscall.O_RDONLY {
+			return fmt.Errorf("invalid read-only storage lock fd")
+		}
+		if _, _, errno = syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFD, 0); errno != 0 {
+			return errno
+		}
+	}
+	argv := append([]string{"titanus-init", "--supervise", strconv.Itoa(statusFD), strconv.Itoa(count), "--"}, command...)
 	return syscall.Exec(fmt.Sprintf("/proc/self/fd/%d", executable.Fd()), argv, os.Environ())
 }
 
