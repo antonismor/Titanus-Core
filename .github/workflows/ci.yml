@@ -193,6 +193,28 @@ jobs:
       - name: Exercise native Tasks, encrypted secrets and actual CPU autoscaling
         run: sudo env "PATH=$PATH" TITANUS_NATIVE_ORCHESTRATION_TEST=1 TITANUS_INIT_BINARY="$PWD/bin/titanus-init" go test ./internal/reconcile -run TestNativeOrchestration -count=1 -v -timeout 180s
 
+      - name: Setup Node for real authenticated Command Center browser checks
+        if: matrix.runner == 'ubuntu-24.04'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pinned browser automation client
+        if: matrix.runner == 'ubuntu-24.04'
+        run: npm install --prefix /tmp/titanus-ui-client playwright@1.55.1 --no-audit --no-fund
+
+      - name: Exercise Command Center against real daemon and admin mTLS
+        if: matrix.runner == 'ubuntu-24.04'
+        run: sudo env "PATH=$PATH" TITANUS_COMMAND_CENTER_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" TITANUS_UI_SCRIPT="$PWD/scripts/ci-command-center.cjs" TITANUS_PLAYWRIGHT_MODULE=/tmp/titanus-ui-client/node_modules/playwright go test ./cmd/titanusd -run TestNativeCommandCenter -count=1 -v -timeout 120s
+
+      - name: Keep Command Center verification screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: command-center-${{ matrix.runner }}
+          path: /tmp/titanus-command-center-*.png
+          if-no-files-found: ignore
+
       - name: Runtime diagnostics on failure
         if: failure()
         run: |
