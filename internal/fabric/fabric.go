@@ -70,7 +70,7 @@ type PolicyRule struct {
 }
 
 type EgressRule struct {
-	Destinations  []string `json:"destinations,omitempty"`
+	Destinations   []string `json:"destinations,omitempty"`
 	AnyDestination bool     `json:"any_destination,omitempty"`
 	Protocol       string   `json:"protocol"`
 	Ports          []int    `json:"ports,omitempty"`
@@ -372,7 +372,9 @@ func (m *Manager) Attach(unitID string, pid int, ports []Port) (Allocation, erro
 		return Allocation{}, err
 	}
 	mac, err := ethernetAddress(allocation.Address)
-	if err != nil { return Allocation{}, err }
+	if err != nil {
+		return Allocation{}, err
+	}
 	peer := interfaceName(unitID, "tp")
 
 	_ = run("ip", "link", "del", allocation.HostIf)
@@ -805,7 +807,9 @@ func normalizeServices(network *net.IPNet, services []Service) ([]Service, error
 // within the Realm; hashing a Unit ID or accepting random veth MACs is not.
 func ethernetAddress(address string) (string, error) {
 	ip := net.ParseIP(address).To4()
-	if ip == nil { return "", fmt.Errorf("invalid Fabric IPv4 address %q", address) }
+	if ip == nil {
+		return "", fmt.Errorf("invalid Fabric IPv4 address %q", address)
+	}
 	return fmt.Sprintf("02:54:%02x:%02x:%02x:%02x", ip[0], ip[1], ip[2], ip[3]), nil
 }
 
@@ -821,9 +825,13 @@ func (m *Manager) ensureHostFabric(cfg Config) error {
 		}
 	}
 	gateway, _, err := net.ParseCIDR(cfg.Gateway)
-	if err != nil { return fmt.Errorf("invalid Fabric gateway: %w", err) }
+	if err != nil {
+		return fmt.Errorf("invalid Fabric gateway: %w", err)
+	}
 	mac, err := ethernetAddress(gateway.String())
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	// Explicit assignment disables bridge MAC changes as veth ports come/go.
 	if out, err := runOutput("ip", "link", "set", cfg.Bridge, "address", mac); err != nil {
 		return fmt.Errorf("pin Fabric gateway Ethernet address: %w: %s", err, out)
@@ -864,8 +872,7 @@ func (m *Manager) reconcileNAT(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	_, _ = runOutput("nft", "delete", "table", "ip", "titanus_nat")
-	rules := renderNATRules(cfg, st, services)
+	rules := renderNATTransaction(cfg, st, services)
 
 	cmd := exec.Command("nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rules)
@@ -874,6 +881,13 @@ func (m *Manager) reconcileNAT(cfg Config) error {
 		return fmt.Errorf("reconcile nftables: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func renderNATTransaction(cfg Config, st state, services []Service) string {
+	// Add is idempotent for an existing table. Keep creation, deletion and
+	// replacement in one nft transaction: packets never see an absent table,
+	// and a rejected replacement retains the previously enforced rules.
+	return "add table ip titanus_nat\ndelete table ip titanus_nat\n" + renderNATRules(cfg, st, services)
 }
 
 func renderNATRules(cfg Config, st state, services []Service) string {
@@ -1215,9 +1229,9 @@ func (m *Manager) lock() (func(), error) {
 	}, nil
 }
 
-func (m *Manager) fabricDir() string { return filepath.Join(m.StateRoot, "fabric") }
-func (m *Manager) configPath() string { return filepath.Join(m.fabricDir(), "config.json") }
-func (m *Manager) statePath() string { return filepath.Join(m.fabricDir(), "allocations.json") }
+func (m *Manager) fabricDir() string    { return filepath.Join(m.StateRoot, "fabric") }
+func (m *Manager) configPath() string   { return filepath.Join(m.fabricDir(), "config.json") }
+func (m *Manager) statePath() string    { return filepath.Join(m.fabricDir(), "allocations.json") }
 func (m *Manager) servicesPath() string { return filepath.Join(m.fabricDir(), "services.json") }
 func (m *Manager) policiesPath() string { return filepath.Join(m.fabricDir(), "policies.json") }
 

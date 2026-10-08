@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/consensus"
+	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
@@ -290,7 +291,9 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		check := func(key string, cmd *exec.Cmd) {
 			t.Helper()
 			out, err := cmd.CombinedOutput()
-			var links []struct { Address string `json:"address"` }
+			var links []struct {
+				Address string `json:"address"`
+			}
 			if err != nil || json.Unmarshal(out, &links) != nil || len(links) != 1 || links[0].Address == "" {
 				t.Fatalf("read Ethernet identity %s: %s (%v)", key, out, err)
 			}
@@ -304,7 +307,9 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 			check(names[i]+"/gateway", exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[i]), "--", "ip", "-j", "link", "show", "titanus0"))
 			m := unitruntime.NewManager(unitruntime.Config{StateRoot: roots[i], CgroupRoot: fmt.Sprintf("/sys/fs/cgroup/titanus-multi-%d", i), InitBinary: filepath.Join(bin, "titanus-init")})
 			units, err := m.List()
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, u := range units {
 				if u.Status == unitruntime.StatusActive && u.NetworkAddress != "" {
 					check(u.NetworkAddress, exec.Command("nsenter", "-t", fmt.Sprint(u.PID), "-n", "--", "ip", "-j", "link", "show", "eth0"))
@@ -348,11 +353,17 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		for attempt := 0; attempt < 4; attempt++ {
 			out, e := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[4]), "--", "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
 			serviceFailure = fmt.Sprintf("Service %s expected %s: %q (%v)", stored.ServiceIP, version, out, e)
-			if e != nil || string(out) != version { return false }
+			if e != nil || string(out) != version {
+				return false
+			}
 		}
 		return true
 	}
-	t.Cleanup(func() { if t.Failed() { t.Log(serviceFailure) } })
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(serviceFailure)
+		}
+	})
 	wait(20*time.Second, func() bool { return service("v1") })
 	fleet.Template.Command = []string{"/bin/rollout-app", "v2"}
 	if e = request(leader, "POST", "/v1/realm/fleets", fleet, nil); e != nil {
@@ -411,9 +422,21 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		return len(items) > 0
 	})
 	wait(120*time.Second, func() bool { s := snapshot(); return s.Nodes["node-3"].State == realm.NodeUnreachable && complete(4) })
-	if !service("v2") {
-		t.Fatal("survivor Service Fabric lost availability")
-	}
+	// Realm completion precedes the surviving agent's next Fabric sync.
+	// Require the actual local backend set, then fresh successful traffic;
+	// do not equate controller readiness with installed data-plane state.
+	wait(20*time.Second, func() bool {
+		services, err := fabric.NewManager(roots[4]).Services()
+		if err != nil || len(services) != 1 || len(services[0].Backends) != 2 {
+			return false
+		}
+		for _, backend := range services[0].Backends {
+			if !strings.HasPrefix(backend.Address, "10.246.2.") {
+				return false
+			}
+		}
+		return service("v2")
+	})
 	s = snapshot()
 	for _, a := range s.Assignments {
 		if a.NodeID != "node-4" {

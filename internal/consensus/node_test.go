@@ -91,7 +91,9 @@ func newCluster(t *testing.T) *cluster {
 		c.configs[i] = Config{ID: peers[i].ID, Realm: "LAB", Peers: peers, Bootstrap: i == 0}
 		// Release only this node's reserved socket immediately before Open;
 		// all later peers and all API listeners remain bound throughout.
-		if err := reservations[i].Close(); err != nil { t.Fatal(err) }
+		if err := reservations[i].Close(); err != nil {
+			t.Fatal(err)
+		}
 		c.open(i)
 		mux := http.NewServeMux()
 		api := controlapi.New(c.stores[i], nil, nil, nil)

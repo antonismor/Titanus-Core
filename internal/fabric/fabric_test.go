@@ -49,7 +49,6 @@ func TestParsePort(t *testing.T) {
 	}
 }
 
-
 func TestNormalizePortsDefaultsTCP(t *testing.T) {
 	ports := normalizePorts([]Port{{HostPort: 8080, ContainerPort: 80}})
 	if len(ports) != 1 || ports[0].Protocol != "tcp" {
@@ -66,7 +65,6 @@ func TestNormalizedPeersRejectIPv6ForFabricV1(t *testing.T) {
 		t.Fatalf("unexpected peers: %#v", peers)
 	}
 }
-
 
 func TestNormalizeServicesSortsAndDeduplicatesBackends(t *testing.T) {
 	_, network, err := net.ParseCIDR("10.250.0.0/24")
@@ -120,7 +118,6 @@ func TestNormalizeServicesRejectsAddressOutsideServiceCIDR(t *testing.T) {
 	}
 }
 
-
 func TestNormalizeServicesRejectsMixedBackendPorts(t *testing.T) {
 	_, network, err := net.ParseCIDR("10.250.0.0/24")
 	if err != nil {
@@ -138,7 +135,6 @@ func TestNormalizeServicesRejectsMixedBackendPorts(t *testing.T) {
 	}
 }
 
-
 func TestRenderedNATRulesPassNftCheck(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("nft syntax validation requires root")
@@ -147,7 +143,7 @@ func TestRenderedNATRulesPassNftCheck(t *testing.T) {
 	if err != nil {
 		t.Skip("nft is not installed")
 	}
-	rules := renderNATRules(
+	rules := renderNATTransaction(
 		Config{CIDR: "10.240.1.0/24", Bridge: "titanus-ci0"},
 		state{Allocations: map[string]Allocation{}},
 		[]Service{{
@@ -163,18 +159,38 @@ func TestRenderedNATRulesPassNftCheck(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("nft rejected Titanus rules: %v\n%s\nRules:\n%s", err, string(output), rules)
 	}
+	// Exercise first creation and replacement in an isolated native network
+	// namespace, then prove an invalid replacement leaves the old table intact.
+	dir := t.TempDir()
+	transaction := rules
+	if err := os.WriteFile(filepath.Join(dir, "rules.nft"), []byte(transaction), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "invalid.nft"), []byte(transaction+"add rule ip titanus_nat absent accept\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("unshare", "--net", "--", "sh", "-eu", "-c", `
+nft -f "$1/rules.nft"
+nft -f "$1/rules.nft"
+nft list table ip titanus_nat > "$1/before"
+if nft -f "$1/invalid.nft"; then exit 1; fi
+nft list table ip titanus_nat > "$1/after"
+cmp "$1/before" "$1/after"
+`, "titanus-nft-transaction", dir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("native atomic NAT replacement/retention failed: %v\n%s", err, output)
+	}
 }
-
 
 func TestNormalizePoliciesCanonicalizesSourcesAndPorts(t *testing.T) {
 	policies, err := normalizePolicies([]Policy{{
-		Name: "web-ingress",
+		Name:         "web-ingress",
 		Destinations: []string{"10.240.2.10", "10.240.2.10"},
-		DefaultDeny: true,
+		DefaultDeny:  true,
 		Rules: []PolicyRule{{
-			Sources: []string{"10.240.1.55/24", "10.240.1.0/24"},
+			Sources:  []string{"10.240.1.55/24", "10.240.1.0/24"},
 			Protocol: "TCP",
-			Ports: []int{443, 80, 443},
+			Ports:    []int{443, 80, 443},
 		}},
 	}})
 	if err != nil {
@@ -195,23 +211,23 @@ func TestNormalizePoliciesCanonicalizesSourcesAndPorts(t *testing.T) {
 func TestRenderFilterRulesComposesIngressAndEgress(t *testing.T) {
 	policies, err := normalizePolicies([]Policy{
 		{
-			Name: "web-ingress",
+			Name:         "web-ingress",
 			Destinations: []string{"10.240.2.10"},
-			DefaultDeny: true,
+			DefaultDeny:  true,
 			Rules: []PolicyRule{{
-				Sources: []string{"10.240.1.0/24"},
+				Sources:  []string{"10.240.1.0/24"},
 				Protocol: "tcp",
-				Ports: []int{80, 443},
+				Ports:    []int{80, 443},
 			}},
 		},
 		{
-			Name: "api-egress",
-			Sources: []string{"10.240.1.10"},
+			Name:              "api-egress",
+			Sources:           []string{"10.240.1.10"},
 			DefaultDenyEgress: true,
 			Egress: []EgressRule{{
 				Destinations: []string{"10.240.2.0/24"},
-				Protocol: "tcp",
-				Ports: []int{443},
+				Protocol:     "tcp",
+				Ports:        []int{443},
 			}},
 		},
 	})
@@ -243,13 +259,13 @@ func TestRenderFilterRulesComposesIngressAndEgress(t *testing.T) {
 
 func TestNormalizePoliciesCanonicalizesEgressDestinations(t *testing.T) {
 	policies, err := normalizePolicies([]Policy{{
-		Name: "api-egress",
-		Sources: []string{"10.240.1.10", "10.240.1.10"},
+		Name:              "api-egress",
+		Sources:           []string{"10.240.1.10", "10.240.1.10"},
 		DefaultDenyEgress: true,
 		Egress: []EgressRule{{
 			Destinations: []string{"192.0.2.55/24", "192.0.2.0/24"},
-			Protocol: "UDP",
-			Ports: []int{53, 53},
+			Protocol:     "UDP",
+			Ports:        []int{53, 53},
 		}},
 	}})
 	if err != nil {
@@ -277,17 +293,17 @@ func TestRenderedPolicyRulesPassNftCheck(t *testing.T) {
 	}
 	policies, err := normalizePolicies([]Policy{
 		{
-			Name: "web-ingress",
+			Name:         "web-ingress",
 			Destinations: []string{"10.240.2.10"},
-			DefaultDeny: true,
+			DefaultDeny:  true,
 			Rules: []PolicyRule{
 				{Sources: []string{"10.240.1.0/24"}, Protocol: "tcp", Ports: []int{80, 443}},
 				{AnySource: true, Protocol: "udp", Ports: []int{53}},
 			},
 		},
 		{
-			Name: "api-egress",
-			Sources: []string{"10.240.1.10"},
+			Name:              "api-egress",
+			Sources:           []string{"10.240.1.10"},
 			DefaultDenyEgress: true,
 			Egress: []EgressRule{
 				{Destinations: []string{"10.240.2.0/24"}, Protocol: "tcp", Ports: []int{443}},
@@ -309,23 +325,33 @@ func TestRenderedPolicyRulesPassNftCheck(t *testing.T) {
 // Native nft --check validates this rule as part of the rendered NAT fixture;
 // the five-node test exercises the actual remote reply path after replacement.
 func TestNodeServiceSNATPreservesWorkloadSources(t *testing.T) {
- rules := renderNATRules(Config{CIDR: "10.240.1.0/24", Bridge: "titanus0"}, state{Allocations: map[string]Allocation{}}, []Service{{Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 18080, Backends: []ServiceBackend{{Address: "10.240.2.10", Port: 8080}}}})
- expected := "ct status dnat ct original ip daddr 10.250.0.10 meta l4proto tcp ct original proto-dst 18080 fib saddr type local masquerade"
- if !strings.Contains(rules, expected) { t.Fatalf("missing node-only Service return path: %s", rules) }
+	rules := renderNATRules(Config{CIDR: "10.240.1.0/24", Bridge: "titanus0"}, state{Allocations: map[string]Allocation{}}, []Service{{Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 18080, Backends: []ServiceBackend{{Address: "10.240.2.10", Port: 8080}}}})
+	expected := "ct status dnat ct original ip daddr 10.250.0.10 meta l4proto tcp ct original proto-dst 18080 fib saddr type local masquerade"
+	if !strings.Contains(rules, expected) {
+		t.Fatalf("missing node-only Service return path: %s", rules)
+	}
 }
 
 func TestEthernetIdentityAcrossReplacementAndSubnets(t *testing.T) {
- seen := map[string]bool{}
- for _, address := range []string{"10.240.0.1", "10.240.0.10", "10.240.1.1", "10.240.1.10", "10.241.0.10"} {
-  mac, err := ethernetAddress(address)
-  if err != nil { t.Fatal(err) }
-  parsed, err := net.ParseMAC(mac)
-  if err != nil || len(parsed) != 6 || parsed[0]&3 != 2 || seen[mac] { t.Fatalf("invalid or duplicate local unicast identity %s", mac) }
-  seen[mac] = true
-  again, err := ethernetAddress(address)
-  if err != nil || mac != again { t.Fatalf("replacement changed identity for %s", address) }
- }
- for _, address := range []string{"", "invalid", "2001:db8::1"} {
-  if _, err := ethernetAddress(address); err == nil { t.Fatalf("accepted non-IPv4 identity %q", address) }
- }
+	seen := map[string]bool{}
+	for _, address := range []string{"10.240.0.1", "10.240.0.10", "10.240.1.1", "10.240.1.10", "10.241.0.10"} {
+		mac, err := ethernetAddress(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := net.ParseMAC(mac)
+		if err != nil || len(parsed) != 6 || parsed[0]&3 != 2 || seen[mac] {
+			t.Fatalf("invalid or duplicate local unicast identity %s", mac)
+		}
+		seen[mac] = true
+		again, err := ethernetAddress(address)
+		if err != nil || mac != again {
+			t.Fatalf("replacement changed identity for %s", address)
+		}
+	}
+	for _, address := range []string{"", "invalid", "2001:db8::1"} {
+		if _, err := ethernetAddress(address); err == nil {
+			t.Fatalf("accepted non-IPv4 identity %q", address)
+		}
+	}
 }
