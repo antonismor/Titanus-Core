@@ -11,10 +11,11 @@ import (
 )
 
 type MonitorConfig struct {
-	Mapping  IDMapping `json:"mapping"`
-	Args     []string  `json:"args"`
-	ExitPath string    `json:"exit_path"`
-	RunID    string    `json:"run_id"`
+	DiskLocks int       `json:"disk_locks"`
+	Mapping   IDMapping `json:"mapping"`
+	Args      []string  `json:"args"`
+	ExitPath  string    `json:"exit_path"`
+	RunID     string    `json:"run_id"`
 }
 
 type ExitRecord struct {
@@ -32,7 +33,7 @@ func RunMonitor(encoded string) error {
 	if err := json.Unmarshal([]byte(encoded), &cfg); err != nil {
 		return err
 	}
-	if cfg.RunID == "" || !filepath.IsAbs(cfg.ExitPath) || len(cfg.Args) == 0 {
+	if cfg.DiskLocks < 0 || cfg.DiskLocks > 64 || cfg.RunID == "" || !filepath.IsAbs(cfg.ExitPath) || len(cfg.Args) == 0 {
 		return fmt.Errorf("invalid monitor configuration")
 	}
 	// Mark every inherited monitor descriptor CLOEXEC before spawning init.
@@ -63,6 +64,13 @@ func RunMonitor(encoded string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{ready, status, executable}
+	for i := 0; i < cfg.DiskLocks; i++ {
+		fd := 6 + i
+		syscall.CloseOnExec(fd)
+		f := os.NewFile(uintptr(fd), "disk-lock")
+		defer f.Close()
+		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWIPC | syscall.CLONE_NEWNET, Setsid: true,
 		Credential:                 &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: true},
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: cfg.Mapping.Base, Size: mappingSize}},

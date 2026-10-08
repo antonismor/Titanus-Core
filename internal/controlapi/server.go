@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/realm"
@@ -22,6 +23,7 @@ type LeaderGate interface {
 }
 
 type Server struct {
+	Disks     *disk.Manager
 	Consensus LeaderGate
 	Store     *realm.Store
 	Runtime   *unitruntime.Manager
@@ -41,6 +43,8 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/node/disks", s.authorizeDisk(s.disks))
+	mux.HandleFunc("/v1/node/disks/", s.authorizeDisk(s.diskAction))
 	mux.HandleFunc("/v1/realm/consensus", s.authorize(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
