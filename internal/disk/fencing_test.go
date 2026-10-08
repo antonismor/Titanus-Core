@@ -1,6 +1,10 @@
 package disk
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestAppliedOSDBlocklistCephStream(t *testing.T) {
 	// Squid OSD::dump_blocklist formats two consecutive top-level arrays.
@@ -32,5 +36,58 @@ func TestAppliedOSDBlocklistFailsClosed(t *testing.T) {
 		if _, err := appliedOSDBlocklist(output); err == nil {
 			t.Fatalf("accepted invalid fence evidence: %s", output)
 		}
+	}
+}
+
+func TestCephFSFenceWaitsForAppliedInstance(t *testing.T) {
+	dir := t.TempDir()
+	// The monitor has committed the exact fence. The OSD initially reports
+	// another nonce on the same endpoint, then applies the actual instance.
+	script := `#!/bin/sh
+case "$*" in
+  *"osd dump"*) printf '%s' '{"blocklist":{"v1:127.0.0.1:0/99":"expiry"},"osds":[{"osd":0,"up":1}]}' ;;
+  *"tell osd.0 dump_blocklist"*)
+    if [ -e "$FENCE_FIXTURE_READY" ]; then
+      printf '%s' '[{"entity_addr_t":{"addr":"127.0.0.1:0","nonce":99}}][]'
+    else
+      touch "$FENCE_FIXTURE_READY"
+      printf '%s' '[{"entity_addr_t":{"addr":"127.0.0.1:0","nonce":98}}][]'
+    fi ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "ceph"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	marker := filepath.Join(dir, "ready")
+	t.Setenv("FENCE_FIXTURE_READY", marker)
+	if err := NewManager(t.TempDir()).waitCephFSBlocklists(CephConfig{}, "v1:127.0.0.1:0/99"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("did not consult the OSD's applied map", err)
+	}
+}
+
+func TestCephFSFenceRejectsMissingCommitAndDownOSD(t *testing.T) {
+	for _, state := range []string{
+		`{"osds":[{"osd":0,"up":1}]}`,
+		`{"blocklist":null,"osds":[{"osd":0,"up":1}]}`,
+		`{"blocklist":{},"osds":[{"osd":0,"up":1}]}`,
+		`{"blocklist":{"127.0.0.1:0/99":"expiry"},"osds":[]}`,
+		`{"blocklist":{"127.0.0.1:0/99":"expiry"},"osds":[{"osd":0,"up":0}]}`,
+	} {
+		t.Run(state, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "ceph"), []byte("#!/bin/sh\nprintf '%s' \"$FENCE_FIXTURE_MAP\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+			t.Setenv("FENCE_FIXTURE_MAP", state)
+			if err := NewManager(t.TempDir()).waitCephFSBlocklists(CephConfig{}, "v1:127.0.0.1:0/99"); err == nil {
+				t.Fatal("accepted unavailable committed fence evidence")
+			}
+		})
 	}
 }

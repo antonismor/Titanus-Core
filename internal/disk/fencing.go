@@ -72,6 +72,9 @@ func (m *Manager) waitCephFSBlocklists(cfg CephConfig, fenced string) error {
 	if err = json.Unmarshal([]byte(out), &state); err != nil {
 		return err
 	}
+	if state.Blocklist == nil {
+		return fmt.Errorf("OSD map is missing committed blocklist evidence")
+	}
 	required := map[string]bool{}
 	for address := range state.Blocklist {
 		required[blocklistAddress(address)] = true
