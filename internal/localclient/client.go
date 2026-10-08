@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
@@ -175,4 +176,15 @@ func (c *Client) ConsensusStatus() (map[string]string, error) {
 	var out map[string]string
 	err := c.do(http.MethodGet, "/v1/realm/consensus", nil, &out)
 	return out, err
+}
+
+// Orchestration uses the privileged local management socket, with the same
+// admission, durable audit and consensus rules as the authenticated HTTPS API.
+func (c *Client) Orchestration(method, path string, body any) (json.RawMessage, error) {
+	if path != "/v1/realm/tasks" && path != "/v1/realm/autoscalers" && path != "/v1/realm/secrets" && !strings.HasPrefix(path, "/v1/realm/tasks/") && !strings.HasPrefix(path, "/v1/realm/autoscalers/") && !strings.HasPrefix(path, "/v1/realm/secrets/") {
+		return nil, fmt.Errorf("invalid orchestration endpoint")
+	}
+	var out json.RawMessage
+	e := c.do(method, path, body, &out)
+	return out, e
 }

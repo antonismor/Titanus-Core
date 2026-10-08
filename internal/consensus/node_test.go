@@ -22,6 +22,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/controllerclient"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"github.com/hashicorp/raft"
 )
 
@@ -436,5 +437,80 @@ func TestRevokedControllerLosesExistingStreamAuthority(t *testing.T) {
 	seed.Network.VXLANID++
 	if _, e = Open(c.roots[next], c.configs[next], seed, c.authority.CertPath, c.certs[next], c.keys[next]); e == nil {
 		t.Fatal("changed initialization seed accepted")
+	}
+}
+
+func TestOrchestrationStateReplicatesWithoutPlaintextAndSurvivesLeaderLoss(t *testing.T) {
+	c := newCluster(t)
+	leader := c.leader(-1)
+	store := c.stores[leader]
+	keyring := &secrets.Keyring{Active: "one", Keys: map[string][]byte{"one": bytes.Repeat([]byte{1}, 32)}}
+	record, e := keyring.Encrypt("LAB", "db", 1, []byte("QUORUM_SECRET_CANARY"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = store.PutSecret(record); e != nil {
+		t.Fatal(e)
+	}
+	f := testFleet("web")
+	f.Template.CPUPercent = 50
+	f.Template.Secrets = []secrets.Ref{{Name: "db", Version: 1, Environment: "PASSWORD"}}
+	if e = store.PutFleet(f); e != nil {
+		t.Fatal(e)
+	}
+	if e = store.PutAutoscaler(realm.Autoscaler{Fleet: "web", Min: 1, Max: 5, TargetCPU: 60, CooldownSeconds: 10, DownscaleSeconds: 30}); e != nil {
+		t.Fatal(e)
+	}
+	if e = store.CreateTask(realm.Task{Name: "one", Template: f.Template}); e != nil {
+		t.Fatal(e)
+	}
+	task := store.Snapshot().Tasks["one"]
+	task.Phase = realm.TaskDispatched
+	task.NodeID = "n1"
+	task.LeaseToken = "private-token"
+	if e = store.UpdateTask(task); e != nil {
+		t.Fatal(e)
+	}
+	c.converge(store.Snapshot().Revision)
+	before := c.stores[(leader+1)%3].Snapshot()
+	if e = c.stores[(leader+1)%3].CreateTask(realm.Task{Name: "forbidden", Template: f.Template}); e == nil {
+		t.Fatal("follower accepted Task")
+	}
+	if _, ok := c.stores[(leader+1)%3].Snapshot().Tasks["forbidden"]; ok {
+		t.Fatal("uncommitted Task leaked")
+	}
+	raw, _ := json.Marshal(before)
+	if bytes.Contains(raw, []byte("QUORUM_SECRET_CANARY")) {
+		t.Fatal("plaintext replicated")
+	}
+	c.nodes[leader].transport.Close()
+	next := c.leader(leader)
+	state := c.stores[next].Snapshot()
+	if state.Tasks["one"].Phase != realm.TaskDispatched || state.Autoscalers["web"].TargetCPU != 60 {
+		t.Fatal("orchestration state lost on failover")
+	}
+	plain, e := keyring.Decrypt(state.Secrets["db"][0])
+	if e != nil || string(plain) != "QUORUM_SECRET_CANARY" {
+		t.Fatal("pinned ciphertext lost")
+	}
+	_ = c.nodes[leader].Close()
+	c.nodes[leader] = nil
+	c.open(leader)
+	c.converge(state.Revision)
+	// Force a persisted FSM snapshot, close every voter and restore all of them.
+	for i := range c.nodes {
+		if e = c.nodes[i].raft.Snapshot().Error(); e != nil && !errors.Is(e, raft.ErrNothingNewToSnapshot) {
+			t.Fatal(e)
+		}
+		c.nodes[i].Close()
+		c.nodes[i] = nil
+	}
+	for i := range c.nodes {
+		c.open(i)
+	}
+	next = c.leader(-1)
+	c.converge(c.nodes[next].Snapshot().Revision)
+	if c.nodes[next].Snapshot().Tasks["one"].Phase != realm.TaskDispatched {
+		t.Fatal("snapshot replay changed dispatch")
 	}
 }

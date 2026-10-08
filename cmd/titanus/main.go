@@ -47,6 +47,8 @@ func main() {
 
 func dispatch(args []string) error {
 	switch args[0] {
+	case "task", "autoscale", "secret":
+		return runOrchestration(args[0], args[1:])
 	case "setup":
 		return runSetup()
 	case "identity":
@@ -2111,6 +2113,14 @@ Usage:
   titanus fleet status NAME
   titanus fleet scale NAME INSTANCES
   titanus fleet delete NAME
+
+  titanus task submit task.json
+  titanus task list|status NAME|cancel NAME
+  titanus autoscale apply policy.json
+  titanus autoscale list|delete FLEET
+  titanus secret keygen NEW_PRIVATE_FILE
+  titanus secret put NAME < PRIVATE_INPUT_FILE
+  titanus secret list|delete NAME
 
   titanus route create NAME --fleet FLEET --port PORT --target-port PORT
   titanus route list

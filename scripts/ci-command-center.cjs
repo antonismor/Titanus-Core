@@ -1,0 +1,13 @@
+// Exercises the embedded UI against a built, running titanusd and real mTLS API.
+const {chromium}=require(process.env.TITANUS_PLAYWRIGHT_MODULE);
+(async()=>{
+ const origin=process.env.TITANUS_UI_ORIGIN;
+ const b=await chromium.launch({headless:true,executablePath:process.env.TITANUS_UI_CHROME||'/usr/bin/google-chrome',args:['--no-sandbox']});
+ const context=await b.newContext({ignoreHTTPSErrors:true,clientCertificates:[{origin,certPath:process.env.TITANUS_UI_CERT,keyPath:process.env.TITANUS_UI_KEY}],viewport:{width:1440,height:1150}});
+ const p=await context.newPage();const errors=[];p.on('pageerror',e=>errors.push(String(e)));await p.goto(origin+'/command-center');await p.waitForFunction(()=>document.querySelector('#notice').textContent.startsWith('Connected to'));
+ await p.locator('#secret-form').locator('..').locator('summary').click();await p.fill('#secret-name','ui-password');await p.fill('#secret-value','BROWSER_SECRET_CANARY');await p.locator('#secret-form button').click();await p.waitForFunction(()=>document.querySelector('#secret-list').textContent.includes('ui-password'));if(await p.inputValue('#secret-value'))throw Error('secret input retained');if((await p.textContent('body')).includes('BROWSER_SECRET_CANARY'))throw Error('secret displayed');
+ await p.locator('#autoscale-form').locator('..').locator('summary').click();await p.locator('#autoscale-form input[name=fleet]').fill('api');await p.locator('#autoscale-form button').click();await p.waitForFunction(()=>document.querySelector('#fleet-list').textContent.includes('Autoscale'));
+ await p.locator('#task-form').locator('..').locator('summary').click();await p.fill('#task-json',JSON.stringify({name:'browser-task',template:{source:'app',command:['/bin/sh','-c','exit 0']}}));await p.locator('#task-form button').click();await p.waitForFunction(()=>document.querySelector('#task-list').textContent.includes('browser-task'));
+ const card=p.locator('#task-list article').filter({hasText:'browser-task'});await card.getByRole('button',{name:'Request cancellation'}).click();await p.waitForFunction(()=>document.querySelector('#task-list').textContent.includes('Cancellation pending'));
+ await p.screenshot({path:'/tmp/titanus-command-center-desktop.png',fullPage:true});await p.setViewportSize({width:390,height:844});await p.screenshot({path:'/tmp/titanus-command-center-mobile.png',fullPage:true});if(await p.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('mobile page overflow');if(errors.length)throw Error(errors.join('\n'));await b.close();console.log('TITANUS_NATIVE_COMMAND_CENTER_API_OK');
+})().catch(e=>{console.error(e);process.exit(1)});
