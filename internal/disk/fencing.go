@@ -3,6 +3,7 @@ package disk
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,39 @@ type cephSession struct {
 
 func blocklistAddress(address string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(address, "v1:"), "v2:")
+}
+
+type osdBlocklistEntry struct {
+	Address struct {
+		Addr  string  `json:"addr"`
+		Nonce *uint64 `json:"nonce"`
+	} `json:"entity_addr_t"`
+}
+
+func appliedOSDBlocklist(output string) (map[string]bool, error) {
+	// Ceph Squid's dump_blocklist emits two top-level arrays, in order:
+	// instance blocklist, then range blocklist. They are a JSON stream, not
+	// one JSON object. Consume both and reject truncated/extra output.
+	decoder := json.NewDecoder(strings.NewReader(output))
+	var instances, ranges []osdBlocklistEntry
+	if err := decoder.Decode(&instances); err != nil || instances == nil {
+		return nil, fmt.Errorf("invalid OSD instance blocklist: %v", err)
+	}
+	if err := decoder.Decode(&ranges); err != nil || ranges == nil {
+		return nil, fmt.Errorf("invalid OSD range blocklist: %v", err)
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("unexpected trailing OSD blocklist output: %v", err)
+	}
+	present := map[string]bool{}
+	for _, entry := range instances {
+		if entry.Address.Addr == "" || entry.Address.Nonce == nil {
+			return nil, fmt.Errorf("OSD blocklist entry is missing an exact instance address")
+		}
+		present[entry.Address.Addr+"/"+strconv.FormatUint(*entry.Address.Nonce, 10)] = true
+	}
+	return present, nil
 }
 
 // An MDS flock grant alone does not prove every OSD has applied the eviction.
@@ -64,20 +98,9 @@ func (m *Manager) waitCephFSBlocklists(cfg CephConfig, fenced string) error {
 			if err != nil {
 				return fmt.Errorf("cannot confirm OSD %d fence: %w", osd.ID, err)
 			}
-			var applied struct {
-				Blocklist []struct {
-					Address struct {
-						Addr  string `json:"addr"`
-						Nonce uint64 `json:"nonce"`
-					} `json:"entity_addr_t"`
-				} `json:"blocklist"`
-			}
-			if err = json.Unmarshal([]byte(out), &applied); err != nil {
-				return err
-			}
-			present := map[string]bool{}
-			for _, entry := range applied.Blocklist {
-				present[entry.Address.Addr+"/"+strconv.FormatUint(entry.Address.Nonce, 10)] = true
+			present, err := appliedOSDBlocklist(out)
+			if err != nil {
+				return fmt.Errorf("OSD %d applied fence: %w", osd.ID, err)
 			}
 			for address := range required {
 				if !present[address] {
