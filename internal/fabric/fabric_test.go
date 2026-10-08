@@ -305,3 +305,11 @@ func TestRenderedPolicyRulesPassNftCheck(t *testing.T) {
 		t.Fatalf("nft rejected Titanus policy rules: %v\n%s\nRules:\n%s", err, string(output), rules)
 	}
 }
+
+// Native nft --check validates this rule as part of the rendered NAT fixture;
+// the five-node test exercises the actual remote reply path after replacement.
+func TestNodeServiceSNATPreservesWorkloadSources(t *testing.T) {
+ rules := renderNATRules(Config{CIDR: "10.240.1.0/24", Bridge: "titanus0"}, state{Allocations: map[string]Allocation{}}, []Service{{Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 18080, Backends: []ServiceBackend{{Address: "10.240.2.10", Port: 8080}}}})
+ expected := "ct status dnat ct original ip daddr 10.250.0.10 meta l4proto tcp ct original proto-dst 18080 fib saddr type local masquerade"
+ if !strings.Contains(rules, expected) { t.Fatalf("missing node-only Service return path: %s", rules) }
+}

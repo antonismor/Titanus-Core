@@ -63,7 +63,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 	t.Cleanup(func() {
 		if t.Failed() {
 			for i := 3; i < 5; i++ {
-				for _, args := range [][]string{{"nft", "list", "table", "ip", "titanus_nat"}, {"ip", "route"}} {
+				for _, args := range [][]string{{"nft", "list", "table", "ip", "titanus_nat"}, {"ip", "route"}, {"ip", "neigh"}} {
 					out, err := exec.Command("nsenter", append([]string{"--net=" + filepath.Join("/run/netns", names[i]), "--"}, args...)...).CombinedOutput()
 					t.Logf("node %d %v: %s (%v)", i, args, out, err)
 				}
@@ -314,9 +314,14 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 	}
 	var serviceFailure string
 	service := func(version string) bool {
-		out, e := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[4]), "--", "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
-		serviceFailure = fmt.Sprintf("Service %s expected %s: %q (%v)", stored.ServiceIP, version, out, e)
-		return e == nil && string(out) == version
+		// Require successive fresh connections so a local backend cannot hide
+		// a broken remote Service return path under round-robin selection.
+		for attempt := 0; attempt < 4; attempt++ {
+			out, e := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[4]), "--", "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
+			serviceFailure = fmt.Sprintf("Service %s expected %s: %q (%v)", stored.ServiceIP, version, out, e)
+			if e != nil || string(out) != version { return false }
+		}
+		return true
 	}
 	t.Cleanup(func() { if t.Failed() { t.Log(serviceFailure) } })
 	wait(20*time.Second, func() bool { return service("v1") })
