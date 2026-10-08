@@ -133,3 +133,25 @@ func TestCatalogOwnershipAndLocalPlacement(t *testing.T) {
 		t.Fatal("local data relocated using only metadata")
 	}
 }
+
+func TestFailedDurableIntentCannotAuthorizeFence(t *testing.T) {
+	s, a, _, _ := storageFixture(t)
+	original := s.path
+	s.path = t.TempDir() // atomic publication onto a directory fails
+	if _, e := s.BeginStorageFailover(a); e == nil {
+		t.Fatal("storage error did not reject intent")
+	}
+	if len(s.Snapshot().StorageFailovers) != 0 || s.Snapshot().Nodes[a.NodeID].StorageQuarantined {
+		t.Fatal("uncommitted candidate escaped into scheduling state")
+	}
+	if _, e := s.UnitMapping(a.ID); e == nil {
+		t.Fatal("mapping publication failure accepted")
+	}
+	if len(s.Snapshot().UnitMappings) != 0 {
+		t.Fatal("uncommitted mapping escaped into execution")
+	}
+	s.path = original
+	if _, e := s.BeginStorageFailover(a); e != nil {
+		t.Fatal(e)
+	}
+}

@@ -173,12 +173,13 @@ type State struct {
 
 type Store struct {
 	// Serializes desired changes and physical rollout operations.
-	Orchestration sync.Mutex
-	path          string
-	mu            sync.Mutex
-	data          State
-	consensus     Consensus
-	haManaged     bool
+	Orchestration     sync.Mutex
+	path              string
+	mu                sync.Mutex
+	data              State
+	consensus         Consensus
+	haManaged         bool
+	transactionBefore *State
 }
 
 func Open(stateRoot, realmName string) (*Store, error) {
@@ -948,7 +949,11 @@ func (s *Store) commitLocked() error {
 	if s.consensus != nil {
 		return s.consensus.Apply(cloneState(s.data))
 	}
-	return durable.WriteJSON(s.path, s.data, 0600)
+	if err := durable.WriteJSON(s.path, s.data, 0600); err != nil {
+		return err
+	}
+	s.transactionBefore = nil
+	return nil
 }
 
 func cloneState(in State) State {

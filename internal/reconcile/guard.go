@@ -90,3 +90,14 @@ func (g *GuardedNodes) ReleaseDisk(a, n, u, id string) error {
 	}
 	return client.ReleaseDisk(a, n, u, id)
 }
+
+func (g *GuardedNodes) DiskCatalog(a, n string) (disk.Catalog, error) {
+	if e := g.Check(); e != nil {
+		return disk.Catalog{}, e
+	}
+	client, ok := g.NodeRuntime.(StorageNodes)
+	if !ok {
+		return disk.Catalog{}, fmt.Errorf("storage client unavailable")
+	}
+	return client.DiskCatalog(a, n)
+}

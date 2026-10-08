@@ -78,6 +78,29 @@ func TestNativeAutomaticStorageFailover(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
+			// Keep mapping allocations across providers (the host mapping ledger is
+			// shared), but isolate all scheduling state even after a fatal assertion.
+			defer func() {
+				cleanup, err := realm.Open(controllerRoot, "FAILOVER")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				for name := range cleanup.Snapshot().Fleets {
+					if err = cleanup.SetAssignments(name, nil); err != nil {
+						t.Error(err)
+					}
+					if err = cleanup.DeleteFleet(name); err != nil {
+						t.Error(err)
+					}
+				}
+				for _, node := range cleanup.Snapshot().Nodes {
+					node.State = realm.NodeDisabled
+					if err = cleanup.UpsertNode(node); err != nil {
+						t.Error(err)
+					}
+				}
+			}()
 			controllerDisks := disk.NewManager(controllerRoot)
 			if e = controllerDisks.ConfigureCeph(cfg); e != nil {
 				t.Fatal(e)
@@ -156,12 +179,44 @@ func TestNativeAutomaticStorageFailover(t *testing.T) {
 				t.Fatal("old native workload missing", e)
 			}
 			path := filepath.Join(old.disks.StateRoot, "disks", name, "mount", "data")
+			// Runtime readiness does not imply the application has written its
+			// canary. Wait for it and explicitly acknowledge durable data before
+			// simulating an unclean loss; fencing cannot preserve dirty pagecache.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				proof, err := os.ReadFile(filepath.Join(path, "proof"))
+				if err == nil && string(proof) == "PRESERVED\n" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("original application did not write canary: %q %v", proof, err)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			proofFile, e := os.OpenFile(filepath.Join(path, "proof"), os.O_RDWR, 0)
+			if e != nil {
+				t.Fatal(e)
+			}
+			e = proofFile.Sync()
+			proofFile.Close()
+			if e != nil {
+				t.Fatal(e)
+			}
 			stale, e := os.OpenFile(filepath.Join(path, "stale"), os.O_CREATE|os.O_RDWR|os.O_SYNC, 0600)
 			if e != nil {
 				t.Fatal(e)
 			}
 			defer stale.Close()
 			if e = stale.Sync(); e != nil {
+				t.Fatal(e)
+			}
+			directory, e := os.Open(path)
+			if e != nil {
+				t.Fatal(e)
+			}
+			e = directory.Sync()
+			directory.Close()
+			if e != nil {
 				t.Fatal(e)
 			}
 			node := s.Snapshot().Nodes["a-"+string(provider)]
@@ -172,8 +227,10 @@ func TestNativeAutomaticStorageFailover(t *testing.T) {
 			if e = c.Once(); e != nil {
 				t.Fatal(e)
 			}
-			if len(s.Snapshot().StorageFailovers) != 0 {
-				t.Fatal("fenced before actual lease expiry")
+			for _, intent := range s.Snapshot().StorageFailovers {
+				if intent.Assignment.ID == a.ID {
+					t.Fatal("fenced before actual lease expiry")
+				}
 			}
 			for time.Now().Before(a.LeaseExpiresAt.Add(2 * time.Second)) {
 				time.Sleep(100 * time.Millisecond)
@@ -276,4 +333,8 @@ func TestNativeAutomaticStorageFailover(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (n *nativeStorageNodes) DiskCatalog(a, name string) (disk.Catalog, error) {
+	return n.nodes[a].disks.Catalog(name)
 }

@@ -83,6 +83,9 @@ func TestStoragePhysicalActionsRequireQuorum(t *testing.T) {
 	if e := g.EnsureDisk("node", disk.Catalog{}); !errors.Is(e, denied) {
 		t.Fatal(e)
 	}
+	if _, e := g.DiskCatalog("node", "disk"); !errors.Is(e, denied) {
+		t.Fatal(e)
+	}
 	if _, e := g.DiskWriter("node", "disk"); !errors.Is(e, denied) {
 		t.Fatal(e)
 	}

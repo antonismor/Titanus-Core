@@ -360,6 +360,30 @@ func (m *Manager) detach(name string) error {
 				if cfgErr != nil {
 					return cfgErr
 				}
+				list, e := commandOutput("rbd", append(m.rbdBaseArgs(cfg), "device", "list", "--format", "json")...)
+				if e != nil {
+					return e
+				}
+				var mappings []struct {
+					Pool   string `json:"pool"`
+					Name   string `json:"name"`
+					Device string `json:"device"`
+				}
+				if e = json.Unmarshal([]byte(list), &mappings); e != nil {
+					return e
+				}
+				matched := false
+				for _, mapping := range mappings {
+					if mapping.Device == device {
+						if mapping.Pool != cfg.Pool || mapping.Name != name {
+							return fmt.Errorf("saved RBD device belongs to another Disk")
+						}
+						matched = true
+					}
+				}
+				if !matched {
+					return fmt.Errorf("saved RBD mapping is absent; reconcile explicitly")
+				}
 				args := append(m.rbdBaseArgs(cfg), "unmap", device)
 				if out, unmapErr := commandOutput("rbd", args...); unmapErr != nil {
 					return fmt.Errorf("unmap Ceph RBD: %w: %s", unmapErr, out)

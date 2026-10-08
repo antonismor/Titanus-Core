@@ -221,3 +221,9 @@ func (c *Client) DiskWriter(address, name string) (disk.Writer, error) {
 func (c *Client) ReleaseDisk(address, name, unit, catalogID string) error {
 	return c.doJSON(http.MethodPost, endpoint(address)+"/v1/node/storage/release", map[string]string{"disk": name, "unit": unit, "catalog_id": catalogID}, nil)
 }
+
+func (c *Client) DiskCatalog(address, name string) (disk.Catalog, error) {
+	var catalog disk.Catalog
+	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/disks/"+url.PathEscape(name)+"/catalog", nil, &catalog)
+	return catalog, e
+}

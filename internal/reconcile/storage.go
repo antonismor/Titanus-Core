@@ -8,6 +8,7 @@ import (
 )
 
 type StorageNodes interface {
+	DiskCatalog(address, name string) (disk.Catalog, error)
 	ReleaseDisk(address, name, unit, catalogID string) error
 	EnsureDisk(address string, c disk.Catalog) error
 	DiskWriter(address, name string) (disk.Writer, error)
@@ -30,6 +31,17 @@ func (c *Controller) prepareStorage(state realm.State, a realm.Assignment, spec 
 		if catalog.LocalNode != "" {
 			if catalog.LocalNode != a.NodeID {
 				return fmt.Errorf("local Disk placement mismatch")
+			}
+			nodes, ok := c.Nodes.(StorageNodes)
+			if !ok {
+				return fmt.Errorf("local catalog verification unavailable")
+			}
+			actual, err := nodes.DiskCatalog(state.Nodes[a.NodeID].Address, m.Disk)
+			if err != nil {
+				return err
+			}
+			if actual.ID() != catalog.ID() {
+				return fmt.Errorf("local Disk realization differs from catalog")
 			}
 			continue
 		}

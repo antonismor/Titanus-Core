@@ -44,6 +44,9 @@ func (s *Store) lock() {
 	s.mu.Lock()
 	if s.consensus != nil {
 		s.data = s.consensus.Snapshot()
+	} else {
+		before := cloneState(s.data)
+		s.transactionBefore = &before
 	}
 }
 
@@ -52,6 +55,9 @@ func (s *Store) unlock() {
 	// a locally mutated candidate as committed state, including on followers.
 	if s.consensus != nil {
 		s.data = s.consensus.Snapshot()
+	} else if s.transactionBefore != nil {
+		s.data = *s.transactionBefore
 	}
+	s.transactionBefore = nil
 	s.mu.Unlock()
 }

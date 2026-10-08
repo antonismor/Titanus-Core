@@ -81,6 +81,10 @@ adds actual namespace/cgroup workloads on two independent state roots, a stalled
 old watchdog, an open synchronous stale writer, a real RBD/CephFS fence, injected
 controller loss after fencing before commit, restart/revalidation, successor data
 integrity and a subsequent rolling generation retaining mapped file ownership.
+The canary's file and parent directory are explicitly fsynced before simulated
+loss. Unacknowledged application writes in the old kernel's dirty page cache are
+outside crash durability guarantees; exclusion must prevent that kernel from
+flushing them into the successor's filesystem after fencing.
 These roots/processes share one runner kernel and native Ceph fixture.
 
 Independent VM kernels, power loss, multiple OSD hosts, MDS failover, isolated
