@@ -108,6 +108,10 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		run("ip", "-n", names[i], "link", "set", "eth0", "up")
 		run("ip", "-n", names[i], "link", "set", "lo", "up")
 		run("ip", "-n", names[i], "route", "add", "default", "via", "10.248.0.1")
+		// ip netns exec also creates a mount namespace and remounts sysfs,
+		// hiding the native cgroup mount. Enter only the network namespace;
+		// every fixture command must retain the host cgroups v2 hierarchy.
+		run("nsenter", "--net="+filepath.Join("/run/netns", names[i]), "--", "test", "-r", "/sys/fs/cgroup/cgroup.controllers")
 		role := identity.RoleNode
 		if i < 3 {
 			role = identity.RoleController
@@ -147,7 +151,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		cmd := exec.Command("ip", "netns", "exec", names[i], filepath.Join(bin, "titanusd"))
+		cmd := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[i]), "--", filepath.Join(bin, "titanusd"))
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TITANUS_STATE_ROOT=" + roots[i], "TITANUS_REALM_NAME=MULTI-CI", "TITANUS_NODE_ID=" + fmt.Sprintf("node-%d", i), "TITANUS_SOCKET=" + filepath.Join(roots[i], "daemon.sock"), "TITANUS_CLUSTER_LISTEN=" + ips[i] + ":9443", "TITANUS_CA=" + filepath.Join(pkis[i], "ca.crt"), "TITANUS_CERT=" + certs[i], "TITANUS_KEY=" + keys[i], "TITANUS_INIT_BINARY=" + filepath.Join(bin, "titanus-init"), "TITANUS_CGROUP_ROOT=" + fmt.Sprintf("/sys/fs/cgroup/titanus-multi-%d", i)}
 		if i < 3 {
 			cmd.Env = append(cmd.Env, "TITANUS_CONTROLLER_MODE=true", "TITANUS_HA_CONFIG="+filepath.Join(roots[i], "ha.json"))
@@ -160,6 +164,11 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 			t.Fatal(e)
 		}
 		daemons[i] = cmd
+		mountNS, e := os.Readlink(fmt.Sprintf("/proc/%d/ns/mnt", cmd.Process.Pid))
+		hostMountNS, hostErr := os.Readlink("/proc/self/ns/mnt")
+		if e != nil || hostErr != nil || mountNS != hostMountNS {
+			t.Fatalf("node %d did not preserve the native mount namespace: %q != %q (%v, %v)", i, mountNS, hostMountNS, e, hostErr)
+		}
 	}
 	for i := 0; i < 5; i++ {
 		start(i)
@@ -235,7 +244,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		cmd := exec.Command("ip", "netns", "exec", names[i], filepath.Join(bin, "titanus-agent"), "--node", fmt.Sprintf("node-%d", i), "--address", ips[i]+":9443", "--fabric-address", ips[i], "--controller", strings.Join(origins, ","), "--ca", filepath.Join(pkis[i], "ca.crt"), "--cert", certs[i], "--key", keys[i], "--state-root", roots[i], "--interval", "2s", "--capabilities", "EXECUTION", "rack="+fmt.Sprint(i))
+		cmd := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[i]), "--", filepath.Join(bin, "titanus-agent"), "--node", fmt.Sprintf("node-%d", i), "--address", ips[i]+":9443", "--fabric-address", ips[i], "--controller", strings.Join(origins, ","), "--ca", filepath.Join(pkis[i], "ca.crt"), "--cert", certs[i], "--key", keys[i], "--state-root", roots[i], "--interval", "2s", "--capabilities", "EXECUTION", "rack="+fmt.Sprint(i))
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		cmd.Stdout = file
 		cmd.Stderr = file
@@ -277,7 +286,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 	remoteBackend := func(version string) bool {
 		for _, a := range snapshot().Assignments {
 			if a.NodeID == "node-3" && a.State == realm.AssignmentActive && a.NetworkAddress != "" {
-				out, e := exec.Command("ip", "netns", "exec", names[4], "curl", "-f", "-s", "--max-time", "2", "http://"+a.NetworkAddress+":8080/ready").CombinedOutput()
+				out, e := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[4]), "--", "curl", "-f", "-s", "--max-time", "2", "http://"+a.NetworkAddress+":8080/ready").CombinedOutput()
 				if e == nil && string(out) == version {
 					return true
 				}
@@ -292,7 +301,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		t.Fatal(e)
 	}
 	service := func(version string) bool {
-		out, e := exec.Command("ip", "netns", "exec", names[4], "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
+		out, e := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[4]), "--", "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
 		return e == nil && string(out) == version
 	}
 	wait(20*time.Second, func() bool { return service("v1") })
