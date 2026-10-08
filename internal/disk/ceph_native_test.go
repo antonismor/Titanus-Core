@@ -118,12 +118,13 @@ func TestNativeCeph(t *testing.T) {
 				var session uint64
 				address := ""
 				for _, client := range clients {
-					if client.Metadata["root"] == spec.RemotePath && client.Metadata["mount_point"] == second.mountPath(name) {
+					if client.Metadata["root"] == spec.RemotePath {
+						candidates++
 						session = client.ID
 						address = strings.TrimPrefix(client.Inst, "client."+strconv.FormatUint(client.ID, 10)+" ")
 					}
 				}
-				if session == 0 {
+				if session == 0 || candidates != 1 {
 					t.Fatalf("cannot identify exact kernel session: %s", out)
 				}
 				if err = m.FenceCephFS(name, session, address+"-wrong"); err == nil {

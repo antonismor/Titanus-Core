@@ -74,7 +74,9 @@ func (m *Manager) radosGuard(name string) (func(), error) {
 		return nil, fmt.Errorf("RADOS lifecycle guard unavailable: %w: %s", waitErr, stderr.String())
 	}
 	var once sync.Once
-	return func() { once.Do(func() { stdin.Close(); _ = cmd.Wait(); cancel() }) }, nil
+	return func() {
+		once.Do(func() { _, _ = stdin.Write([]byte("RELEASE\n")); stdin.Close(); _ = cmd.Wait(); cancel() })
+	}, nil
 }
 func (m *Manager) guardSpec(spec Spec) (func(), error) {
 	if spec.Provider == ProviderCephRBD {
