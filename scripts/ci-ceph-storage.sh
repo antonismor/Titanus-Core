@@ -9,6 +9,11 @@ export CEPH_ARGS="--conf=$conf"
 if [[ $(uname -m) == aarch64 ]]; then
   export TCMALLOC_STACKTRACE_METHOD=generic_fp
 fi
+# CLI writes can wait indefinitely while an OSD is still booting. Keep
+# bootstrap commands bounded and logged so failure diagnostics run before the
+# GitHub job timeout, and never infer readiness from an active manager alone.
+ceph() { printf '+ ceph' >&2; printf ' %q' "$@" >&2; printf '\n' >&2; timeout --kill-after=5s 30s /usr/bin/ceph "$@"; }
+rbd() { printf '+ rbd' >&2; printf ' %q' "$@" >&2; printf '\n' >&2; timeout --kill-after=5s 90s /usr/bin/rbd "$@"; }
 pids=()
 ulimit -c unlimited
 echo "$root/core.%e.%p" > /proc/sys/kernel/core_pattern
@@ -81,7 +86,16 @@ fi
 ceph osd crush add osd.0 1 root=default host=ci
 ceph-osd -i 0 -f -c "$conf" >"$root/osd.stdout" 2>&1 & pids+=("$!")
 ceph-mgr -i a -f -c "$conf" >"$root/mgr.stdout" 2>&1 & pids+=("$!")
-for attempt in $(seq 1 60); do if ceph mgr dump -f json | jq -e '.active_name == "a"' >/dev/null; then break; fi; sleep 1; done
+mgr_ready=0
+for attempt in $(seq 1 60); do if ceph mgr dump -f json | jq -e '.active_name == "a"' >/dev/null; then mgr_ready=1; break; fi; sleep 1; done
+if (( mgr_ready == 0 )); then echo 'Native Ceph manager did not become active' >&2; exit 1; fi
+osd_ready=0
+deadline=$((SECONDS + 180))
+while (( SECONDS < deadline )); do
+  if timeout --kill-after=2s 5s /usr/bin/ceph osd dump -f json | jq -e '.osds | length == 1 and all(.[]; .up == 1 and .in == 1)' >/dev/null; then osd_ready=1; break; fi
+  sleep 1
+done
+if (( osd_ready == 0 )); then echo 'Native Ceph OSD did not become up/in' >&2; exit 1; fi
 ceph osd pool create titanus 8
 rbd pool init titanus
 ceph osd pool create cephfs_meta 8
@@ -89,7 +103,9 @@ ceph osd pool create cephfs_data 8
 ceph fs new cephfs cephfs_meta cephfs_data --force
 ceph-mds -i a -f -c "$conf" >"$root/mds.stdout" 2>&1 & pids+=("$!")
 ceph mgr module enable volumes
-for attempt in $(seq 1 90); do if ceph fs status cephfs -f json | jq -e '.mdsmap[] | select(.state == "active")' >/dev/null; then break; fi; sleep 1; done
+mds_ready=0
+for attempt in $(seq 1 90); do if ceph fs status cephfs -f json | jq -e '.mdsmap[] | select(.state == "active")' >/dev/null; then mds_ready=1; break; fi; sleep 1; done
+if (( mds_ready == 0 )); then echo 'Native Ceph MDS did not become active' >&2; exit 1; fi
 ceph fs status
 modprobe rbd
 modprobe ceph
