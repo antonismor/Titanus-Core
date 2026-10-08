@@ -6,6 +6,14 @@ import (
 	"strconv"
 )
 
+type cephSession struct {
+	ID       uint64 `json:"id"`
+	Inst     string `json:"inst"`
+	Metadata struct {
+		Root string `json:"root"`
+	} `json:"client_metadata"`
+}
+
 func (m *Manager) verifyCephFSFencing(cfg CephConfig) error {
 	out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "fs", "get", cfg.FSName, "--format", "json")...)
 	var fs struct {
@@ -50,17 +58,13 @@ func (m *Manager) FenceCephFS(name string, session uint64, address string) error
 	if err != nil {
 		return err
 	}
-	var clients []struct {
-		ID       uint64            `json:"id"`
-		Inst     string            `json:"inst"`
-		Metadata map[string]string `json:"client_metadata"`
-	}
+	var clients []cephSession
 	if err = json.Unmarshal([]byte(out), &clients); err != nil {
 		return err
 	}
 	match := false
 	for _, client := range clients {
-		if client.ID == session && client.Inst == "client."+strconv.FormatUint(session, 10)+" "+address && client.Metadata["root"] == spec.RemotePath {
+		if client.ID == session && client.Inst == "client."+strconv.FormatUint(session, 10)+" "+address && client.Metadata.Root == spec.RemotePath {
 			match = true
 		}
 	}

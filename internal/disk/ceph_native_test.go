@@ -26,11 +26,16 @@ func TestNativeCeph(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = m.Detach(name) })
+			t.Cleanup(func() {
+				if e := m.detach(name); e != nil {
+					t.Error(e)
+				}
+			})
 			a, err := m.Acquire(name, "node-a", "run-a")
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer a.Close()
 			if err = os.WriteFile(filepath.Join(a.Path, "proof"), []byte("snapshot-data"), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -80,6 +85,7 @@ func TestNativeCeph(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer restored.Close()
 			proof, err := os.ReadFile(filepath.Join(restored.Path, "proof"))
 			if err != nil || string(proof) != "snapshot-data" {
 				t.Fatal("native snapshot restore lost data", err, string(proof))
@@ -129,6 +135,7 @@ func TestNativeCeph(t *testing.T) {
 			if err != nil {
 				t.Fatal("acknowledged failover failed", err)
 			}
+			defer successor.Close()
 			if err = os.WriteFile(filepath.Join(successor.Path, "successor"), []byte("node-b"), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -144,11 +151,7 @@ func TestNativeCeph(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var clients []struct {
-					ID       uint64            `json:"id"`
-					Inst     string            `json:"inst"`
-					Metadata map[string]string `json:"client_metadata"`
-				}
+				var clients []cephSession
 				if err = json.Unmarshal([]byte(out), &clients); err != nil {
 					t.Fatal(err)
 				}
@@ -156,7 +159,7 @@ func TestNativeCeph(t *testing.T) {
 				candidates := 0
 				address := ""
 				for _, client := range clients {
-					if client.Metadata["root"] == spec.RemotePath {
+					if client.Metadata.Root == spec.RemotePath {
 						candidates++
 						session = client.ID
 						address = strings.TrimPrefix(client.Inst, "client."+strconv.FormatUint(client.ID, 10)+" ")
