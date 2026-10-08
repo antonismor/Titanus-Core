@@ -311,3 +311,11 @@ CephFS storage-level eviction. Storage administration uses CLI and authenticated
 admin APIs. Native AMD64/ARM64 Ceph integration is exercised in CI. See
 [Storage lifecycle](docs/STORAGE_LIFECYCLE.md) for migration, identity mapping,
 manual fencing and the boundary against automatic unreachable-writer failover.
+
+## Authenticated native observations
+
+The daemon now exposes real metrics, diagnostics and structured audit events over
+its existing authenticated listeners. API mutations require durable audit intent;
+new Unit starts use independently surviving, byte-bounded log sinks. See
+[Observability](docs/OBSERVABILITY.md) for commands, authorization, redaction,
+node-local retention, partial-collection and logging-failure behavior.

@@ -19,13 +19,15 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/observe"
 	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 type Config struct {
-	StateRoot  string
-	CgroupRoot string
-	InitBinary string
+	Observations *observe.Recorder
+	StateRoot    string
+	CgroupRoot   string
+	InitBinary   string
 }
 
 type Manager struct {
@@ -263,8 +265,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return m.fail(state, fmt.Errorf("cgroup: %w", err))
 	}
 
-	logPath := filepath.Join(m.unitDir(id), "logs", "unit.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+	logFile, err := m.openLogSink(id)
 	if err != nil {
 		m.cleanupAfterStop(id)
 		return m.fail(state, err)
@@ -861,7 +862,16 @@ func (m *Manager) load(id string) (Spec, State, error) {
 }
 
 func (m *Manager) saveState(state State) error {
-	return saveJSON(filepath.Join(m.unitDir(state.ID), "state.json"), state, 0600)
+	path := filepath.Join(m.unitDir(state.ID), "state.json")
+	var previous State
+	_ = loadJSON(path, &previous)
+	if err := saveJSON(path, state, 0600); err != nil {
+		return err
+	}
+	if m.cfg.Observations != nil && (previous.Status != state.Status || previous.Ready != state.Ready || previous.Live != state.Live || previous.RestartCount != state.RestartCount) {
+		_ = m.cfg.Observations.Record(observe.Event{Kind: "unit.state", Object: state.ID, State: string(state.Status), Ready: state.Ready, Live: state.Live, Restarts: state.RestartCount})
+	}
+	return nil
 }
 
 func (m *Manager) unitDir(id string) string {

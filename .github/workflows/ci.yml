@@ -32,7 +32,7 @@ jobs:
         run: go vet ./...
 
       - name: Race checks
-        run: go test -race ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient
+        run: go test -race ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient
 
       - name: Cross-build native ARM64 runtime
         run: |
@@ -88,7 +88,7 @@ jobs:
           CGO_ENABLED=0 go build -o /tmp/titanus-rootfs/bin/rollout-app ./internal/unitruntime/rolloutapp
 
       - name: Verify mapped namespaces, device and LSM kernel enforcement
-        run: sudo env "PATH=$PATH" TITANUS_ISOLATION_KERNEL_TEST=1 TITANUS_INIT_BINARY="$PWD/bin/titanus-init" go test ./internal/unitruntime -run 'TestNative(Isolation|DiskOwnership)' -count=1 -v -timeout 180s
+        run: sudo env "PATH=$PATH" TITANUS_ISOLATION_KERNEL_TEST=1 TITANUS_INIT_BINARY="$PWD/bin/titanus-init" go test ./internal/unitruntime -run 'TestNative(Isolation|DiskOwnership|LogSinkFailure)' -count=1 -v -timeout 180s
 
       - name: Verify replicated Control-plane HA on native architecture
         run: go test -race ./internal/consensus ./internal/controllerclient -count=1 -timeout 180s

@@ -20,6 +20,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
+	"github.com/antonismor/Titanus-Core/internal/observe"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/realmclient"
 	"github.com/antonismor/Titanus-Core/internal/reconcile"
@@ -39,6 +40,10 @@ func main() {
 	}
 
 	stateRoot := envDefault("TITANUS_STATE_ROOT", "/var/lib/titanus")
+	observations, err := observe.New(stateRoot)
+	if err != nil {
+		log.Fatal("observability initialization failed")
+	}
 	realmName := envDefault("TITANUS_REALM_NAME", "TITANUS-REALM")
 	store, err := realm.Open(stateRoot, realmName)
 	if err != nil {
@@ -61,6 +66,7 @@ func main() {
 	})
 	runtimeConfig := unitruntime.DefaultConfig()
 	runtimeConfig.StateRoot = stateRoot
+	runtimeConfig.Observations = observations
 	if cgroupRoot := strings.TrimSpace(os.Getenv("TITANUS_CGROUP_ROOT")); cgroupRoot != "" {
 		runtimeConfig.CgroupRoot = cgroupRoot
 	}
@@ -78,6 +84,7 @@ func main() {
 	}
 	defer leaseManager.Close()
 	api := controlapi.New(store, runtimeManager, sourceManager, leaseManager)
+	api.Observations = observations
 	api.Disks = disk.NewManager(stateRoot)
 	api.CAPath = envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
 	if _, e := os.Stat(filepath.Join(filepath.Dir(api.CAPath), "ca.key")); envBool("TITANUS_CONTROLLER_MODE") && e == nil {

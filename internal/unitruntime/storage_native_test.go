@@ -29,7 +29,7 @@ func TestNativeDiskOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"writer", "competitor"} {
-		if _, err := m.Create(Spec{ID: id, Source: "app", Mounts: []disk.Mount{{Disk: "data", Target: "/data"}}, Command: []string{"/bin/sh", "-ec", "if [ -e /proc/self/fd/6 ]; then exit 97; fi; echo proof > /data/proof; sleep 120"}}); err != nil {
+		if _, err := m.Create(Spec{ID: id, Source: "app", Mounts: []disk.Mount{{Disk: "data", Target: "/data"}}, Command: []string{"/bin/sh", "-ec", "if [ -e /proc/self/fd/6 ]; then exit 97; fi; echo proof > /data/proof; while [ ! -e /data/flood ]; do sleep 1; done; /bin/busybox head -c 3145728 /dev/zero; echo LOG_BOUND_OK; sleep 120"}}); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _, _ = m.Stop(id, time.Second); _ = m.Delete(id) })
@@ -71,6 +71,29 @@ func TestNativeDiskOwnership(t *testing.T) {
 	if _, err = d.Acquire("data", "stale", "new"); err == nil {
 		t.Fatal("monitor SIGKILL freed live attachment")
 	}
+	if err = os.WriteFile(filepath.Join(root, "disks", "data", "data", "flood"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, e := m.ReadLogs("writer")
+		if e != nil {
+			t.Fatal(e)
+		}
+		if strings.Contains(string(data), "LOG_BOUND_OK") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("independent logger stopped after monitor SIGKILL")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, name := range []string{"unit.log", "unit.log.1"} {
+		info, e := os.Stat(filepath.Join(m.unitDir("writer"), "logs", name))
+		if e != nil || info.Size() > UnitLogLimit {
+			t.Fatal("log byte bound failed", name, e)
+		}
+	}
 	recovered := NewManager(m.cfg)
 	if err = recovered.Recover(); err != nil {
 		t.Fatal(err)
@@ -89,4 +112,37 @@ func TestNativeDiskOwnership(t *testing.T) {
 		t.Fatal("runtime restore lost data", err)
 	}
 	t.Cleanup(func() { os.Remove(cg) })
+}
+
+func TestNativeLogSinkFailure(t *testing.T) {
+	if os.Getenv("TITANUS_ISOLATION_KERNEL_TEST") != "1" {
+		t.Skip("native root log sink")
+	}
+	m := NewManager(Config{StateRoot: t.TempDir(), InitBinary: os.Getenv("TITANUS_INIT_BINARY")})
+	if err := os.MkdirAll(filepath.Join(m.unitDir("sink-failure"), "logs"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.openLogSink("sink-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	path := filepath.Join(m.unitDir("sink-failure"), "logs", "unit.log")
+	if err = os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = out.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(strings.Repeat("output-secret", 200000))
+	if n, e := out.Write(data); e != nil || n != len(data) {
+		t.Fatal("failed sink stopped draining workload", n, e)
+	}
+	out.Close()
+	if !m.LogSinkFailed("sink-failure") {
+		t.Fatal("sink storage failure not reported")
+	}
 }

@@ -67,6 +67,16 @@ func dispatch(args []string) error {
 		return runDisk(args[1:])
 	case "unit":
 		return runUnit(args[1:])
+	case "diagnostics", "metrics", "events":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: titanus %s", args[0])
+		}
+		data, err := localclient.New(os.Getenv("TITANUS_SOCKET")).Observe(args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Print(string(data))
+		return nil
 	case "version", "--version", "-v":
 		fmt.Println("Titanus Core", version)
 		return nil
@@ -1821,11 +1831,7 @@ func runUnit(args []string) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: titanus unit logs ID")
 		}
-		path, err := manager.LogsPath(args[1])
-		if err != nil {
-			return err
-		}
-		data, err := os.ReadFile(path)
+		data, err := manager.ReadLogs(args[1])
 		if err != nil {
 			if os.IsNotExist(err) {
 				fmt.Println("No logs yet.")
