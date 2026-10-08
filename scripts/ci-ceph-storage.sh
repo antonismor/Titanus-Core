@@ -25,7 +25,7 @@ mon allow pool size one = true
 osd pool default size = 1
 osd pool default min size = 1
 osd crush chooseleaf type = 0
-osd objectstore = memstore
+osd objectstore = bluestore
 osd data = $root/osd.\$id
 mon data = $root/mon.\$id
 mgr data = $root/mgr.\$id
@@ -47,6 +47,7 @@ for attempt in $(seq 1 60); do if timeout 3 ceph -s >/dev/null 2>&1; then break;
 ceph -s
 osd_uuid=$(cat /proc/sys/kernel/random/uuid)
 ceph osd new "$osd_uuid"
+truncate -s 4G "$root/osd.0/block"
 ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf"
 ceph osd crush add osd.0 1 root=default host=ci
 ceph-osd -i 0 -f -c "$conf" >"$root/osd.stdout" 2>&1 & pids+=("$!")
@@ -66,6 +67,6 @@ modprobe ceph
 export TITANUS_CEPH_TEST=1 TITANUS_CEPH_CONF="$conf"
 if ! go test ./internal/disk -run '^TestNativeCeph' -count=1 -v -timeout 12m; then
   ceph -s || true
-  tail -80 "$root"/*.stdout "$root"/*.log || true
+  tail -n 80 "$root"/*.stdout "$root"/*.log || true
   exit 1
 fi

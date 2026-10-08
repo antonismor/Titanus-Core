@@ -246,6 +246,11 @@ func (m *Manager) Delete(name string, destroyData bool) error {
 		return fmt.Errorf("refusing to delete remote Disk %s without explicit destroy-data", name)
 	}
 
+	guard, err := m.guardSpec(spec)
+	if err != nil {
+		return err
+	}
+	defer guard()
 	a, err := m.acquire(name, "maintenance", "delete")
 	if err != nil {
 		return err
@@ -291,6 +296,15 @@ func (m *Manager) Detach(name string) error {
 		return err
 	}
 	defer unlock()
+	spec, err := m.Inspect(name)
+	if err != nil {
+		return err
+	}
+	guard, err := m.guardSpec(spec)
+	if err != nil {
+		return err
+	}
+	defer guard()
 	a, err := m.acquire(name, "maintenance", "detach")
 	if err != nil {
 		return err

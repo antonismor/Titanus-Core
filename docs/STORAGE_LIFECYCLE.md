@@ -17,7 +17,8 @@ scheduling lease, missing daemon or deleted owner JSON can release ownership.
 
 Local Disks use node-local ownership. They cannot fail over to another node by
 copying their JSON specification. RBD requires the `exclusive-lock` image feature
-and maps with `--exclusive`, `noshare`, `lock_on_read` and a bounded lock timeout.
+and uses a native librados lifecycle guard to serialize map/maintenance operations
+across nodes. It maps with `--exclusive`, `noshare`, `lock_on_read` and a bounded lock timeout.
 Cooperative lock transitions are disabled. CephFS uses MDS-mediated flock and
 mounts with `noshare,recover_session=no`; both MDS blocklisting policies must be
 true. An evicted client cannot silently reconnect its old mount.
@@ -33,7 +34,11 @@ Stop every attached Unit first. Snapshot acquires maintenance ownership; a live
 attachment rejects snapshots, detach and deletion, even after daemon restart.
 Local snapshots are separate `cp -a --reflink=auto` copies preserving ownership,
 xattrs, symlinks, hardlinks and sparse files, with fsynced publication. Ceph RBD
-uses native snapshots of a quiesced, unmounted filesystem. CephFS uses native
+uses native snapshots of a quiesced, unmapped filesystem while holding the
+non-expiring RADOS lifecycle guard. A killed guard remains locked: inspect
+`rados -p POOL lock list titanus.lifecycle.DISK lifecycle` and explicitly clear
+it only after fencing/stopping all affected writers. Python 3 with the native
+`rados` binding is an RBD adapter prerequisite. CephFS uses native
 subvolume snapshots. This is offline filesystem consistency, not application
 transaction consistency: shut down or quiesce the application appropriately.
 

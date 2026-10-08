@@ -30,12 +30,21 @@ func (m *Manager) Snapshot(name, snap string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	defer unlock()
+	spec, err := m.Inspect(name)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	guard, err := m.guardSpec(spec)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer guard()
 	a, err := m.acquire(name, "maintenance", "snapshot")
 	if err != nil {
 		return Snapshot{}, err
 	}
 	defer a.Close()
-	spec, err := m.Inspect(name)
+	spec, err = m.Inspect(name)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -68,15 +77,16 @@ func (m *Manager) Snapshot(name, snap string) (Snapshot, error) {
 		}
 	case ProviderCephRBD:
 		// Flush and unmount the filesystem before recording the native RBD snapshot.
-		// The exclusive mapping remains present; other kernel writers cannot attach.
-		if err = m.unmountOnly(name); err != nil {
+		// The RADOS guard excludes every new attachment during the unmap window.
+		if err = m.detach(name); err != nil {
 			return Snapshot{}, err
 		}
 		cfg, e := m.CephConfig()
 		if e != nil {
 			return Snapshot{}, e
 		}
-		if _, err = commandOutput("rbd", append(m.rbdBaseArgs(cfg), "snap", "create", cfg.Pool+"/"+name+"@"+snap)...); err != nil {
+		if out, e := commandOutput("rbd", append(m.rbdBaseArgs(cfg), "snap", "create", cfg.Pool+"/"+name+"@"+snap)...); e != nil {
+			err = fmt.Errorf("%w: %s", e, out)
 			return Snapshot{}, fmt.Errorf("RBD snapshot: %w", err)
 		}
 	case ProviderCephFS:

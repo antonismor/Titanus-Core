@@ -35,6 +35,15 @@ func (m *Manager) Acquire(name, unit, run string) (*Attachment, error) {
 		return nil, err
 	}
 	defer unlock()
+	spec, err := m.Inspect(name)
+	if err != nil {
+		return nil, err
+	}
+	guard, err := m.guardSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	defer guard()
 	return m.acquire(name, unit, run)
 }
 func (m *Manager) acquire(name, unit, run string) (*Attachment, error) {
@@ -145,6 +154,15 @@ func (m *Manager) ProvisionOwnership(name string, uid, gid int) error {
 		return err
 	}
 	defer unlock()
+	spec, err := m.Inspect(name)
+	if err != nil {
+		return err
+	}
+	guard, err := m.guardSpec(spec)
+	if err != nil {
+		return err
+	}
+	defer guard()
 	a, err := m.acquire(name, "maintenance", "ownership")
 	if err != nil {
 		return err
