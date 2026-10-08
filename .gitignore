@@ -3,3 +3,6 @@ bin/
 *.pid
 titanus-plan.json
 .DS_Store
+
+dist/
+__pycache__/

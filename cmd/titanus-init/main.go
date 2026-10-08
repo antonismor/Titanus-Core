@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	buildversion "github.com/antonismor/Titanus-Core/internal/version"
 	"net"
 	"os"
 	"os/exec"
@@ -20,6 +21,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "--version-json") {
+		buildversion.Print(os.Args[1] == "--version-json")
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "--unit-log-sink" {
 		if err := unitruntime.RunLogSink(os.Args[2]); err != nil {
 			fmt.Fprintln(os.Stderr, `{"kind":"unit.log_sink.failed"}`)

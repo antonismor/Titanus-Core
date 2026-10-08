@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	buildversion "github.com/antonismor/Titanus-Core/internal/version"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -40,6 +42,10 @@ type config struct {
 }
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "--version-json") {
+		buildversion.Print(os.Args[1] == "--version-json")
+		return
+	}
 	var cfg config
 	var caps string
 	flag.StringVar(&cfg.NodeID, "node", "", "Titanus Node ID")

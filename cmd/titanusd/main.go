@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	buildversion "github.com/antonismor/Titanus-Core/internal/version"
 	"log"
 	"net"
 	"net/http"
@@ -30,11 +31,14 @@ import (
 )
 
 const (
-	version    = "0.3.0-dev"
 	socketPath = "/run/titanus/titanus.sock"
 )
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "--version-json") {
+		buildversion.Print(os.Args[1] == "--version-json")
+		return
+	}
 	if os.Geteuid() != 0 {
 		log.Fatal("titanusd must run as root")
 	}
@@ -55,14 +59,14 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":   "healthy",
 			"service":  "titanusd",
-			"version":  version,
+			"version":  buildversion.Version,
 			"realm":    store.Snapshot().Name,
 			"revision": store.Snapshot().Revision,
 			"time":     time.Now().UTC(),
 		})
 	})
 	mux.HandleFunc("/v1/version", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"version": version})
+		writeJSON(w, http.StatusOK, map[string]string{"version": buildversion.Version})
 	})
 	runtimeConfig := unitruntime.DefaultConfig()
 	runtimeConfig.StateRoot = stateRoot
@@ -233,7 +237,7 @@ func main() {
 		}()
 	}
 
-	log.Printf("Titanus daemon %s Realm=%s listening on unix://%s", version, store.Snapshot().Name, socket)
+	log.Printf("Titanus daemon %s Realm=%s listening on unix://%s", buildversion.Version, store.Snapshot().Name, socket)
 
 	select {
 	case <-ctx.Done():

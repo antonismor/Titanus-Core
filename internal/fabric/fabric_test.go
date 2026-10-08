@@ -305,3 +305,27 @@ func TestRenderedPolicyRulesPassNftCheck(t *testing.T) {
 		t.Fatalf("nft rejected Titanus policy rules: %v\n%s\nRules:\n%s", err, string(output), rules)
 	}
 }
+
+// Native nft --check validates this rule as part of the rendered NAT fixture;
+// the five-node test exercises the actual remote reply path after replacement.
+func TestNodeServiceSNATPreservesWorkloadSources(t *testing.T) {
+ rules := renderNATRules(Config{CIDR: "10.240.1.0/24", Bridge: "titanus0"}, state{Allocations: map[string]Allocation{}}, []Service{{Name: "web", Address: "10.250.0.10", Protocol: "tcp", Port: 18080, Backends: []ServiceBackend{{Address: "10.240.2.10", Port: 8080}}}})
+ expected := "ct status dnat ct original ip daddr 10.250.0.10 meta l4proto tcp ct original proto-dst 18080 fib saddr type local masquerade"
+ if !strings.Contains(rules, expected) { t.Fatalf("missing node-only Service return path: %s", rules) }
+}
+
+func TestEthernetIdentityAcrossReplacementAndSubnets(t *testing.T) {
+ seen := map[string]bool{}
+ for _, address := range []string{"10.240.0.1", "10.240.0.10", "10.240.1.1", "10.240.1.10", "10.241.0.10"} {
+  mac, err := ethernetAddress(address)
+  if err != nil { t.Fatal(err) }
+  parsed, err := net.ParseMAC(mac)
+  if err != nil || len(parsed) != 6 || parsed[0]&3 != 2 || seen[mac] { t.Fatalf("invalid or duplicate local unicast identity %s", mac) }
+  seen[mac] = true
+  again, err := ethernetAddress(address)
+  if err != nil || mac != again { t.Fatalf("replacement changed identity for %s", address) }
+ }
+ for _, address := range []string{"", "invalid", "2001:db8::1"} {
+  if _, err := ethernetAddress(address); err == nil { t.Fatalf("accepted non-IPv4 identity %q", address) }
+ }
+}

@@ -371,6 +371,8 @@ func (m *Manager) Attach(unitID string, pid int, ports []Port) (Allocation, erro
 	if err != nil {
 		return Allocation{}, err
 	}
+	mac, err := ethernetAddress(allocation.Address)
+	if err != nil { return Allocation{}, err }
 	peer := interfaceName(unitID, "tp")
 
 	_ = run("ip", "link", "del", allocation.HostIf)
@@ -402,6 +404,7 @@ func (m *Manager) Attach(unitID string, pid int, ports []Port) (Allocation, erro
 
 	commands := [][]string{
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "link", "set", peer, "name", "eth0"},
+		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "link", "set", "eth0", "address", mac},
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "addr", "add", fmt.Sprintf("%s/%d", allocation.Address, ones), "dev", "eth0"},
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "link", "set", "eth0", "mtu", strconv.Itoa(cfg.MTU)},
 		{"-t", strconv.Itoa(pid), "-n", "--", "ip", "link", "set", "eth0", "up"},
@@ -797,6 +800,15 @@ func normalizeServices(network *net.IPNet, services []Service) ([]Service, error
 	return out, nil
 }
 
+// A reused Fabric IP retains its Ethernet identity across Unit replacement.
+// The locally administered unicast prefix plus all four IPv4 octets is unique
+// within the Realm; hashing a Unit ID or accepting random veth MACs is not.
+func ethernetAddress(address string) (string, error) {
+	ip := net.ParseIP(address).To4()
+	if ip == nil { return "", fmt.Errorf("invalid Fabric IPv4 address %q", address) }
+	return fmt.Sprintf("02:54:%02x:%02x:%02x:%02x", ip[0], ip[1], ip[2], ip[3]), nil
+}
+
 func (m *Manager) ensureHostFabric(cfg Config) error {
 	for _, binary := range []string{"ip", "bridge", "nft", "nsenter"} {
 		if _, err := exec.LookPath(binary); err != nil {
@@ -807,6 +819,14 @@ func (m *Manager) ensureHostFabric(cfg Config) error {
 		if out, createErr := runOutput("ip", "link", "add", cfg.Bridge, "type", "bridge"); createErr != nil {
 			return fmt.Errorf("create Fabric bridge: %w: %s", createErr, out)
 		}
+	}
+	gateway, _, err := net.ParseCIDR(cfg.Gateway)
+	if err != nil { return fmt.Errorf("invalid Fabric gateway: %w", err) }
+	mac, err := ethernetAddress(gateway.String())
+	if err != nil { return err }
+	// Explicit assignment disables bridge MAC changes as veth ports come/go.
+	if out, err := runOutput("ip", "link", "set", cfg.Bridge, "address", mac); err != nil {
+		return fmt.Errorf("pin Fabric gateway Ethernet address: %w: %s", err, out)
 	}
 	if cfg.MTU == 0 {
 		cfg.MTU = 1450
@@ -878,6 +898,15 @@ func renderNATRules(cfg Config, st state, services []Service) string {
 	}
 	b.WriteString(" }\n")
 	b.WriteString(" chain postrouting { type nat hook postrouting priority srcnat; policy accept;\n")
+	// Host-originated Service connections initially select an underlay source.
+	// Remote backends must reply through this node's Fabric/conntrack path,
+	// rather than bypassing it via the underlay. Preserve workload source IPs:
+	// fib type local matches addresses owned by the node, not routed Units.
+	for _, service := range services {
+		if len(service.Backends) > 0 {
+			fmt.Fprintf(&b, "  ct status dnat ct original ip daddr %s meta l4proto %s ct original proto-dst %d fib saddr type local masquerade comment \"Titanus node Service return path\"\n", service.Address, service.Protocol, service.Port)
+		}
+	}
 	fmt.Fprintf(&b, "  ip saddr %s oifname != \"%s\" masquerade comment \"Titanus Fabric NAT\"\n", cfg.CIDR, cfg.Bridge)
 	b.WriteString(" }\n")
 	b.WriteString("}\n")

@@ -100,3 +100,11 @@ func TestLegacyOversizeLogIsBoundedAtRotation(t *testing.T) {
 		t.Fatal("legacy tail lost or unbounded", string(data), err)
 	}
 }
+
+func TestOrchestrationOperationsHaveFiniteSecretFreeLabels(t *testing.T) {
+	for path, want := range map[string]string{"/v1/realm/tasks/private-name/cancel": "realm/tasks/cancel", "/v1/realm/autoscalers/private-name": "realm/autoscalers", "/v1/realm/secrets/private-name": "realm/secrets", "/v1/node/units/private-name/usage": "node/units/usage"} {
+		if got := Operation(path); got != want {
+			t.Fatalf("%s => %s", path, got)
+		}
+	}
+}
