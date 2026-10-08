@@ -580,7 +580,12 @@ func commandOutput(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	output, err := cmd.CombinedOutput()
+	// JSON and device paths belong to stdout. Ceph may emit transport diagnostics
+	// on stderr even for successful commands; never parse those as adapter data.
+	output, err := cmd.Output()
+	if exit, ok := err.(*exec.ExitError); ok {
+		output = append(output, exit.Stderr...)
+	}
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
