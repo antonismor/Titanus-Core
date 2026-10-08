@@ -6,6 +6,11 @@ conf="$root/ceph.conf"
 export CEPH_ARGS="--conf=$conf"
 pids=()
 cleanup() {
+  status=$?
+  if (( status != 0 )); then
+    ceph -s || true
+    tail -n 80 "$root"/*.stdout "$root"/*.log || true
+  fi
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
   wait || true
 }
@@ -48,7 +53,12 @@ ceph -s
 osd_uuid=$(cat /proc/sys/kernel/random/uuid)
 ceph osd new "$osd_uuid"
 truncate -s 4G "$root/osd.0/block"
-ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf"
+if ! ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf"; then
+  lscpu
+  gdb -batch -ex run -ex 'thread apply all bt' -ex 'x/8i $pc' --args \
+    ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf" || true
+  exit 1
+fi
 ceph osd crush add osd.0 1 root=default host=ci
 ceph-osd -i 0 -f -c "$conf" >"$root/osd.stdout" 2>&1 & pids+=("$!")
 ceph-mgr -i a -f -c "$conf" >"$root/mgr.stdout" 2>&1 & pids+=("$!")
