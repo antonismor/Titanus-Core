@@ -426,16 +426,23 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 	// Require the actual local backend set, then fresh successful traffic;
 	// do not equate controller readiness with installed data-plane state.
 	wait(20*time.Second, func() bool {
+		expected := map[string]bool{}
+		for _, assignment := range snapshot().Assignments {
+			if assignment.Fleet == "web" && assignment.NodeID == "node-4" && assignment.State == realm.AssignmentActive && assignment.NetworkAddress != "" {
+				expected[assignment.NetworkAddress] = true
+			}
+		}
 		services, err := fabric.NewManager(roots[4]).Services()
-		if err != nil || len(services) != 1 || len(services[0].Backends) != 2 {
+		if len(expected) != 2 || err != nil || len(services) != 1 || len(services[0].Backends) != len(expected) {
 			return false
 		}
 		for _, backend := range services[0].Backends {
-			if !strings.HasPrefix(backend.Address, "10.246.2.") {
+			if !expected[backend.Address] {
 				return false
 			}
+			delete(expected, backend.Address)
 		}
-		return service("v2")
+		return len(expected) == 0 && service("v2")
 	})
 	s = snapshot()
 	for _, a := range s.Assignments {
