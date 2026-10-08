@@ -15,7 +15,7 @@ func TestChildRejectsUnsafePolicyBeforeNamespaceSetup(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer r.Close()
-		args := []string{"/nonexistent", "unit", "3", policy, fmt.Sprint(w.Fd()), "--", "/bin/sh"}
+		args := []string{"/nonexistent", "unit", "3", policy, fmt.Sprint(w.Fd()), "0", "--", "/bin/sh"}
 		if err := runUnitChild(args); err == nil {
 			t.Fatal("unsafe policy accepted")
 		}

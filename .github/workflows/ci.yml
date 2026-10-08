@@ -215,6 +215,6 @@ jobs:
       - name: Install native Ceph daemons and clients
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ceph-mon ceph-mgr ceph-osd ceph-mds ceph-common rbd-client jq util-linux
+          sudo apt-get install -y ceph-mon ceph-mgr ceph-osd ceph-mds ceph-common jq util-linux
       - name: Real RBD and CephFS snapshot, restore, exclusion and fencing
         run: sudo env "PATH=$PATH" bash scripts/ci-ceph-storage.sh
