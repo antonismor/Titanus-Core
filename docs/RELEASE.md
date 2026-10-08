@@ -22,6 +22,11 @@ The nodes in that integration are distinct network namespaces/processes/state
 roots connected by veth/bridge, not five physical machines or five separate
 kernels. It tests real mTLS API/agent/Source transfer, VXLAN service traffic,
 rolling rollback, controller loss and execution-network loss/lease fencing.
+Fabric gateway and Unit Ethernet identities are pinned to their IPv4 addresses,
+including when an address is reused by a replacement Unit. Native integration
+checks identity stability through rolling update and rollback. Node-originated
+Service traffic uses node-only SNAT to return through the initiating node's
+conntrack path; routed workload source addresses are preserved by that rule.
 Physical host reboot, real switches and site-specific hardware validation remain
 operator acceptance work. Failure results are never inferred from a cross-build.
 

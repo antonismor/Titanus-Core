@@ -313,3 +313,19 @@ func TestNodeServiceSNATPreservesWorkloadSources(t *testing.T) {
  expected := "ct status dnat ct original ip daddr 10.250.0.10 meta l4proto tcp ct original proto-dst 18080 fib saddr type local masquerade"
  if !strings.Contains(rules, expected) { t.Fatalf("missing node-only Service return path: %s", rules) }
 }
+
+func TestEthernetIdentityAcrossReplacementAndSubnets(t *testing.T) {
+ seen := map[string]bool{}
+ for _, address := range []string{"10.240.0.1", "10.240.0.10", "10.240.1.1", "10.240.1.10", "10.241.0.10"} {
+  mac, err := ethernetAddress(address)
+  if err != nil { t.Fatal(err) }
+  parsed, err := net.ParseMAC(mac)
+  if err != nil || len(parsed) != 6 || parsed[0]&3 != 2 || seen[mac] { t.Fatalf("invalid or duplicate local unicast identity %s", mac) }
+  seen[mac] = true
+  again, err := ethernetAddress(address)
+  if err != nil || mac != again { t.Fatalf("replacement changed identity for %s", address) }
+ }
+ for _, address := range []string{"", "invalid", "2001:db8::1"} {
+  if _, err := ethernetAddress(address); err == nil { t.Fatalf("accepted non-IPv4 identity %q", address) }
+ }
+}

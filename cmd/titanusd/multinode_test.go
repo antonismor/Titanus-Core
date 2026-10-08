@@ -284,7 +284,36 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		f, ok := s.Fleets["web"]
 		return ok && f.Generation == g && realm.NewPlacementEngine().Rolling(s, f, time.Now()).Complete
 	}
+	ethernetIdentities := map[string]string{}
+	checkEthernetIdentities := func() {
+		t.Helper()
+		check := func(key string, cmd *exec.Cmd) {
+			t.Helper()
+			out, err := cmd.CombinedOutput()
+			var links []struct { Address string `json:"address"` }
+			if err != nil || json.Unmarshal(out, &links) != nil || len(links) != 1 || links[0].Address == "" {
+				t.Fatalf("read Ethernet identity %s: %s (%v)", key, out, err)
+			}
+			mac := links[0].Address
+			if prior := ethernetIdentities[key]; prior != "" && prior != mac {
+				t.Fatalf("Ethernet identity changed during replacement for %s: %s -> %s", key, prior, mac)
+			}
+			ethernetIdentities[key] = mac
+		}
+		for i := 3; i < 5; i++ {
+			check(names[i]+"/gateway", exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[i]), "--", "ip", "-j", "link", "show", "titanus0"))
+			m := unitruntime.NewManager(unitruntime.Config{StateRoot: roots[i], CgroupRoot: fmt.Sprintf("/sys/fs/cgroup/titanus-multi-%d", i), InitBinary: filepath.Join(bin, "titanus-init")})
+			units, err := m.List()
+			if err != nil { t.Fatal(err) }
+			for _, u := range units {
+				if u.Status == unitruntime.StatusActive && u.NetworkAddress != "" {
+					check(u.NetworkAddress, exec.Command("nsenter", "-t", fmt.Sprint(u.PID), "-n", "--", "ip", "-j", "link", "show", "eth0"))
+				}
+			}
+		}
+	}
 	wait(45*time.Second, func() bool { return complete(1) })
+	checkEthernetIdentities()
 	s := snapshot()
 	used := map[string]bool{}
 	for _, a := range s.Assignments {
@@ -330,6 +359,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		t.Fatal(e)
 	}
 	wait(50*time.Second, func() bool { return complete(2) })
+	checkEthernetIdentities()
 	wait(20*time.Second, func() bool { return remoteBackend("v2") })
 	wait(20*time.Second, func() bool { return service("v2") })
 	fleet.Template.Command = []string{"/bin/rollout-app", "broken"}
@@ -351,6 +381,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		t.Fatal(e)
 	}
 	wait(50*time.Second, func() bool { return complete(4) })
+	checkEthernetIdentities()
 	oldLeader := leader
 	stop(&daemons[oldLeader])
 	wait(20*time.Second, findLeader)
