@@ -5,12 +5,15 @@ import hashlib,json,os,pathlib,re,tarfile
 expected=os.environ['TITANUS_VERIFIED_SHA'];assert re.fullmatch('[0-9a-f]{40}',expected)
 archives=sorted(pathlib.Path('release-packages').glob('*.tar.gz'));assert len(archives)==2
 versions=set();arches=set()
+source=pathlib.Path('internal/version/version.go').read_text()
+declared=re.search(r'^var Version = "([^"]+)"',source,re.M).group(1)
+profile=re.search(r'^const StateProfile = "([^"]+)"',source,re.M).group(1)
 for archive in archives:
  line=archive.with_name(archive.name+'.sha256').read_text().strip();digest,name=line.split('  ');assert name==archive.name and hashlib.sha256(archive.read_bytes()).hexdigest()==digest
  with tarfile.open(archive) as tar:
   manifests=[m for m in tar.getmembers() if m.name.endswith('/manifest.json')];assert len(manifests)==1 and manifests[0].isfile()
-  meta=json.load(tar.extractfile(manifests[0]));assert meta['revision']==expected and meta['os']=='linux' and meta['state_profile']=='titanus-state/v2'
-  assert re.fullmatch(r'\d+\.\d+\.\d+-[a-z0-9.-]+',meta['version']);assert archive.name==f"titanus-{meta['version']}-linux-{meta['arch']}.tar.gz";versions.add(meta['version']);arches.add(meta['arch'])
+  meta=json.load(tar.extractfile(manifests[0]));assert meta['revision']==expected and meta['os']=='linux' and meta['state_profile']==profile
+  assert meta['version']==declared and re.fullmatch(r'\d+\.\d+\.\d+-[a-z0-9.-]+',meta['version']);assert archive.name==f"titanus-{meta['version']}-linux-{meta['arch']}.tar.gz";versions.add(meta['version']);arches.add(meta['arch'])
 assert len(versions)==1 and arches=={'amd64','arm64'}
 pathlib.Path('release-version.txt').write_text(versions.pop())
 PY

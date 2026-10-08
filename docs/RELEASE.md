@@ -125,3 +125,9 @@ do not run old controller binaries against catalogs or new mapping state.
 Same-profile native installation/upgrade/rollback is still tested using distinct
 fixture version identities, not a claim of a mixed-version cluster upgrade.
 The published rc.1 archive/tag is preserved. Final VM/site acceptance remains open.
+
+The default Make build version comes from `internal/version/version.go`.
+Packaging and publication compare every binary/archive against that exact
+declaration and state profile. A custom `make VERSION=...` build is not a
+publishable release; the native installer fixture alone explicitly permits its
+`.install-test` version during staging. Published tags are never moved.

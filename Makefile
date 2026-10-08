@@ -1,7 +1,7 @@
 .PHONY: build clean test fmt release
 
 REVISION := $(shell git rev-parse HEAD)
-VERSION ?= 0.4.0-rc.1
+VERSION ?= $(shell awk -F '"' '/^var Version = / {print $$2}' internal/version/version.go)
 LDFLAGS := -s -w -X github.com/antonismor/Titanus-Core/internal/version.Version=$(VERSION) -X github.com/antonismor/Titanus-Core/internal/version.Revision=$(REVISION)
 
 build:

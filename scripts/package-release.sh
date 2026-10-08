@@ -8,8 +8,13 @@ python3 - "$out" <<'PY'
 import hashlib,json,os,pathlib,re,shutil,subprocess,sys,tarfile,tempfile
 out=pathlib.Path(sys.argv[1]).resolve()
 meta=json.loads(subprocess.check_output(['./bin/titanus','version','--json']))
+source=pathlib.Path('internal/version/version.go').read_text()
+declared=re.search(r'^var Version = "([^"]+)"',source,re.M).group(1)
+profile=re.search(r'^const StateProfile = "([^"]+)"',source,re.M).group(1)
+expected=declared+'.install-test' if os.environ.get('TITANUS_PACKAGE_INSTALL_FIXTURE')=='1' else declared
+if meta['version']!=expected:raise SystemExit('binary version differs from declared release version')
 if meta['os']!='linux' or meta['arch'] not in ('amd64','arm64') or not re.fullmatch('[0-9a-f]{40}',meta['revision']) or meta['revision']!=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip():raise SystemExit('release requires native Linux build at the exact committed revision')
-if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',meta['version']) or meta['state_profile']!='titanus-state/v2':raise SystemExit('invalid release version/state profile')
+if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',meta['version']) or meta['state_profile']!=profile:raise SystemExit('invalid release version/state profile')
 for binary in ['titanusd','titanus-agent','titanus-init']:
  if json.loads(subprocess.check_output(['./bin/'+binary,'--version-json']))!=meta:raise SystemExit('binary release identities do not match')
 name=f"titanus-{meta['version']}-linux-{meta['arch']}"
