@@ -120,7 +120,7 @@ func (m *Manager) create(spec Spec) (Spec, error) {
 	default:
 		return Spec{}, fmt.Errorf("unsupported Disk provider %q", spec.Provider)
 	}
-	if _, err := os.Stat(m.specPath(spec.Name)); err == nil {
+	if _, err := os.Lstat(m.diskDir(spec.Name)); err == nil {
 		return Spec{}, fmt.Errorf("Disk %s already exists", spec.Name)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Spec{}, err
@@ -295,7 +295,11 @@ func (m *Manager) Detach(name string) error {
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	// Runtime has stopped before detach. Release the maintenance FD so a
+	// CephFS unmount is not held busy by its own open lock inode.
+	if err = a.Close(); err != nil {
+		return err
+	}
 	return m.detach(name)
 }
 func (m *Manager) detach(name string) error {

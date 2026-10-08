@@ -29,7 +29,7 @@ func TestNativeDiskOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"writer", "competitor"} {
-		if _, err := m.Create(Spec{ID: id, Source: "app", Mounts: []disk.Mount{{Disk: "data", Target: "/data"}}, Command: []string{"/bin/sh", "-ec", "echo proof > /data/proof; sleep 120"}}); err != nil {
+		if _, err := m.Create(Spec{ID: id, Source: "app", Mounts: []disk.Mount{{Disk: "data", Target: "/data"}}, Command: []string{"/bin/sh", "-ec", "if [ -e /proc/self/fd/6 ]; then exit 97; fi; echo proof > /data/proof; sleep 120"}}); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _, _ = m.Stop(id, time.Second); _ = m.Delete(id) })

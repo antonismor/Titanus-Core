@@ -822,6 +822,15 @@ func (m *Manager) cleanupAfterStop(id string) {
 	_ = os.WriteFile(filepath.Join(m.cgroupDir(id), "cgroup.kill"), []byte("1"), 0644)
 	_ = m.unmountRootfs(id)
 	_ = os.Remove(m.cgroupDir(id))
+	if spec, _, err := m.load(id); err == nil {
+		seen := map[string]bool{}
+		for _, mount := range spec.Mounts {
+			if !seen[mount.Disk] {
+				seen[mount.Disk] = true
+				_ = disk.NewManager(m.cfg.StateRoot).Detach(mount.Disk)
+			}
+		}
+	}
 }
 
 func (m *Manager) fail(state State, cause error) (State, error) {
