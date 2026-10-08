@@ -46,6 +46,7 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	s.registerStorage(mux)
 	s.registerOrchestration(mux)
 	mux.HandleFunc("/v1/metrics", s.authorize(s.metrics))
 	mux.HandleFunc("/v1/diagnostics", s.authorize(s.diagnostics))
@@ -353,6 +354,9 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	}
 	state := s.Store.Snapshot()
 	if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
+		state.StorageFailovers = nil
+		state.UnitMappings = nil
+		state.Disks = nil
 		state.Secrets = nil
 		for name, t := range state.Tasks {
 			t.Template.Environment = nil
@@ -367,6 +371,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 			state.Fleets[name] = fleet
 		}
 		for id, assignment := range state.Assignments {
+			assignment.StorageWriters = nil
 			assignment.LeaseToken = ""
 			state.Assignments[id] = assignment
 		}

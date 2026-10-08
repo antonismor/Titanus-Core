@@ -20,9 +20,15 @@ type IDMapping struct {
 // Node-global, fsynced, monotonic ledger. Deleted allocations are never recycled:
 // a later Unit cannot acquire ownership of a previous Unit's persistent files.
 func (m *Manager) allocateMapping(id string) (IDMapping, error) {
-	_, state, e := m.load(id)
+	spec, state, e := m.load(id)
 	if e != nil {
 		return IDMapping{}, e
+	}
+	if spec.ClusterMappingKey != "" {
+		if state.UserMapping.Size != 0 && state.UserMapping != spec.ClusterMapping {
+			return IDMapping{}, fmt.Errorf("persisted mapping differs from cluster identity")
+		}
+		return reserveClusterMapping(mappingRoot, spec.ClusterMappingKey, spec.ClusterMapping)
 	}
 	root, e := filepath.EvalSymlinks(m.cfg.StateRoot)
 	if e != nil {
@@ -62,7 +68,7 @@ func allocateMapping(root, key string, expected ...IDMapping) (IDMapping, error)
 			return IDMapping{}, fmt.Errorf("overlapping mapping ledger")
 		}
 		seen[v.Base] = true
-		if v.Base >= base {
+		if v.Base >= base && v.Base < 1073741824 {
 			base = v.Base + mappingSize
 		}
 	}
@@ -75,7 +81,7 @@ func allocateMapping(root, key string, expected ...IDMapping) (IDMapping, error)
 	if len(expected) > 0 && expected[0].Size != 0 {
 		return IDMapping{}, fmt.Errorf("persisted Unit mapping is missing from node ledger; restore ledger before restart")
 	}
-	if base > 2147418112 {
+	if base >= 1073741824 {
 		return IDMapping{}, fmt.Errorf("node UID/GID mapping pool exhausted")
 	}
 	v := IDMapping{base, mappingSize}
@@ -163,7 +169,9 @@ func cleanupRootAccess(run string) {
 	}
 	directory := filepath.Join("/run/titanus-roots", run)
 	target := filepath.Join(directory, "rootfs")
-	if err := syscall.Unmount(target, syscall.MNT_DETACH); err != nil && err != syscall.EINVAL && err != syscall.ENOENT { return }
+	if err := syscall.Unmount(target, syscall.MNT_DETACH); err != nil && err != syscall.EINVAL && err != syscall.ENOENT {
+		return
+	}
 	// Never recursively remove a path which may still contain mounted data.
 	_ = os.Remove(target)
 	_ = os.Remove(directory)

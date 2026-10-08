@@ -310,7 +310,9 @@ to new Disks, exclusive Unit attachments retained by namespace PID 1, and explic
 CephFS storage-level eviction. Storage administration uses CLI and authenticated
 admin APIs. Native AMD64/ARM64 Ceph integration is exercised in CI. See
 [Storage lifecycle](docs/STORAGE_LIFECYCLE.md) for migration, identity mapping,
-manual fencing and the boundary against automatic unreachable-writer failover.
+exact-instance fencing and opt-in automatic remote storage failover. See
+[Storage failover](docs/STORAGE_FAILOVER.md) for catalogs, quarantine, ownership
+and the deferred independent-VM acceptance matrix.
 
 ## Authenticated native observations
 
@@ -350,4 +352,6 @@ Pulse expiry and lease fencing. These nodes share a runner kernel; physical host
 reboot, site networking and hardware acceptance are not implied. See
 [Release and recovery](docs/RELEASE.md) for prerequisites, migration, key/state
 backups and the distinction between binary rollback and data/schema rollback.
-The initial version is `0.4.0-rc.1`, explicitly a release candidate.
+The current candidate line is `0.4.0-rc.2`; `0.4.0-rc.1` remains an unchanged
+published checkpoint. Phase 2 is tracked in issue #20. Code/CI validation is
+separate from pending independent-VM and physical-host acceptance.

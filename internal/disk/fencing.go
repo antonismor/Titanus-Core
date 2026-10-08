@@ -112,6 +112,43 @@ func (m *Manager) waitCephFSBlocklists(cfg CephConfig, fenced string) error {
 			}
 		}
 		if complete {
+			// Confirm the complete registered topology did not change while
+			// collecting per-OSD evidence; a partial old topology is not a fence.
+			final, e := commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "dump", "--format", "json")...)
+			if e != nil {
+				return e
+			}
+			var latest struct {
+				Blocklist map[string]json.RawMessage `json:"blocklist"`
+				OSDs      []struct {
+					ID int `json:"osd"`
+					Up int `json:"up"`
+				} `json:"osds"`
+			}
+			if e = json.Unmarshal([]byte(final), &latest); e != nil {
+				return e
+			}
+			if len(latest.OSDs) != len(state.OSDs) {
+				return fmt.Errorf("OSD topology changed during fence confirmation")
+			}
+			up := map[int]bool{}
+			for _, osd := range latest.OSDs {
+				up[osd.ID] = osd.Up == 1
+			}
+			for _, osd := range state.OSDs {
+				if !up[osd.ID] {
+					return fmt.Errorf("OSD reachability changed during fence confirmation")
+				}
+			}
+			present := map[string]bool{}
+			for address := range latest.Blocklist {
+				present[blocklistAddress(address)] = true
+			}
+			for address := range required {
+				if !present[address] {
+					return fmt.Errorf("committed fence changed during confirmation")
+				}
+			}
 			return nil
 		}
 		if time.Now().After(deadline) {

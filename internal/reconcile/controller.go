@@ -24,6 +24,7 @@ type NodeRuntime interface {
 }
 
 type Controller struct {
+	Storage  StorageFencer
 	Store    *realm.Store
 	Nodes    NodeRuntime
 	Sources  *source.Manager
@@ -55,6 +56,9 @@ func (c *Controller) Once() error {
 	c.Store.Orchestration.Lock()
 	defer c.Store.Orchestration.Unlock()
 	if err := c.Store.CheckLeader(); err != nil {
+		return err
+	}
+	if err := c.maintainStorageFences(); err != nil {
 		return err
 	}
 	if err := c.reconcileTasks(); err != nil {
@@ -98,7 +102,7 @@ func (c *Controller) Once() error {
 }
 func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assignment realm.Assignment) {
 	node, ok := state.Nodes[assignment.NodeID]
-	if !ok || node.State != realm.NodeReady {
+	if !ok || node.State != realm.NodeReady || node.StorageQuarantined {
 		return
 	}
 	if err := c.Store.CheckLeader(); err != nil {
@@ -137,6 +141,10 @@ func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assign
 		return
 	}
 	spec := unitSpec(revision, assignment)
+	if err := c.prepareStorage(state, assignment, &spec); err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
 	if err := realm.BindSecrets(state, revision.Template, &spec); err != nil {
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 		return
@@ -151,6 +159,10 @@ func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assign
 	}
 	runtimeState, err := c.Nodes.StartUnit(node.Address, assignment.ID)
 	if err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	if err := c.recordStorage(state, assignment); err != nil {
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 		return
 	}
@@ -188,7 +200,7 @@ func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assig
 		return err
 	}
 	node, ok := state.Nodes[assignment.NodeID]
-	if !ok || node.State == realm.NodeUnreachable || node.Address == "" {
+	if !ok || node.State == realm.NodeUnreachable || node.StorageQuarantined || node.Address == "" {
 		fleet, exists := state.Fleets[assignment.Fleet]
 		if !exists {
 			return fmt.Errorf("deleted Fleet requires acknowledged node cleanup")
@@ -197,10 +209,13 @@ func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assig
 		if err != nil {
 			return err
 		}
+		if len(assignment.StorageWriters) > 0 {
+			return c.fenceStorage(assignment)
+		}
 		// Writable storage cannot be released by a time-based scheduling lease.
 		for _, m := range previous.Template.Mounts {
 			if !m.ReadOnly {
-				return fmt.Errorf("writable Disk needs node fencing")
+				return c.fenceStorage(assignment)
 			}
 		}
 		if assignment.LeaseExpiresAt.IsZero() || time.Now().Before(assignment.LeaseExpiresAt.Add(2*time.Second)) {
@@ -218,6 +233,9 @@ func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assig
 		if err := c.Nodes.RevokeLease(node.Address, assignment.ID, assignment.LeaseToken); err != nil {
 			return err
 		}
+	}
+	if err := c.releaseStorage(state, assignment); err != nil {
+		return err
 	}
 	return c.Nodes.DeleteUnit(node.Address, assignment.ID)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/antonismor/Titanus-Core/internal/disk"
 	"io"
 	"net"
 	"net/http"
@@ -206,4 +207,23 @@ func (c *Client) UnitUsage(address, id string) (unitruntime.Usage, error) {
 	var u unitruntime.Usage
 	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/units/"+url.PathEscape(id)+"/usage", nil, &u)
 	return u, e
+}
+
+func (c *Client) EnsureDisk(address string, catalog disk.Catalog) error {
+	return c.doJSON(http.MethodPost, endpoint(address)+"/v1/node/storage/adopt", catalog, nil)
+}
+func (c *Client) DiskWriter(address, name string) (disk.Writer, error) {
+	var w disk.Writer
+	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/disks/"+url.PathEscape(name)+"/writer", nil, &w)
+	return w, e
+}
+
+func (c *Client) ReleaseDisk(address, name, unit, catalogID string) error {
+	return c.doJSON(http.MethodPost, endpoint(address)+"/v1/node/storage/release", map[string]string{"disk": name, "unit": unit, "catalog_id": catalogID}, nil)
+}
+
+func (c *Client) DiskCatalog(address, name string) (disk.Catalog, error) {
+	var catalog disk.Catalog
+	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/disks/"+url.PathEscape(name)+"/catalog", nil, &catalog)
+	return catalog, e
 }

@@ -48,18 +48,19 @@ type RealmNetwork struct {
 }
 
 type Node struct {
-	ID            string             `json:"id"`
-	Address       string             `json:"address"`
-	FabricAddress string             `json:"fabric_address,omitempty"`
-	FabricCIDR    string             `json:"fabric_cidr,omitempty"`
-	Capabilities  []model.Capability `json:"capabilities"`
-	Labels        map[string]string  `json:"labels,omitempty"`
-	Resources     Resources          `json:"resources"`
-	State         NodeState          `json:"state"`
-	LastPulse     time.Time          `json:"last_pulse"`
-	JoinedAt      time.Time          `json:"joined_at"`
-	Failures      uint64             `json:"failures"`
-	Successes     uint64             `json:"successes"`
+	StorageQuarantined bool               `json:"storage_quarantined,omitempty"`
+	ID                 string             `json:"id"`
+	Address            string             `json:"address"`
+	FabricAddress      string             `json:"fabric_address,omitempty"`
+	FabricCIDR         string             `json:"fabric_cidr,omitempty"`
+	Capabilities       []model.Capability `json:"capabilities"`
+	Labels             map[string]string  `json:"labels,omitempty"`
+	Resources          Resources          `json:"resources"`
+	State              NodeState          `json:"state"`
+	LastPulse          time.Time          `json:"last_pulse"`
+	JoinedAt           time.Time          `json:"joined_at"`
+	Failures           uint64             `json:"failures"`
+	Successes          uint64             `json:"successes"`
 }
 
 type UnitTemplate struct {
@@ -138,42 +139,47 @@ type NetworkPolicy struct {
 }
 
 type Assignment struct {
-	ID             string          `json:"id"`
-	Fleet          string          `json:"fleet"`
-	NodeID         string          `json:"node_id"`
-	State          AssignmentState `json:"state"`
-	Generation     uint64          `json:"generation"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	LeaseToken     string          `json:"lease_token,omitempty"`
-	LeaseExpiresAt time.Time       `json:"lease_expires_at,omitempty"`
-	StartAfter     time.Time       `json:"start_after,omitempty"`
-	NetworkAddress string          `json:"network_address,omitempty"`
+	StorageWriters map[string]disk.Writer `json:"storage_writers,omitempty"`
+	ID             string                 `json:"id"`
+	Fleet          string                 `json:"fleet"`
+	NodeID         string                 `json:"node_id"`
+	State          AssignmentState        `json:"state"`
+	Generation     uint64                 `json:"generation"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+	LeaseToken     string                 `json:"lease_token,omitempty"`
+	LeaseExpiresAt time.Time              `json:"lease_expires_at,omitempty"`
+	StartAfter     time.Time              `json:"start_after,omitempty"`
+	NetworkAddress string                 `json:"network_address,omitempty"`
 }
 
 type State struct {
-	Tasks       map[string]Task             `json:"tasks,omitempty"`
-	Secrets     map[string][]secrets.Record `json:"secrets,omitempty"`
-	Autoscalers map[string]Autoscaler       `json:"autoscalers,omitempty"`
-	Name        string                      `json:"name"`
-	Network     RealmNetwork                `json:"network"`
-	Revision    uint64                      `json:"revision"`
-	Nodes       map[string]Node             `json:"nodes"`
-	Fleets      map[string]Fleet            `json:"fleets"`
-	Assignments map[string]Assignment       `json:"assignments"`
-	Routes      map[string]Route            `json:"routes"`
-	Policies    map[string]NetworkPolicy    `json:"policies"`
-	UpdatedAt   time.Time                   `json:"updated_at"`
+	Disks            map[string]disk.Catalog          `json:"disks,omitempty"`
+	UnitMappings     map[string]unitruntime.IDMapping `json:"unit_mappings,omitempty"`
+	StorageFailovers map[string]StorageFailover       `json:"storage_failovers,omitempty"`
+	Tasks            map[string]Task                  `json:"tasks,omitempty"`
+	Secrets          map[string][]secrets.Record      `json:"secrets,omitempty"`
+	Autoscalers      map[string]Autoscaler            `json:"autoscalers,omitempty"`
+	Name             string                           `json:"name"`
+	Network          RealmNetwork                     `json:"network"`
+	Revision         uint64                           `json:"revision"`
+	Nodes            map[string]Node                  `json:"nodes"`
+	Fleets           map[string]Fleet                 `json:"fleets"`
+	Assignments      map[string]Assignment            `json:"assignments"`
+	Routes           map[string]Route                 `json:"routes"`
+	Policies         map[string]NetworkPolicy         `json:"policies"`
+	UpdatedAt        time.Time                        `json:"updated_at"`
 }
 
 type Store struct {
 	// Serializes desired changes and physical rollout operations.
-	Orchestration sync.Mutex
-	path          string
-	mu            sync.Mutex
-	data          State
-	consensus     Consensus
-	haManaged     bool
+	Orchestration     sync.Mutex
+	path              string
+	mu                sync.Mutex
+	data              State
+	consensus         Consensus
+	haManaged         bool
+	transactionBefore *State
 }
 
 func Open(stateRoot, realmName string) (*Store, error) {
@@ -213,6 +219,7 @@ func (s *Store) UpsertNode(node Node) error {
 		}
 	}
 	if existed {
+		node.StorageQuarantined = existing.StorageQuarantined
 		if node.FabricAddress == "" {
 			node.FabricAddress = existing.FabricAddress
 		}
@@ -458,6 +465,9 @@ func (s *Store) PutFleet(fleet Fleet) error {
 func (s *Store) putFleet(fleet Fleet) error {
 	s.lock()
 	defer s.unlock()
+	if err := validateCatalogFleet(s.data, fleet); err != nil {
+		return err
+	}
 	if strings.TrimSpace(fleet.Name) == "" {
 		return fmt.Errorf("Fleet name is required")
 	}
@@ -771,6 +781,9 @@ func (s *Store) ScaleFleet(name string, instances int) (Fleet, error) {
 		return Fleet{}, fmt.Errorf("manual scale is outside autoscaler bounds; disable policy first")
 	}
 	fleet.Instances = instances
+	if err := validateCatalogFleet(s.data, fleet); err != nil {
+		return Fleet{}, err
+	}
 	if fleet.MinimumAvailable > instances {
 		fleet.MinimumAvailable = instances
 	}
@@ -936,7 +949,11 @@ func (s *Store) commitLocked() error {
 	if s.consensus != nil {
 		return s.consensus.Apply(cloneState(s.data))
 	}
-	return durable.WriteJSON(s.path, s.data, 0600)
+	if err := durable.WriteJSON(s.path, s.data, 0600); err != nil {
+		return err
+	}
+	s.transactionBefore = nil
+	return nil
 }
 
 func cloneState(in State) State {

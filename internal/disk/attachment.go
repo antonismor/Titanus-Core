@@ -57,9 +57,22 @@ func (m *Manager) acquire(name, unit, run string) (*Attachment, error) {
 	if spec.Provider != ProviderLocal && spec.LayoutVersion != 1 {
 		return nil, fmt.Errorf("legacy remote Disk requires offline migration")
 	}
+	var before []Writer
+	reused := mounted(m.mountPath(name))
+	if spec.ManagedID != "" {
+		before, err = m.writers(spec)
+		if err != nil {
+			return nil, err
+		}
+	}
 	root, err := m.resolve(spec)
 	if err != nil {
 		return nil, err
+	}
+	if spec.ManagedID != "" {
+		if err = m.captureWriter(spec, before, reused); err != nil {
+			return nil, err
+		}
 	}
 	control := filepath.Join(m.diskDir(name), "control")
 	data := root

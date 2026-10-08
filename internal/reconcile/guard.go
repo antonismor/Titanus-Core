@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"fmt"
+	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -55,4 +57,47 @@ func (g *GuardedNodes) RevokeLease(a, id, t string) error {
 		return e
 	}
 	return g.NodeRuntime.RevokeLease(a, id, t)
+}
+
+func (g *GuardedNodes) EnsureDisk(a string, c disk.Catalog) error {
+	if e := g.Check(); e != nil {
+		return e
+	}
+	n, ok := g.NodeRuntime.(StorageNodes)
+	if !ok {
+		return fmt.Errorf("storage client unavailable")
+	}
+	return n.EnsureDisk(a, c)
+}
+func (g *GuardedNodes) DiskWriter(a, n string) (disk.Writer, error) {
+	if e := g.Check(); e != nil {
+		return disk.Writer{}, e
+	}
+	client, ok := g.NodeRuntime.(StorageNodes)
+	if !ok {
+		return disk.Writer{}, fmt.Errorf("storage client unavailable")
+	}
+	return client.DiskWriter(a, n)
+}
+
+func (g *GuardedNodes) ReleaseDisk(a, n, u, id string) error {
+	if e := g.Check(); e != nil {
+		return e
+	}
+	client, ok := g.NodeRuntime.(StorageNodes)
+	if !ok {
+		return fmt.Errorf("storage client unavailable")
+	}
+	return client.ReleaseDisk(a, n, u, id)
+}
+
+func (g *GuardedNodes) DiskCatalog(a, n string) (disk.Catalog, error) {
+	if e := g.Check(); e != nil {
+		return disk.Catalog{}, e
+	}
+	client, ok := g.NodeRuntime.(StorageNodes)
+	if !ok {
+		return disk.Catalog{}, fmt.Errorf("storage client unavailable")
+	}
+	return client.DiskCatalog(a, n)
 }

@@ -55,6 +55,20 @@ func (s *Server) diskAction(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 	switch {
+	case r.Method == http.MethodGet && action == "catalog":
+		item, err := s.Disks.Catalog(name)
+		if err != nil {
+			writeError(w, 409, err)
+			return
+		}
+		writeJSON(w, 200, item)
+	case r.Method == http.MethodGet && action == "writer":
+		item, err := s.Disks.Writer(name)
+		if err != nil {
+			writeError(w, 409, err)
+			return
+		}
+		writeJSON(w, 200, item)
 	case r.Method == http.MethodGet && action == "":
 		spec, err := s.Disks.Inspect(name)
 		if err != nil {

@@ -28,6 +28,7 @@ const (
 var diskName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 
 type Spec struct {
+	ManagedID     string    `json:"managed_id,omitempty"`
 	Name          string    `json:"name"`
 	Provider      Provider  `json:"provider"`
 	SizeBytes     int64     `json:"size_bytes"`
@@ -105,6 +106,9 @@ func (m *Manager) Create(spec Spec) (Spec, error) {
 	return m.create(spec)
 }
 func (m *Manager) create(spec Spec) (Spec, error) {
+	if spec.ManagedID != "" {
+		return Spec{}, fmt.Errorf("new Disk cannot impersonate managed catalog")
+	}
 	spec.Name = strings.TrimSpace(spec.Name)
 	if !diskName.MatchString(spec.Name) {
 		return Spec{}, fmt.Errorf("invalid Disk name %q", spec.Name)
@@ -300,6 +304,33 @@ func (m *Manager) Detach(name string) error {
 	if err != nil {
 		return err
 	}
+	// Detach is idempotent: runtime cleanup may already have removed this
+	// mount. Acquisition here would create a NEW unfenced CephFS client,
+	// overwrite old writer evidence, then collide with the successor's lock.
+	if spec.Provider != ProviderLocal && !mounted(m.mountPath(name)) {
+		if spec.Provider != ProviderCephRBD {
+			return nil
+		}
+		if _, e := os.Stat(m.devicePath(name)); os.IsNotExist(e) {
+			return nil
+		} else if e != nil {
+			return e
+		}
+		guard, e := m.guardSpec(spec)
+		if e != nil {
+			return e
+		}
+		defer guard()
+		fd, e := syscall.Open(filepath.Join(m.diskDir(name), "control", "lock"), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if e != nil {
+			return e
+		}
+		defer syscall.Close(fd)
+		if e = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+			return fmt.Errorf("unmounted RBD is retained by a live attachment: %w", e)
+		}
+		return m.detach(name)
+	}
 	guard, err := m.guardSpec(spec)
 	if err != nil {
 		return err
@@ -307,7 +338,23 @@ func (m *Manager) Detach(name string) error {
 	defer guard()
 	a, err := m.acquire(name, "maintenance", "detach")
 	if err != nil {
-		return err
+		// Fenced clients cannot reopen their distributed lock. Only positive
+		// native blocklist evidence permits their ordinary (non-lazy) detach.
+		if spec.ManagedID == "" {
+			return err
+		}
+		w, e := m.Writer(name)
+		if e != nil {
+			return fmt.Errorf("detach acquisition denied (%v); no bound fenced writer: %w", err, e)
+		}
+		cfg, e := m.CephConfig()
+		if e != nil {
+			return e
+		}
+		if e = m.waitCephFSBlocklists(cfg, w.Address); e != nil {
+			return fmt.Errorf("detach acquisition denied (%v); fence confirmation: %w", err, e)
+		}
+		return m.detach(name)
 	}
 	// Runtime has stopped before detach. Release the maintenance FD so a
 	// CephFS unmount is not held busy by its own open lock inode.
@@ -339,6 +386,30 @@ func (m *Manager) detach(name string) error {
 				cfg, cfgErr := m.CephConfig()
 				if cfgErr != nil {
 					return cfgErr
+				}
+				list, e := commandOutput("rbd", append(m.rbdBaseArgs(cfg), "device", "list", "--format", "json")...)
+				if e != nil {
+					return e
+				}
+				var mappings []struct {
+					Pool   string `json:"pool"`
+					Name   string `json:"name"`
+					Device string `json:"device"`
+				}
+				if e = json.Unmarshal([]byte(list), &mappings); e != nil {
+					return e
+				}
+				matched := false
+				for _, mapping := range mappings {
+					if mapping.Device == device {
+						if mapping.Pool != cfg.Pool || mapping.Name != name {
+							return fmt.Errorf("saved RBD device belongs to another Disk")
+						}
+						matched = true
+					}
+				}
+				if !matched {
+					return fmt.Errorf("saved RBD mapping is absent; reconcile explicitly")
 				}
 				args := append(m.rbdBaseArgs(cfg), "unmap", device)
 				if out, unmapErr := commandOutput("rbd", args...); unmapErr != nil {
