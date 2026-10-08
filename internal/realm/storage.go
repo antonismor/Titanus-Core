@@ -14,12 +14,13 @@ import (
 )
 
 type StorageFailover struct {
-	ID          string                  `json:"id"`
-	Assignment  Assignment              `json:"assignment"`
-	Catalogs    map[string]disk.Catalog `json:"catalogs"`
-	Completed   bool                    `json:"completed"`
-	CreatedAt   time.Time               `json:"created_at"`
-	CompletedAt time.Time               `json:"completed_at,omitempty"`
+	RefreshAfter time.Time               `json:"refresh_after,omitempty"`
+	ID           string                  `json:"id"`
+	Assignment   Assignment              `json:"assignment"`
+	Catalogs     map[string]disk.Catalog `json:"catalogs"`
+	Completed    bool                    `json:"completed"`
+	CreatedAt    time.Time               `json:"created_at"`
+	CompletedAt  time.Time               `json:"completed_at,omitempty"`
 }
 
 func failoverID(a Assignment) string {
@@ -194,9 +195,22 @@ func (s *Store) CompleteStorageFailover(intent StorageFailover) error {
 	}
 	stored.Completed = true
 	stored.CompletedAt = time.Now().UTC()
+	stored.RefreshAfter = stored.CompletedAt.Add(24 * time.Hour)
 	s.data.StorageFailovers[intent.ID] = stored
 	a.State = AssignmentStopped
 	s.data.Assignments[a.ID] = a
+	return s.commitLocked()
+}
+
+func (s *Store) StorageFenceRefreshed(id string) error {
+	s.lock()
+	defer s.unlock()
+	intent, ok := s.data.StorageFailovers[id]
+	if !ok || !intent.Completed {
+		return fmt.Errorf("unknown completed fence")
+	}
+	intent.RefreshAfter = time.Now().UTC().Add(24 * time.Hour)
+	s.data.StorageFailovers[id] = intent
 	return s.commitLocked()
 }
 

@@ -5,7 +5,33 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
+	"time"
 )
+
+type storageFenceRefresher interface {
+	RefreshFence(disk.Catalog, disk.Writer, func() error) error
+}
+
+func (c *Controller) maintainStorageFences() error {
+	refresher, ok := c.Storage.(storageFenceRefresher)
+	if !ok {
+		return nil
+	}
+	for id, intent := range c.Store.Snapshot().StorageFailovers {
+		if !intent.Completed || time.Now().Before(intent.RefreshAfter) {
+			continue
+		}
+		for name, catalog := range intent.Catalogs {
+			if err := refresher.RefreshFence(catalog, intent.Assignment.StorageWriters[name], c.Store.CheckLeader); err != nil {
+				return err
+			}
+		}
+		if err := c.Store.StorageFenceRefreshed(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 type StorageNodes interface {
 	DiskCatalog(address, name string) (disk.Catalog, error)

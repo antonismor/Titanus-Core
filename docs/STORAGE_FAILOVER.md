@@ -53,7 +53,8 @@ records and every node-global ledger. Only one Realm owns these pools per node.
    automatic fencing. RBD's mandatory native non-cooperative exclusive lock
    handles lock takeover only after confirmed blocklisting. One active MDS rank
    is supported. A down/unreachable OSD fails closed.
-4. The old instance is quarantined with a 100-year blocklist interval; no automatic
+4. The old instance is quarantined with a 10-year blocklist interval, renewed every day from immutable
+   committed intents; no automatic
    unblock/remount occurs. Only after ALL Disks' native fences succeed does a
    quorum commit mark the old assignment stopped. A successor can be planned
    on a subsequent reconciliation pass. Intermediate success without result
@@ -70,7 +71,13 @@ under a reviewed offline recovery procedure. Never delete blocklists or forcibly
 break RADOS lifecycle guards to bypass a failed handoff. A crashed RBD maintenance
 guard remains an explicit operator recovery condition. At most 128 immutable
 failover intents are retained; reaching the limit denies new automatic handoffs.
-Catalog snapshot refresh and intent archival are offline administrative work.
+Ceph stores expiry seconds in a 32-bit native timestamp. The duration is checked
+before mutation and refuses overflow; indefinite controller downtime beyond
+the retained fence expiry requires physical exclusion before storage access.
+Fence refresh never discovers/evicts a successor. Failed renewal blocks that
+reconciliation pass and remains due for retry. Catalog snapshot refresh and
+intent archival are offline administrative work. Retained intents must never be
+removed while an old client can return or before a separate permanent fence.
 
 ## Validation and remaining acceptance
 

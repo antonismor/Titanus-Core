@@ -58,6 +58,9 @@ func (c *Controller) Once() error {
 	if err := c.Store.CheckLeader(); err != nil {
 		return err
 	}
+	if err := c.maintainStorageFences(); err != nil {
+		return err
+	}
 	if err := c.reconcileTasks(); err != nil {
 		return err
 	}

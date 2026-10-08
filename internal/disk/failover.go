@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Writer binds the exact native client instance to a verified remote object.
@@ -181,12 +182,17 @@ func (m *Manager) Fence(c Catalog, w Writer, check func() error) error {
 	if err != nil {
 		return err
 	}
-	// Keep the exact instance fenced for 100 years. Automatic removal is never
-	// part of handoff; operators must first stop/reconcile the quarantined node.
+	// Ceph utime_t stores unsigned 32-bit seconds. An unchecked 100-year
+	// duration exceeds its range and depends on a build's saturation behavior.
+	// Keep a bounded 10-year fence, renewed from committed intents every day.
+	expiry, err := quarantineSeconds(time.Now())
+	if err != nil {
+		return err
+	}
 	if err = check(); err != nil {
 		return err
 	}
-	if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, "3153600000")...); err != nil {
+	if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
 		return err
 	}
 	if err = m.waitCephFSBlocklists(cfg, w.Address); err != nil {
@@ -204,9 +210,56 @@ func (m *Manager) Fence(c Catalog, w Writer, check func() error) error {
 		if err = check(); err != nil {
 			return err
 		}
-		if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, "3153600000")...); err != nil {
+		if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
 			return err
 		}
+	}
+	if err = m.waitCephFSBlocklists(cfg, w.Address); err != nil {
+		return err
+	}
+	return check()
+}
+
+func quarantineSeconds(now time.Time) (string, error) {
+	const seconds = 315360000
+	if now.Unix() < 0 || now.Unix() > int64(^uint32(0))-seconds {
+		return "", fmt.Errorf("Ceph quarantine expiry exceeds native timestamp range")
+	}
+	return strconv.FormatInt(seconds, 10), nil
+}
+
+// RefreshFence reasserts only an immutable committed old instance. It does
+// not evict or discover any current/new writer on the same remote object.
+func (m *Manager) RefreshFence(c Catalog, w Writer, check func() error) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if !c.AutoFailover || c.Spec.Provider == ProviderLocal || ValidateWriter(c, w) != nil || check == nil {
+		return fmt.Errorf("refresh requires committed bound writer")
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	backend, err := m.backend(c.Spec)
+	if err != nil {
+		return err
+	}
+	if backend != c.Backend {
+		return fmt.Errorf("fenced object identity changed")
+	}
+	cfg, err := m.CephConfig()
+	if err != nil {
+		return err
+	}
+	expiry, err := quarantineSeconds(time.Now())
+	if err != nil {
+		return err
+	}
+	if err = check(); err != nil {
+		return err
+	}
+	if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
+		return err
 	}
 	if err = m.waitCephFSBlocklists(cfg, w.Address); err != nil {
 		return err

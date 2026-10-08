@@ -304,6 +304,33 @@ func (m *Manager) Detach(name string) error {
 	if err != nil {
 		return err
 	}
+	// Detach is idempotent: runtime cleanup may already have removed this
+	// mount. Acquisition here would create a NEW unfenced CephFS client,
+	// overwrite old writer evidence, then collide with the successor's lock.
+	if spec.Provider != ProviderLocal && !mounted(m.mountPath(name)) {
+		if spec.Provider != ProviderCephRBD {
+			return nil
+		}
+		if _, e := os.Stat(m.devicePath(name)); os.IsNotExist(e) {
+			return nil
+		} else if e != nil {
+			return e
+		}
+		guard, e := m.guardSpec(spec)
+		if e != nil {
+			return e
+		}
+		defer guard()
+		fd, e := syscall.Open(filepath.Join(m.diskDir(name), "control", "lock"), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if e != nil {
+			return e
+		}
+		defer syscall.Close(fd)
+		if e = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+			return fmt.Errorf("unmounted RBD is retained by a live attachment: %w", e)
+		}
+		return m.detach(name)
+	}
 	guard, err := m.guardSpec(spec)
 	if err != nil {
 		return err

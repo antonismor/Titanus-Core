@@ -308,6 +308,12 @@ func TestNativeAutomaticStorageFailover(t *testing.T) {
 			if e != nil || rolled.UserMapping != oldState.UserMapping {
 				t.Fatal("rollout changed persisted Disk ownership", e)
 			}
+			if _, e = stale.WriteAt([]byte("LATE_CORRUPTION"), 0); e == nil {
+				t.Fatal("stale native writer became writable after rollout")
+			}
+			if data, e = os.ReadFile(filepath.Join(freshPath, "stale")); e != nil || len(data) != 0 {
+				t.Fatal("late stale write changed successor data", e, string(data))
+			}
 			t.Log("TITANUS_NATIVE_AUTOMATIC_STORAGE_FAILOVER_OK", provider)
 			// Close the open blocked client before fixture TempDir cleanup.
 			stale.Close()
