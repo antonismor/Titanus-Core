@@ -88,7 +88,11 @@ titanus disk fence DISK SESSION_ID OBSERVED_ADDRESS
 
 The adapter verifies both blocklist-on-eviction and blocklist-on-timeout settings,
 then requests MDS eviction of that exact client. MDS's OSD-map epoch barrier
-prevents the old client's writes before another client can acquire the lock.
+is supplemented by querying every registered OSD's actual applied blocklist.
+Fencing and every new writable/maintenance attachment wait for all committed
+instance blocklists to be applied before exporting data; an MDS flock grant
+alone is insufficient. A down/unreachable registered OSD denies this first
+profile's CephFS attachment/fencing, rather than claiming a completed fence.
 Do not remove the blocklist entry or remount the fenced node until its old Units
 are stopped and its runtime state is reconciled. Fencing one kernel session
 fences every operation using that session; `noshare` limits the blast radius.

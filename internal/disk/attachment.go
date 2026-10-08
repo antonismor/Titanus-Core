@@ -98,6 +98,16 @@ func (m *Manager) acquire(name, unit, run string) (*Attachment, error) {
 		f.Close()
 		return nil, fmt.Errorf("Disk %s is owned by a live attachment: %w", name, err)
 	}
+	if spec.Provider == ProviderCephFS {
+		cfg, e := m.CephConfig()
+		if e == nil {
+			e = m.waitCephFSBlocklists(cfg, "")
+		}
+		if e != nil {
+			f.Close()
+			return nil, e
+		}
+	}
 	var token [24]byte
 	if _, err = rand.Read(token[:]); err != nil {
 		f.Close()

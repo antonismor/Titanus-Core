@@ -190,6 +190,9 @@ func TestNativeCeph(t *testing.T) {
 				if _, err = stale.WriteAt([]byte("corrupt"), 0); err == nil {
 					t.Fatal("fenced writer still wrote to real CephFS")
 				}
+				if data, e := os.ReadFile(filepath.Join(fresh.Path, "stale")); e != nil || len(data) != 0 {
+					t.Fatal("stale writer changed successor data", e, string(data))
+				}
 				if err = os.WriteFile(filepath.Join(fresh.Path, "post-fence"), []byte("safe"), 0600); err != nil {
 					t.Fatal(err)
 				}
