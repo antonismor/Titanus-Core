@@ -17,6 +17,15 @@ PY
 version=$(cat release-version.txt)
 tag="v$version"
 repo="$GITHUB_REPOSITORY"
+# Draft releases may not materialize their tag until publication. Create and
+# verify the immutable lightweight tag first, without moving an existing tag.
+refs=$(gh api "repos/$repo/git/matching-refs/tags/$tag")
+exists=$(printf '%s' "$refs" | python3 -c 'import json,sys; print(any(r["ref"]=="refs/tags/"+sys.argv[1] for r in json.load(sys.stdin)))' "$tag")
+if [[ "$exists" == False ]]; then
+ gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$tag" -f "sha=$TITANUS_VERIFIED_SHA" >/dev/null
+fi
+actual=$(gh api "repos/$repo/commits/$tag" --jq .sha)
+if [[ "$actual" != "$TITANUS_VERIFIED_SHA" ]]; then echo 'Existing version tag points to a different revision; refusing replacement.' >&2; exit 1; fi
 if gh release view "$tag" --repo "$repo" --json tagName,isDraft >/dev/null 2>&1; then
  actual=$(gh api "repos/$repo/commits/$tag" --jq .sha)
  if [[ "$actual" != "$TITANUS_VERIFIED_SHA" ]]; then echo 'Existing version points to a different revision; refusing replacement.' >&2; exit 1; fi
