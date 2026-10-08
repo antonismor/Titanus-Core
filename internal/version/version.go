@@ -6,10 +6,10 @@ import (
 	"runtime"
 )
 
-var Version = "0.4.0-rc.2"
+var Version = "0.4.0-rc.3"
 var Revision = "unknown"
 
-const StateProfile = "titanus-state/v2"
+const StateProfile = "titanus-state/v3"
 
 type Build struct {
 	Version      string `json:"version"`

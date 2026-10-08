@@ -2,6 +2,7 @@ package identity
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -11,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +25,14 @@ import (
 // The client owns the replacement private key; no CA private key leaves the
 // controller. The CSR cannot expand privileges or impersonate another server.
 func (a Authority) RenewCSR(current *x509.Certificate, request []byte) ([]byte, error) {
+	return a.RenewCSRWithSerial(current, request, randomSerial())
+}
+
+// RenewCSRWithSerial is used with a quorum-committed issuance sequence.
+func (a Authority) RenewCSRWithSerial(current *x509.Certificate, request []byte, serial *big.Int) ([]byte, error) {
+	if serial == nil || serial.Sign() <= 0 {
+		return nil, fmt.Errorf("positive certificate serial required")
+	}
 	principal, err := CertificatePrincipal(current)
 	if err != nil {
 		return nil, err
@@ -46,7 +56,7 @@ func (a Authority) RenewCSR(current *x509.Certificate, request []byte) ([]byte, 
 		return nil, err
 	}
 	now := time.Now().UTC()
-	template := &x509.Certificate{SerialNumber: randomSerial(), Subject: pkix.Name{CommonName: principal.ID, Organization: []string{"Titanus", a.Realm}, OrganizationalUnit: []string{string(principal.Role)}}, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: append([]x509.ExtKeyUsage(nil), current.ExtKeyUsage...), DNSNames: append([]string(nil), current.DNSNames...), IPAddresses: current.IPAddresses}
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: principal.ID, Organization: []string{"Titanus", a.Realm}, OrganizationalUnit: []string{string(principal.Role)}}, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: append([]x509.ExtKeyUsage(nil), current.ExtKeyUsage...), DNSNames: append([]string(nil), current.DNSNames...), IPAddresses: current.IPAddresses}
 	if template.NotAfter.After(ca.NotAfter) {
 		template.NotAfter = ca.NotAfter
 	}
@@ -80,6 +90,19 @@ func RenewIfNeeded(client *http.Client, endpoint, caPath, certPath, keyPath stri
 	}
 	if time.Until(current.NotAfter) > 8*time.Hour {
 		return nil
+	}
+	if discovery, ok := client.Transport.(interface {
+		Discover(context.Context, string) error
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
+		if client.Timeout <= 0 {
+			cancel()
+			ctx, cancel = context.WithCancel(context.Background())
+		}
+		defer cancel()
+		if err := discovery.Discover(ctx, endpoint); err != nil {
+			return err
+		}
 	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

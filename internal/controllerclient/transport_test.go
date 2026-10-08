@@ -1,6 +1,7 @@
 package controllerclient
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -76,5 +77,37 @@ func TestRejectUnconfiguredOriginsAndBadConfiguration(t *testing.T) {
 	req, _ := http.NewRequest("GET", "https://other:9443/v1/realm/state", nil)
 	if _, e := tr.RoundTrip(req); e == nil {
 		t.Fatal("unconfigured origin accepted")
+	}
+}
+
+func TestRenewalDiscoveryAndAmbiguousSigningAreSeparate(t *testing.T) {
+	var posts int
+	tr, err := New(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "GET" {
+			if r.URL.Host == "one:9443" {
+				return nil, errors.New("dead controller")
+			}
+			return response(200), nil
+		}
+		posts++
+		if r.URL.Host != "two:9443" {
+			t.Fatal("did not use discovered live controller")
+		}
+		return response(503), nil // Unmarked application error must not replay.
+	}), "https://one:9443,https://two:9443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tr.Discover(context.Background(), "https://one:9443"); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("POST", "https://one:9443/v1/identity/renew", strings.NewReader("CSR"))
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if posts != 1 {
+		t.Fatal("ambiguous signing was replayed")
 	}
 }

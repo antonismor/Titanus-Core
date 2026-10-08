@@ -18,6 +18,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/durable"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
 )
 
@@ -48,6 +49,7 @@ type RealmNetwork struct {
 }
 
 type Node struct {
+	PowerQuarantined   bool               `json:"power_quarantined,omitempty"`
 	StorageQuarantined bool               `json:"storage_quarantined,omitempty"`
 	ID                 string             `json:"id"`
 	Address            string             `json:"address"`
@@ -102,6 +104,7 @@ const (
 )
 
 type Route struct {
+	Gateway    string    `json:"gateway,omitempty"`
 	Name       string    `json:"name"`
 	Fleet      string    `json:"fleet"`
 	ServiceIP  string    `json:"service_ip,omitempty"`
@@ -154,6 +157,10 @@ type Assignment struct {
 }
 
 type State struct {
+	Gateways         map[string]Gateway               `json:"gateways,omitempty"`
+	GatewayTransfers map[string]GatewayTransfer       `json:"gateway_transfers,omitempty"`
+	Sources          map[string]SourceRecord          `json:"sources,omitempty"`
+	PKI              identity.Policy                  `json:"pki,omitempty"`
 	Disks            map[string]disk.Catalog          `json:"disks,omitempty"`
 	UnitMappings     map[string]unitruntime.IDMapping `json:"unit_mappings,omitempty"`
 	StorageFailovers map[string]StorageFailover       `json:"storage_failovers,omitempty"`
@@ -219,6 +226,7 @@ func (s *Store) UpsertNode(node Node) error {
 		}
 	}
 	if existed {
+		node.PowerQuarantined = existing.PowerQuarantined
 		node.StorageQuarantined = existing.StorageQuarantined
 		if node.FabricAddress == "" {
 			node.FabricAddress = existing.FabricAddress
@@ -551,6 +559,16 @@ func (s *Store) PutRoute(route Route) (Route, error) {
 	}
 	if ip := net.ParseIP(route.ListenIP); ip == nil {
 		return Route{}, fmt.Errorf("invalid Route listen IP %q", route.ListenIP)
+	}
+	if route.Gateway != "" {
+		g, ok := s.data.Gateways[route.Gateway]
+		if !ok {
+			return Route{}, fmt.Errorf("unknown Route Gateway")
+		}
+		ip, _, _ := net.ParseCIDR(g.VIP)
+		if route.ListenIP != ip.String() {
+			return Route{}, fmt.Errorf("managed Route must listen on its Gateway VIP")
+		}
 	}
 	if route.Protocol == "" {
 		route.Protocol = "tcp"

@@ -24,13 +24,15 @@ type NodeRuntime interface {
 }
 
 type Controller struct {
-	Storage  StorageFencer
-	Store    *realm.Store
-	Nodes    NodeRuntime
-	Sources  *source.Manager
-	Interval time.Duration
-	samples  map[string]unitruntime.Usage
-	Now      func() time.Time
+	ResolveSource           func(realm.SourceRecord) error
+	RequirePublishedSources bool
+	Storage                 StorageFencer
+	Store                   *realm.Store
+	Nodes                   NodeRuntime
+	Sources                 *source.Manager
+	Interval                time.Duration
+	samples                 map[string]unitruntime.Usage
+	Now                     func() time.Time
 }
 
 func (c *Controller) Run(ctx context.Context) {
@@ -102,7 +104,7 @@ func (c *Controller) Once() error {
 }
 func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assignment realm.Assignment) {
 	node, ok := state.Nodes[assignment.NodeID]
-	if !ok || node.State != realm.NodeReady || node.StorageQuarantined {
+	if !ok || node.State != realm.NodeReady || (node.StorageQuarantined || node.PowerQuarantined) {
 		return
 	}
 	if err := c.Store.CheckLeader(); err != nil {
@@ -146,6 +148,10 @@ func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assign
 		return
 	}
 	if err := realm.BindSecrets(state, revision.Template, &spec); err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	if err := c.verifySource(spec.Source); err != nil {
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 		return
 	}
@@ -200,7 +206,7 @@ func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assig
 		return err
 	}
 	node, ok := state.Nodes[assignment.NodeID]
-	if !ok || node.State == realm.NodeUnreachable || node.StorageQuarantined || node.Address == "" {
+	if !ok || node.State == realm.NodeUnreachable || (node.StorageQuarantined || node.PowerQuarantined) || node.Address == "" {
 		fleet, exists := state.Fleets[assignment.Fleet]
 		if !exists {
 			return fmt.Errorf("deleted Fleet requires acknowledged node cleanup")
@@ -291,4 +297,28 @@ func normalizeAssignments(items []realm.Assignment) map[string]string {
 		out[item.ID] = item.NodeID + ":" + string(item.State) + ":" + item.StartAfter.UTC().Format(time.RFC3339Nano)
 	}
 	return out
+}
+
+func (c *Controller) verifySource(name string) error {
+	ref, ok := c.Store.Snapshot().Sources[name]
+	if !ok {
+		if c.RequirePublishedSources {
+			return fmt.Errorf("Source identity not yet published")
+		}
+		return nil
+	}
+	if c.ResolveSource != nil {
+		return c.ResolveSource(ref)
+	}
+	if c.Sources == nil {
+		return fmt.Errorf("local Source unavailable")
+	}
+	digest, err := c.Sources.Identity(name)
+	if err != nil {
+		return err
+	}
+	if digest != ref.Digest {
+		return fmt.Errorf("local Source differs from committed identity")
+	}
+	return nil
 }

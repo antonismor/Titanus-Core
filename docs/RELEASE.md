@@ -1,6 +1,6 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.2**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.3**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
@@ -8,7 +8,7 @@ or install anything on user servers.
 ## Build and packages
 
 `make build` embeds a common version, exact Git revision, Linux architecture and
-`titanus-state/v2` profile in all four binaries. Builds are static Go binaries
+`titanus-state/v3` profile in all four binaries. Builds are static Go binaries
 with trimpath and VCS stamping disabled (the revision is explicit). `make release`
 produces a native-architecture `dist/titanus-VERSION-linux-ARCH.tar.gz` plus its
 SHA-256 file. It includes the binaries, systemd units, verified installer,
@@ -50,10 +50,10 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.2-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.2-linux-amd64.tar.gz
-sudo bash titanus-0.4.0-rc.2-linux-amd64/scripts/install-release.sh \
-  --bundle "$PWD/titanus-0.4.0-rc.2-linux-amd64"
+sha256sum -c titanus-0.4.0-rc.3-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.3-linux-amd64.tar.gz
+sudo bash titanus-0.4.0-rc.3-linux-amd64/scripts/install-release.sh \
+  --bundle "$PWD/titanus-0.4.0-rc.3-linux-amd64"
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -120,7 +120,7 @@ Candidate 2 adds opt-in replicated Disk catalogs, exact native writer identities
 durable automatic remote fencing/transfer, node quarantine and cluster-owned
 UID/GID mappings. See STORAGE_FAILOVER.md. The state profile is now v2: the
 versioned installer deliberately rejects cross-profile activation/rollback,
-including rc.1 to rc.2. A tested cross-version migration is phase-2 M5 work;
+including rc.1 to rc.2 and rc.2 to rc.3. A tested cross-version migration is phase-2 M5 work;
 do not run old controller binaries against catalogs or new mapping state.
 Same-profile native installation/upgrade/rollback is still tested using distinct
 fixture version identities, not a claim of a mixed-version cluster upgrade.

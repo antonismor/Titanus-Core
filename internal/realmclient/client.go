@@ -74,6 +74,14 @@ func (c *Client) RevokeLease(address, id, token string) error {
 }
 
 func (c *Client) EnsureSource(address, name string, local *source.Manager) error {
+	expected := ""
+	if local != nil {
+		var e error
+		expected, e = local.Identity(name)
+		if e != nil {
+			return e
+		}
+	}
 	head, err := http.NewRequest(http.MethodHead, endpoint(address)+"/v1/node/sources/"+url.PathEscape(name), nil)
 	if err != nil {
 		return err
@@ -82,6 +90,9 @@ func (c *Client) EnsureSource(address, name string, local *source.Manager) error
 	if err == nil {
 		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+			if expected != "" && resp.Header.Get("X-Titanus-Source-SHA256") != expected {
+				return fmt.Errorf("remote Source %s identity differs", name)
+			}
 			return nil
 		}
 		if resp.StatusCode != http.StatusNotFound {
@@ -106,6 +117,7 @@ func (c *Client) EnsureSource(address, name string, local *source.Manager) error
 		return err
 	}
 	req.Header.Set("Content-Type", "application/vnd.titanus.source+gzip")
+	req.Header.Set("X-Titanus-Source-SHA256", expected)
 	resp, err = c.http.Do(req)
 	if err != nil {
 		_ = reader.Close()

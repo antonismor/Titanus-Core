@@ -29,7 +29,7 @@ jobs:
         run: go vet ./...
 
       - name: Race checks
-        run: go test -race ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient
+        run: go test -race ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
 
       - name: Cross-build native ARM64 runtime
         run: |
@@ -92,6 +92,9 @@ jobs:
 
       - name: Kill and recover real HA daemons
         run: sudo env "PATH=$PATH" TITANUS_HA_DAEMON_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" go test ./cmd/titanusd -run TestNativeHADaemonCrash -count=1 -v -timeout 180s
+
+      - name: Verify native Gateway VIP withdrawal and retired-epoch restart
+        run: sudo env "PATH=$PATH" TITANUS_GATEWAY_VIP_TEST=1 go test ./internal/route -run TestNativeGatewayVIP -count=1 -v -timeout 90s
 
       - name: Exercise native Unit runtime
         run: |
