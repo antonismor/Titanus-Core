@@ -94,6 +94,9 @@ func (c *Controller) reconcileTasks() error {
 			if e := realm.BindSecrets(state, t.Template, &spec); e != nil {
 				return e
 			}
+			if e := c.verifySource(spec.Source); e != nil {
+				continue
+			}
 			if e := c.Nodes.EnsureSource(node.Address, spec.Source, c.Sources); e != nil {
 				continue
 			}

@@ -85,6 +85,7 @@ func (s *Server) certificateRenewal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Authority == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		w.Header().Set("X-Titanus-Rejected", "true")
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("renewal requires an authenticated controller endpoint"))
 		return
 	}

@@ -3,6 +3,7 @@
 package controllerclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,25 @@ type Transport struct {
 	origins   []*url.URL
 	mu        sync.Mutex
 	preferred int
+}
+
+// Discover probes a read before a new mutation; it never replays that mutation
+// after an ambiguous transport error. Only configured origins can be selected.
+func (t *Transport) Discover(ctx context.Context, endpoint string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/v1/identity/crl", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := t.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("controller discovery: %s", resp.Status)
+	}
+	return nil
 }
 
 func New(base http.RoundTripper, endpoints string) (*Transport, error) {
@@ -98,11 +118,6 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, fmt.Errorf("controller write outcome unknown: %w", err)
 		}
 		rejected := resp.StatusCode == http.StatusServiceUnavailable && resp.Header.Get("X-Titanus-Rejected") == "true"
-		// Signing remains on the PKI authority; authenticated CSR renewal may probe
-		// other configured controllers after an explicit pre-execution 503.
-		if path == "/v1/identity/renew" && resp.StatusCode == http.StatusServiceUnavailable {
-			rejected = true
-		}
 		if rejected {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			_ = resp.Body.Close()

@@ -24,16 +24,15 @@ type NodeRuntime interface {
 }
 
 type Controller struct {
-	ReconcileGateways func() error
-	ResolveSource     func(realm.SourceRecord) error
-	PublishSource     func(string) error
-	Storage           StorageFencer
-	Store             *realm.Store
-	Nodes             NodeRuntime
-	Sources           *source.Manager
-	Interval          time.Duration
-	samples           map[string]unitruntime.Usage
-	Now               func() time.Time
+	ResolveSource           func(realm.SourceRecord) error
+	RequirePublishedSources bool
+	Storage                 StorageFencer
+	Store                   *realm.Store
+	Nodes                   NodeRuntime
+	Sources                 *source.Manager
+	Interval                time.Duration
+	samples                 map[string]unitruntime.Usage
+	Now                     func() time.Time
 }
 
 func (c *Controller) Run(ctx context.Context) {
@@ -63,41 +62,6 @@ func (c *Controller) Once() error {
 	}
 	if err := c.maintainStorageFences(); err != nil {
 		return err
-	}
-	if c.PublishSource != nil {
-		state := c.Store.Snapshot()
-		names := map[string]bool{}
-		for _, f := range state.Fleets {
-			names[f.Template.Source] = true
-			for _, h := range f.History {
-				names[h.Template.Source] = true
-			}
-		}
-		for _, task := range state.Tasks {
-			if !task.Terminal() {
-				names[task.Template.Source] = true
-			}
-		}
-		for name := range names {
-			if _, ok := state.Sources[name]; !ok {
-				if err := c.PublishSource(name); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	if c.ResolveSource != nil {
-		for _, ref := range c.Store.Snapshot().Sources {
-			if err := c.ResolveSource(ref); err != nil {
-				return err
-			}
-		}
-	}
-	if c.ReconcileGateways != nil {
-		if err := c.ReconcileGateways(); err != nil {
-			return err
-		}
 	}
 	if err := c.reconcileTasks(); err != nil {
 		return err
@@ -184,6 +148,10 @@ func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assign
 		return
 	}
 	if err := realm.BindSecrets(state, revision.Template, &spec); err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
+	if err := c.verifySource(spec.Source); err != nil {
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 		return
 	}
@@ -329,4 +297,28 @@ func normalizeAssignments(items []realm.Assignment) map[string]string {
 		out[item.ID] = item.NodeID + ":" + string(item.State) + ":" + item.StartAfter.UTC().Format(time.RFC3339Nano)
 	}
 	return out
+}
+
+func (c *Controller) verifySource(name string) error {
+	ref, ok := c.Store.Snapshot().Sources[name]
+	if !ok {
+		if c.RequirePublishedSources {
+			return fmt.Errorf("Source identity not yet published")
+		}
+		return nil
+	}
+	if c.ResolveSource != nil {
+		return c.ResolveSource(ref)
+	}
+	if c.Sources == nil {
+		return fmt.Errorf("local Source unavailable")
+	}
+	digest, err := c.Sources.Identity(name)
+	if err != nil {
+		return err
+	}
+	if digest != ref.Digest {
+		return fmt.Errorf("local Source differs from committed identity")
+	}
+	return nil
 }

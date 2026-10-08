@@ -47,6 +47,11 @@ unpublished Source in an HA Fleet/Task also performs this publication step;
 all voters must be reachable for a **new** Source identity. Published Sources
 continue to operate with a surviving quorum.
 
+Publication/recovery and Gateway fencing run outside workload dispatch. An
+unavailable Source blocks its own workloads while unrelated leases continue.
+Leaf renewal first discovers a reachable configured controller with a read;
+an ambiguous signing POST is never replayed automatically.
+
 Identity covers regular bytes, names, directory/file modes, UID/GID ownership
 and symlink text; timestamps do not affect identity. Names are immutable: publish
 a new versioned name for changed content. Existing conflicting copies are never

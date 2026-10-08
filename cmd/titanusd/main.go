@@ -247,13 +247,10 @@ func main() {
 			nodes = &reconcile.GuardedNodes{NodeRuntime: clusterClient, Check: quorum.CheckLeader}
 		}
 		controller := &reconcile.Controller{Storage: api.Disks, Store: store, Nodes: nodes, Sources: sourceManager, Interval: 5 * time.Second}
-		controller.ReconcileGateways = api.ReconcileGateways
-		if len(sourcePeers) > 0 {
-			controller.PublishSource = func(name string) error { _, err := api.PublishSourceRecord(name); return err }
-		}
-		controller.ResolveSource = func(ref realm.SourceRecord) error {
-			return clusterClient.RecoverSource(ref, sourcePeers, sourceManager)
-		}
+		controller.RequirePublishedSources = quorum != nil
+		go api.MaintainSources(ctx)
+		go api.MaintainGateways(ctx)
+
 		go controller.Run(ctx)
 		log.Printf("Titanus Fleet reconciler enabled")
 	}

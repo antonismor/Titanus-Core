@@ -2,6 +2,7 @@ package identity
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -89,6 +90,19 @@ func RenewIfNeeded(client *http.Client, endpoint, caPath, certPath, keyPath stri
 	}
 	if time.Until(current.NotAfter) > 8*time.Hour {
 		return nil
+	}
+	if discovery, ok := client.Transport.(interface {
+		Discover(context.Context, string) error
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), client.Timeout)
+		if client.Timeout <= 0 {
+			cancel()
+			ctx, cancel = context.WithCancel(context.Background())
+		}
+		defer cancel()
+		if err := discovery.Discover(ctx, endpoint); err != nil {
+			return err
+		}
 	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

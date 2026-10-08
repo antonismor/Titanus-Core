@@ -1,12 +1,32 @@
 package controlapi
 
 import (
+	"context"
 	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 )
+
+func (s *Server) MaintainGateways(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		if s.Store.CheckLeader() == nil {
+			if err := s.ReconcileGateways(); err != nil {
+				log.Printf("Gateway failover pending: %v", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
 
 type GatewayRuntime interface{ Withdraw(realm.Gateway) error }
 type GatewayClient interface {
