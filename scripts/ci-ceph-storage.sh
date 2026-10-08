@@ -5,6 +5,8 @@ root=$(mktemp -d /tmp/titanus-ceph.XXXXXX)
 conf="$root/ceph.conf"
 export CEPH_ARGS="--conf=$conf"
 pids=()
+ulimit -c unlimited
+echo "$root/core.%e.%p" > /proc/sys/kernel/core_pattern
 cleanup() {
   status=$?
   if (( status != 0 )); then
@@ -55,8 +57,9 @@ ceph osd new "$osd_uuid"
 truncate -s 4G "$root/osd.0/block"
 if ! ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf"; then
   lscpu
-  gdb -batch -ex run -ex 'thread apply all bt' -ex 'x/8i $pc' --args \
-    ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf" || true
+  for core in "$root"/core.ceph-osd.*; do
+    gdb -batch -ex 'thread apply all bt' -ex 'x/8i $pc' /usr/bin/ceph-osd "$core" || true
+  done
   exit 1
 fi
 ceph osd crush add osd.0 1 root=default host=ci
