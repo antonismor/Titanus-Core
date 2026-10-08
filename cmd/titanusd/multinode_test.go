@@ -107,6 +107,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		run("ip", "-n", names[i], "addr", "add", ips[i]+"/24", "dev", "eth0")
 		run("ip", "-n", names[i], "link", "set", "eth0", "up")
 		run("ip", "-n", names[i], "link", "set", "lo", "up")
+		run("ip", "-n", names[i], "route", "add", "default", "via", "10.248.0.1")
 		role := identity.RoleNode
 		if i < 3 {
 			role = identity.RoleController
@@ -271,6 +272,20 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 	if len(used) != 2 {
 		t.Fatal("workload did not cross two execution nodes")
 	}
+	// Pin the destination to the OTHER worker. Service load balancing alone
+	// could select a local backend and would not prove VXLAN transport.
+	remoteBackend := func(version string) bool {
+		for _, a := range snapshot().Assignments {
+			if a.NodeID == "node-3" && a.State == realm.AssignmentActive && a.NetworkAddress != "" {
+				out, e := exec.Command("ip", "netns", "exec", names[4], "curl", "-f", "-s", "--max-time", "2", "http://"+a.NetworkAddress+":8080/ready").CombinedOutput()
+				if e == nil && string(out) == version {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	wait(20*time.Second, func() bool { return remoteBackend("v1") })
 	route := realm.Route{Name: "web", Fleet: "web", ListenPort: 18080, TargetPort: 8080}
 	var stored realm.Route
 	if e = request(leader, "POST", "/v1/realm/routes", route, &stored); e != nil {
@@ -286,6 +301,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		t.Fatal(e)
 	}
 	wait(50*time.Second, func() bool { return complete(2) })
+	wait(20*time.Second, func() bool { return remoteBackend("v2") })
 	wait(20*time.Second, func() bool { return service("v2") })
 	fleet.Template.Command = []string{"/bin/rollout-app", "broken"}
 	if e = request(leader, "POST", "/v1/realm/fleets", fleet, nil); e != nil {
