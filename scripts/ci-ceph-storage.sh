@@ -15,10 +15,21 @@ echo "$root/core.%e.%p" > /proc/sys/kernel/core_pattern
 cleanup() {
   status=$?
   if (( status != 0 )); then
-    ceph -s || true
+    timeout 10 ceph -s || true
     tail -n 80 "$root"/*.stdout "$root"/*.log || true
   fi
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+  # A daemon can wait for its already-stopped peers during shutdown. Bound
+  # fixture teardown independently of the storage test's pass/fail status.
+  for attempt in $(seq 1 10); do
+    running=0
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then running=1; fi
+    done
+    if (( running == 0 )); then break; fi
+    sleep 1
+  done
+  for pid in "${pids[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
   wait || true
 }
 trap cleanup EXIT
@@ -83,8 +94,4 @@ ceph fs status
 modprobe rbd
 modprobe ceph
 export TITANUS_CEPH_TEST=1 TITANUS_CEPH_CONF="$conf"
-if ! go test ./internal/disk -run '^TestNativeCeph' -count=1 -v -timeout 12m; then
-  ceph -s || true
-  tail -n 80 "$root"/*.stdout "$root"/*.log || true
-  exit 1
-fi
+go test ./internal/disk -run '^TestNativeCeph' -count=1 -v -timeout 12m
