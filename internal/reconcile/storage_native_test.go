@@ -311,7 +311,9 @@ func TestNativeAutomaticStorageFailover(t *testing.T) {
 			t.Log("TITANUS_NATIVE_AUTOMATIC_STORAGE_FAILOVER_OK", provider)
 			// Close the open blocked client before fixture TempDir cleanup.
 			stale.Close()
-			old.runtime.Stop(a.ID, time.Second)
+			if _, e = old.runtime.Stop(a.ID, 10*time.Second); e != nil {
+				t.Fatal("old fenced workload stop", e)
+			}
 			if e = old.disks.Detach(name); e != nil {
 				t.Fatal("quarantined native detach", e)
 			}

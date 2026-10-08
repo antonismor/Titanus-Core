@@ -318,14 +318,14 @@ func (m *Manager) Detach(name string) error {
 		}
 		w, e := m.Writer(name)
 		if e != nil {
-			return err
+			return fmt.Errorf("detach acquisition denied (%v); no bound fenced writer: %w", err, e)
 		}
 		cfg, e := m.CephConfig()
 		if e != nil {
 			return e
 		}
 		if e = m.waitCephFSBlocklists(cfg, w.Address); e != nil {
-			return err
+			return fmt.Errorf("detach acquisition denied (%v); fence confirmation: %w", err, e)
 		}
 		return m.detach(name)
 	}
