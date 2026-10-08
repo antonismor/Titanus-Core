@@ -11,6 +11,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
+	"github.com/antonismor/Titanus-Core/internal/observe"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -23,14 +24,15 @@ type LeaderGate interface {
 }
 
 type Server struct {
-	Disks     *disk.Manager
-	Consensus LeaderGate
-	Store     *realm.Store
-	Runtime   *unitruntime.Manager
-	Sources   *source.Manager
-	Leases    *lease.Manager
-	CAPath    string
-	Authority *identity.Authority
+	Observations *observe.Recorder
+	Disks        *disk.Manager
+	Consensus    LeaderGate
+	Store        *realm.Store
+	Runtime      *unitruntime.Manager
+	Sources      *source.Manager
+	Leases       *lease.Manager
+	CAPath       string
+	Authority    *identity.Authority
 }
 
 type PulseRequest struct {
@@ -43,6 +45,9 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/metrics", s.authorize(s.metrics))
+	mux.HandleFunc("/v1/diagnostics", s.authorize(s.diagnostics))
+	mux.HandleFunc("/v1/events", s.authorize(s.events))
 	mux.HandleFunc("/v1/node/disks", s.authorizeDisk(s.disks))
 	mux.HandleFunc("/v1/node/disks/", s.authorizeDisk(s.diskAction))
 	mux.HandleFunc("/v1/realm/consensus", s.authorize(func(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +250,22 @@ func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
+	}
+	if r.Method == http.MethodGet && action == "logs" && len(parts) == 2 {
+		p, ok := identity.RequestPrincipal(r)
+		if !ok || p.Role != identity.RoleAdmin {
+			writeError(w, 403, fmt.Errorf("workload logs require admin role"))
+			return
+		}
+		data, err := s.Runtime.ReadLogs(id)
+		if err != nil {
+			writeError(w, 503, fmt.Errorf("workload logs unavailable"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(data)
+		return
 	}
 	if r.Method == http.MethodGet && action == "" {
 		spec, state, err := s.Runtime.Inspect(id)
@@ -637,7 +658,7 @@ func methodNotAllowed(w http.ResponseWriter) {
 }
 
 func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return s.trace(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := identity.RequestPrincipal(r)
 		if !ok || !identity.Allowed(principal, r.Method, r.URL.Path) {
 			writeError(w, http.StatusForbidden, fmt.Errorf("role does not permit this operation"))
@@ -652,5 +673,5 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 		next(w, r)
-	}
+	})
 }

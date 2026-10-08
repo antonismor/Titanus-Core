@@ -82,6 +82,9 @@ func Allowed(p Principal, method, path string) bool {
 	if p.Role == RoleAdmin {
 		return true
 	}
+	if method == http.MethodGet && (path == "/v1/metrics" || path == "/v1/diagnostics" || path == "/v1/events") {
+		return p.Role == RoleController
+	}
 	if method == http.MethodGet && (path == "/v1/health" || path == "/v1/version" || path == "/v1/realm/state" || path == "/v1/identity/crl") {
 		return p.Role == RoleNode || p.Role == RoleController
 	}

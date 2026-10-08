@@ -36,6 +36,25 @@ func New(socketPath string) *Client {
 	}
 }
 
+func (c *Client) Observe(kind string) ([]byte, error) {
+	if kind != "metrics" && kind != "diagnostics" && kind != "events" {
+		return nil, fmt.Errorf("invalid observation endpoint")
+	}
+	resp, err := c.http.Get(c.base + "/v1/" + kind)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("diagnostics unavailable (HTTP %d): %s", resp.StatusCode, data)
+	}
+	return data, nil
+}
+
 func (c *Client) ListPolicies() ([]realm.NetworkPolicy, error) {
 	var policies []realm.NetworkPolicy
 	err := c.do(http.MethodGet, "/v1/realm/policies", nil, &policies)

@@ -50,7 +50,11 @@ start_daemon
 after=$(unit inspect lifecycle | jq -c '.state | {pid,process,run_id}')
 test "$before" = "$after"
 unit inspect lifecycle | jq -e '.state.status == "ACTIVE"'
-unit stop lifecycle
+./bin/titanus diagnostics | jq -e '.incomplete == [] and .units.ACTIVE >= 1'
+./bin/titanus metrics | grep -q '^titanus_diagnostics_complete 1$'
+./bin/titanus events | jq -e 'any(.[]; .kind == "daemon.open")'
+curl --fail --silent --unix-socket /run/titanus/titanus.sock -X POST http://localhost/v1/node/units/lifecycle/stop | jq -e '.status == "STOPPED"'
+./bin/titanus events | jq -e 'any(.[]; .kind == "api.intent" and .method == "POST" and .operation == "node/units/stop") and any(.[]; .kind == "api.result" and .status == 200 and .operation == "node/units/stop") and any(.[]; .kind == "unit.state" and .state == "STOPPED")'
 unit inspect lifecycle | jq -e '.state.status == "STOPPED" and .state.exit_code == 23'
 test ! -d "$task_cgroup/lifecycle"
 unit delete lifecycle
