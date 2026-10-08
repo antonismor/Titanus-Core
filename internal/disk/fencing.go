@@ -4,13 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 )
 
 func (m *Manager) verifyCephFSFencing(cfg CephConfig) error {
+	out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "fs", "get", cfg.FSName, "--format", "json")...)
+	var fs struct {
+		MDSMap struct {
+			MaxMDS int `json:"max_mds"`
+		} `json:"mdsmap"`
+	}
+	if err != nil || json.Unmarshal([]byte(out), &fs) != nil || fs.MDSMap.MaxMDS != 1 {
+		return fmt.Errorf("CephFS fencing profile requires one active MDS rank")
+	}
 	for _, option := range []string{"mds_session_blocklist_on_evict", "mds_session_blocklist_on_timeout"} {
-		out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "config", "get", "mds", option)...)
-		if err != nil || strings.TrimSpace(out) != "true" {
+		// Ask the active daemon: monitor defaults omit local and runtime overrides.
+		out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "mds."+cfg.FSName+":0", "config", "get", option, "--format", "json")...)
+		var values map[string]json.RawMessage
+		if err != nil || json.Unmarshal([]byte(out), &values) != nil || (string(values[option]) != "true" && string(values[option]) != `"true"`) {
 			return fmt.Errorf("CephFS requires %s=true (query failure also denies attachment)", option)
 		}
 	}

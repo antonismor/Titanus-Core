@@ -88,6 +88,36 @@ func TestNativeCeph(t *testing.T) {
 			if err = m.Detach(name); err != nil {
 				t.Fatal(err)
 			}
+			if provider == ProviderCephRBD {
+				// Exercise the snapshot gap with NO kernel mapping: the distributed
+				// lifecycle guard must still exclude an independently persisted node.
+				release, e := m.radosGuard(name)
+				if e != nil {
+					t.Fatal(e)
+				}
+				competitor, e := second.Acquire(name, "node-b", "maintenance-gap")
+				release()
+				if e == nil {
+					competitor.Close()
+					t.Fatal("writer entered unmapped maintenance window")
+				}
+			}
+			if provider == ProviderCephFS {
+				// Effective MDS settings can differ from monitor defaults.
+				args := append(m.cephBaseArgs(cfg), "tell", "mds.cephfs:0", "config", "set", "mds_session_blocklist_on_evict")
+				if _, e := commandOutput("ceph", append(args, "false")...); e != nil {
+					t.Fatal(e)
+				}
+				competitor, e := second.Acquire(name, "node-b", "unsafe-policy")
+				_, resetErr := commandOutput("ceph", append(args, "true")...)
+				if resetErr != nil {
+					t.Fatal(resetErr)
+				}
+				if e == nil {
+					competitor.Close()
+					t.Fatal("unsafe active MDS override accepted")
+				}
+			}
 			successor, err := second.Acquire(name, "node-b", "run-b")
 			if err != nil {
 				t.Fatal("acknowledged failover failed", err)

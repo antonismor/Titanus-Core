@@ -20,8 +20,10 @@ copying their JSON specification. RBD requires the `exclusive-lock` image featur
 and uses a native librados lifecycle guard to serialize map/maintenance operations
 across nodes. It maps with `--exclusive`, `noshare`, `lock_on_read` and a bounded lock timeout.
 Cooperative lock transitions are disabled. CephFS uses MDS-mediated flock and
-mounts with `noshare,recover_session=no`; both MDS blocklisting policies must be
-true. An evicted client cannot silently reconnect its old mount.
+mounts with `noshare,recover_session=no`; both blocklisting policies on the active
+MDS must be true, including local/runtime overrides. Multiple active MDS ranks
+are rejected by this first profile. An evicted client cannot silently reconnect
+its old mount.
 
 Remote specifications and Ceph configuration must be pre-staged on participating
 nodes. `data/` is exported to Units; CephFS `.titanus-control/` remains outside
@@ -101,7 +103,8 @@ Disk specifications and snapshot catalogs are not part of the replicated Realm
 FSM. Remote Ceph remains the authority for native objects and their exclusion.
 
 The CI suite exercises native RBD/CephFS snapshots and independent restore,
-remote competing-writer denial, acknowledged node-to-node transfer, and actual
+remote competing-writer denial (including the unmapped RBD maintenance window),
+unsafe effective MDS policy rejection, acknowledged node-to-node transfer, and actual
 CephFS eviction with a still-open synchronous stale writer. Runtime tests kill
 the host monitor, recover a real mapped Unit, retain its attachment exclusion,
 then verify release and restore after stop. CI must pass on the exact final PR
