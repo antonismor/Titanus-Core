@@ -116,6 +116,7 @@ func TestNativeCeph(t *testing.T) {
 					t.Fatal(err)
 				}
 				var session uint64
+				candidates := 0
 				address := ""
 				for _, client := range clients {
 					if client.Metadata["root"] == spec.RemotePath {
