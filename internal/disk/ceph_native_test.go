@@ -46,6 +46,13 @@ func TestNativeCeph(t *testing.T) {
 			if err = second.ConfigureCeph(cfg); err != nil {
 				t.Fatal(err)
 			}
+			// After attachment/file defers close, remove the second client's native
+			// mount before TempDir cleanup; its evicted CephFS lock cannot reopen.
+			t.Cleanup(func() {
+				if e := second.detach(name); e != nil {
+					t.Error(e)
+				}
+			})
 			// Pre-stage the SAME remote identity on an independently persisted node.
 			spec, err = m.Inspect(name)
 			if err != nil {

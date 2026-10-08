@@ -4,6 +4,11 @@ set -euo pipefail
 root=$(mktemp -d /tmp/titanus-ceph.XXXXXX)
 conf="$root/ceph.conf"
 export CEPH_ARGS="--conf=$conf"
+# Ubuntu's ARM64 tcmalloc/libgcc unwinder faults on PAC during early allocation
+# stack collection. Keep native execution and ASLR; use its public FP unwinder.
+if [[ $(uname -m) == aarch64 ]]; then
+  export TCMALLOC_STACKTRACE_METHOD=generic_fp
+fi
 pids=()
 ulimit -c unlimited
 echo "$root/core.%e.%p" > /proc/sys/kernel/core_pattern

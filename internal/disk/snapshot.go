@@ -124,6 +124,9 @@ func (m *Manager) Restore(name, snap, target string) (Spec, error) {
 	if err != nil {
 		return Spec{}, err
 	}
+	if spec.Provider != ProviderLocal && spec.LayoutVersion != 1 {
+		return Spec{}, fmt.Errorf("legacy remote Disk requires offline migration before restore")
+	}
 	if _, err = os.Lstat(m.diskDir(target)); !os.IsNotExist(err) {
 		return Spec{}, fmt.Errorf("restore target already exists or cannot be inspected")
 	}

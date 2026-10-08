@@ -3,6 +3,9 @@
 Titanus owns its Disk adapter and invokes the public Ceph CLI. It does not run
 Docker, containerd, Podman or Kubernetes. The native CI cluster starts real
 MON/MGR/OSD/MDS daemons directly on AMD64 and ARM64 runners.
+The ephemeral ARM64 fixture selects tcmalloc's public `generic_fp` stack unwinder
+to avoid the Ubuntu package's PAC/libgcc backtrace crash. It retains native CPU
+execution and ASLR; Titanus runtime enforcement is tested with its usual settings.
 
 ## Attachment invariant
 

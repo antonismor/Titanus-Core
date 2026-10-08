@@ -21,7 +21,7 @@ func (m *Manager) verifyCephFSFencing(cfg CephConfig) error {
 		out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "mds."+cfg.FSName+":0", "config", "get", option, "--format", "json")...)
 		var values map[string]json.RawMessage
 		if err != nil || json.Unmarshal([]byte(out), &values) != nil || (string(values[option]) != "true" && string(values[option]) != `"true"`) {
-			return fmt.Errorf("CephFS requires %s=true (query failure also denies attachment)", option)
+			return fmt.Errorf("CephFS requires active %s=true (query failure also denies attachment): %v: %s", option, err, out)
 		}
 	}
 	return nil

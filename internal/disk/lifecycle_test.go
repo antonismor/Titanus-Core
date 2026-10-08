@@ -3,10 +3,26 @@ package disk
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 )
+
+func TestLegacyRemoteRestoreFailsBeforePublication(t *testing.T) {
+	for _, provider := range []Provider{ProviderCephRBD, ProviderCephFS} {
+		m := NewManager(t.TempDir())
+		if err := writeJSON(m.specPath("legacy"), Spec{Name: "legacy", Provider: provider, SizeBytes: 1024}, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Restore("legacy", "backup", "restored"); err == nil || !strings.Contains(err.Error(), "offline migration") {
+			t.Fatal("legacy data promoted without migration", err)
+		}
+		if _, err := os.Stat(m.diskDir("restored")); !os.IsNotExist(err) {
+			t.Fatal("legacy restore published target", err)
+		}
+	}
+}
 
 func TestOwnedDiskMaintenanceAndRestore(t *testing.T) {
 	m := NewManager(t.TempDir())
