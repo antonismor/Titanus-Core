@@ -177,9 +177,9 @@ secrets and an authenticated Command Center.
 
 Each subsystem has explicit operational limits in `docs/`; native AMD64/ARM64
 runtime and real Ceph failure tests are required in CI. Issue #8 records exact
-verified commits. Versioned release, multi-node failure and install/upgrade/
-rollback verification remain separate work; repository CI does not imply
-installation on user servers. The project should not yet be treated as a
+verified commits. Versioned release candidates and multi-node/install-upgrade-rollback verification
+are described in [Release and recovery](docs/RELEASE.md); repository CI does not
+imply installation on user servers. The project should not yet be treated as a
 production replacement for mature container or orchestration platforms.
 
 ## Build
@@ -291,7 +291,7 @@ leader loss, partition/rejoin, full log restart and snapshot recovery.
 See [Control-plane HA](docs/CONTROL_PLANE_HA.md) for configuration, migration and
 precise limits: 3/5 static voters, a 512 KiB Realm entry cap, Sources pre-staged on
 all controllers, designated-primary PKI signing and separate storage fencing.
-Versioned release and cross-node installation/failure validation are tracked separately in issue #8.
+Release-candidate verification includes isolated-node transport and failure tests; physical host/site acceptance remains separate.
 
 ## Mandatory native Unit isolation
 
@@ -334,3 +334,20 @@ secret metadata and audited administration. It includes responsive mobile layout
 See [Orchestration, encrypted secrets and Command Center](docs/ORCHESTRATION.md)
 for API/CLI examples, at-most-one dispatch semantics, CPU-only/disk-free scaling,
 HA key provisioning, immutable versions and retained-state capacity boundaries.
+
+## Native release candidates
+
+All four binaries report one version/revision/state profile. `make release`
+creates verified native Linux AMD64/ARM64 archives with manifests and SHA-256
+checksums. The versioned installer activates an immutable binary selection,
+retains the prior compatible release and preserves configuration, live Units and
+persistent data through install/upgrade/binary rollback checks. A publication
+workflow accepts only packages from successful main CI at the exact tested SHA.
+
+CI includes five isolated real daemon/agent endpoints, actual VXLAN Service
+traffic, rolling rollback, controller SIGKILL and execution-network loss with
+Pulse expiry and lease fencing. These nodes share a runner kernel; physical host
+reboot, site networking and hardware acceptance are not implied. See
+[Release and recovery](docs/RELEASE.md) for prerequisites, migration, key/state
+backups and the distinction between binary rollback and data/schema rollback.
+The initial version is `0.4.0-rc.1`, explicitly a release candidate.

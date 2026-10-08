@@ -100,6 +100,15 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		return nil, fmt.Errorf("Realm deployment blocked: %w", err)
 	}
 
+	// The legacy flat provisioner must never rewrite a versioned release, PKI
+	// or configuration. Check all nodes before staging or installing anything.
+	for _, node := range plan.Nodes {
+		command := remoteSudoPrefix + "; if $SUDO test -e /usr/local/lib/titanus/current || $SUDO test -L /usr/local/lib/titanus/current; then echo 'Versioned Titanus installation: use the verified release installer for upgrades' >&2; exit 1; fi"
+		if _, err := d.SSH.Run(node, command); err != nil {
+			return nil, fmt.Errorf("flat Realm provisioning blocked on %s: %w", node.Name, err)
+		}
+	}
+
 	primary, err := primaryController(plan)
 	if err != nil {
 		return nil, err

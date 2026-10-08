@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	buildversion "github.com/antonismor/Titanus-Core/internal/version"
 	"net"
 	"os"
 	"path/filepath"
@@ -27,8 +28,6 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 )
-
-const version = "0.2.0-dev"
 
 func main() {
 	if len(os.Args) == 1 {
@@ -80,7 +79,7 @@ func dispatch(args []string) error {
 		fmt.Print(string(data))
 		return nil
 	case "version", "--version", "-v":
-		fmt.Println("Titanus Core", version)
+		buildversion.Print(len(args) > 1 && args[1] == "--json")
 		return nil
 	case "plan":
 		if len(args) < 3 {
@@ -212,7 +211,7 @@ func menu() error {
 				pause(reader)
 			}
 		case "13":
-			fmt.Println("Titanus Core", version)
+			buildversion.Print(false)
 			pause(reader)
 		case "0":
 			return nil

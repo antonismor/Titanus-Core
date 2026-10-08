@@ -31,7 +31,7 @@ func New(ca, cert, key string) (*Client, error) {
 	}
 	return &Client{
 		http: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true},
+			Transport: &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, TLSHandshakeTimeout: 2 * time.Second, ResponseHeaderTimeout: 3 * time.Second},
 			Timeout:   20 * time.Second,
 		},
 	}, nil
