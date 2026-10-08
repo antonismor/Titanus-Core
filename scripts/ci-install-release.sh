@@ -16,7 +16,7 @@ base_version=$(./bin/titanus version --json | python3 -c 'import json,sys;print(
 next_version="${base_version}.install-test"
 TITANUS_RELEASE_OUTPUT="$fixture/base" bash scripts/package-release.sh
 make build VERSION="$next_version"
-TITANUS_RELEASE_OUTPUT="$fixture/next" bash scripts/package-release.sh
+TITANUS_PACKAGE_INSTALL_FIXTURE=1 TITANUS_RELEASE_OUTPUT="$fixture/next" bash scripts/package-release.sh
 make build
 for kind in base next; do
  archive=$(find "$fixture/$kind" -maxdepth 1 -name '*.tar.gz' -print -quit)

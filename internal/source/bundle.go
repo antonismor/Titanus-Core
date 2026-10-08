@@ -10,8 +10,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -26,9 +28,17 @@ type FileHash struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
+	Mode   uint32 `json:"mode,omitempty"`
+	UID    uint32 `json:"uid,omitempty"`
+	GID    uint32 `json:"gid,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+	Link   string `json:"link,omitempty"`
 }
 
 func (m *Manager) Export(name string, writer io.Writer) error {
+	if !sourceName.MatchString(name) {
+		return fmt.Errorf("invalid Source name")
+	}
 	root := filepath.Join(m.StateRoot, "sources", name, "rootfs")
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		if err != nil {
@@ -71,9 +81,6 @@ func (m *Manager) Export(name string, writer io.Writer) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if path == root {
-			return nil
-		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
@@ -112,6 +119,14 @@ func (m *Manager) Export(name string, writer io.Writer) error {
 }
 
 func (m *Manager) ImportBundle(reader io.Reader) (Manifest, error) {
+	return m.ImportBundleExpected(reader, "", "")
+}
+
+func (m *Manager) ImportBundleForName(reader io.Reader, expectedName string) (Manifest, error) {
+	return m.ImportBundleExpected(reader, expectedName, "")
+}
+
+func (m *Manager) ImportBundleExpected(reader io.Reader, expectedName, expectedDigest string) (Manifest, error) {
 	gz, err := gzip.NewReader(reader)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("open Titanus Source bundle: %w", err)
@@ -135,6 +150,7 @@ func (m *Manager) ImportBundle(reader io.Reader) (Manifest, error) {
 
 	var manifest Manifest
 	manifestSeen := false
+	seen := map[string]bool{}
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -144,6 +160,10 @@ func (m *Manager) ImportBundle(reader io.Reader) (Manifest, error) {
 			return Manifest{}, err
 		}
 		clean := filepath.Clean(header.Name)
+		if seen[clean] {
+			return Manifest{}, fmt.Errorf("duplicate Source entry %q", clean)
+		}
+		seen[clean] = true
 		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
 			return Manifest{}, fmt.Errorf("unsafe Source bundle path %q", header.Name)
 		}
@@ -155,13 +175,28 @@ func (m *Manager) ImportBundle(reader io.Reader) (Manifest, error) {
 			if err := json.Unmarshal(data, &manifest); err != nil {
 				return Manifest{}, fmt.Errorf("invalid Source manifest: %w", err)
 			}
+			if expectedName != "" && manifest.Name != expectedName {
+				return Manifest{}, fmt.Errorf("bundle Source does not match requested name")
+			}
 			manifestSeen = true
 			continue
 		}
-		if !strings.HasPrefix(filepath.ToSlash(clean), "rootfs/") {
+		if !manifestSeen {
+			return Manifest{}, fmt.Errorf("manifest must be first Source entry")
+		}
+		if clean != "rootfs" && !strings.HasPrefix(filepath.ToSlash(clean), "rootfs/") {
 			return Manifest{}, fmt.Errorf("unexpected Source bundle entry %q", header.Name)
 		}
 		target := filepath.Join(tempRoot, clean)
+		// Absolute links may exist inside the future rootfs, but extraction
+		// must never follow one as an ancestor on the controller host.
+		for parent := filepath.Dir(target); parent != tempRoot; parent = filepath.Dir(parent) {
+			if info, e := os.Lstat(parent); e == nil && !info.IsDir() {
+				return Manifest{}, fmt.Errorf("unsafe Source ancestor %q", parent)
+			} else if e != nil && !os.IsNotExist(e) {
+				return Manifest{}, e
+			}
+		}
 		if !strings.HasPrefix(target, tempRoot+string(os.PathSeparator)) {
 			return Manifest{}, fmt.Errorf("unsafe Source target %q", target)
 		}
@@ -198,12 +233,39 @@ func (m *Manager) ImportBundle(reader io.Reader) (Manifest, error) {
 		default:
 			return Manifest{}, fmt.Errorf("unsupported Source bundle entry type %d for %s", header.Typeflag, header.Name)
 		}
+		if os.Geteuid() == 0 {
+			if err := os.Lchown(target, header.Uid, header.Gid); err != nil {
+				return Manifest{}, err
+			}
+		} else if header.Uid != os.Getuid() || header.Gid != os.Getgid() {
+			return Manifest{}, fmt.Errorf("Source ownership requires privileged import")
+		}
+		if header.Typeflag != tar.TypeSymlink {
+			if err := os.Chmod(target, os.FileMode(header.Mode)&os.ModePerm); err != nil {
+				return Manifest{}, err
+			}
+		}
 	}
-	if !manifestSeen || manifest.Format != "titanus-source/v1" || !sourceName.MatchString(manifest.Name) {
+	if _, err := io.Copy(io.Discard, gz); err != nil {
+		return Manifest{}, err
+	}
+	if !manifestSeen || (manifest.Format != "titanus-source/v1" && manifest.Format != "titanus-source/v2") || !sourceName.MatchString(manifest.Name) {
 		return Manifest{}, fmt.Errorf("invalid or missing Titanus Source manifest")
 	}
 	root := filepath.Join(tempRoot, "rootfs")
 	if err := verifyManifest(manifest, root); err != nil {
+		return Manifest{}, err
+	}
+	if expectedDigest != "" {
+		actual, e := manifestIdentity(root, manifest.Name)
+		if e != nil {
+			return Manifest{}, e
+		}
+		if actual != expectedDigest {
+			return Manifest{}, fmt.Errorf("Source differs from expected digest")
+		}
+	}
+	if err := syncTree(tempRoot); err != nil {
 		return Manifest{}, err
 	}
 	final := filepath.Join(m.StateRoot, "sources", manifest.Name)
@@ -213,27 +275,55 @@ func (m *Manager) ImportBundle(reader io.Reader) (Manifest, error) {
 	if err := os.Rename(tempRoot, final); err != nil {
 		return Manifest{}, err
 	}
+	dir, err := os.Open(filepath.Dir(final))
+	if err != nil {
+		return Manifest{}, err
+	}
+	err = dir.Sync()
+	dir.Close()
+	if err != nil {
+		return Manifest{}, err
+	}
 	return manifest, nil
 }
 
 func buildManifest(name, root string) (Manifest, error) {
-	manifest := Manifest{Format: "titanus-source/v1", Name: name, CreatedAt: time.Now().UTC()}
+	if info, err := os.Lstat(root); err != nil {
+		return Manifest{}, err
+	} else if !info.IsDir() {
+		return Manifest{}, fmt.Errorf("Source rootfs must be a real directory")
+	}
+	manifest := Manifest{Format: "titanus-source/v2", Name: name, CreatedAt: time.Now().UTC()}
 	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
-		}
-		if !info.Mode().IsRegular() {
-			return nil
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		hash, err := hashFile(path)
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("Source ownership unavailable")
+		}
+		entry := FileHash{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode()), UID: st.Uid, GID: st.Gid}
+		switch {
+		case info.Mode().IsRegular():
+			entry.Kind = "file"
+			entry.Size = info.Size()
+			entry.SHA256, err = hashFile(path)
+		case info.IsDir():
+			entry.Kind = "directory"
+		case info.Mode()&os.ModeSymlink != 0:
+			entry.Kind = "symlink"
+			entry.Link, err = os.Readlink(path)
+		default:
+			return fmt.Errorf("unsupported Source object %s", rel)
+		}
 		if err != nil {
 			return err
 		}
-		manifest.Files = append(manifest.Files, FileHash{Path: filepath.ToSlash(rel), Size: info.Size(), SHA256: hash})
+		manifest.Files = append(manifest.Files, entry)
 		return nil
 	})
 	sort.Slice(manifest.Files, func(i, j int) bool { return manifest.Files[i].Path < manifest.Files[j].Path })
@@ -241,6 +331,16 @@ func buildManifest(name, root string) (Manifest, error) {
 }
 
 func verifyManifest(manifest Manifest, root string) error {
+	if manifest.Format == "titanus-source/v2" {
+		actual, err := buildManifest(manifest.Name, root)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(actual.Files, manifest.Files) {
+			return fmt.Errorf("Source content/metadata integrity mismatch")
+		}
+		return nil
+	}
 	for _, expected := range manifest.Files {
 		path := filepath.Join(root, filepath.FromSlash(expected.Path))
 		if !strings.HasPrefix(path, root+string(os.PathSeparator)) {

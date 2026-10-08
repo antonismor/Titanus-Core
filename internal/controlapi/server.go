@@ -24,16 +24,21 @@ type LeaderGate interface {
 }
 
 type Server struct {
-	SecretKeyring string
-	Observations  *observe.Recorder
-	Disks         *disk.Manager
-	Consensus     LeaderGate
-	Store         *realm.Store
-	Runtime       *unitruntime.Manager
-	Sources       *source.Manager
-	Leases        *lease.Manager
-	CAPath        string
-	Authority     *identity.Authority
+	Gateway          GatewayRuntime
+	GatewayClient    GatewayClient
+	PowerFencer      PowerFencer
+	SourcePeers      []string
+	SourceReplicator SourceReplicator
+	SecretKeyring    string
+	Observations     *observe.Recorder
+	Disks            *disk.Manager
+	Consensus        LeaderGate
+	Store            *realm.Store
+	Runtime          *unitruntime.Manager
+	Sources          *source.Manager
+	Leases           *lease.Manager
+	CAPath           string
+	Authority        *identity.Authority
 }
 
 type PulseRequest struct {
@@ -46,6 +51,9 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/realm/gateways/", s.authorize(s.gateway))
+	mux.HandleFunc("/v1/node/gateway/withdraw", s.authorize(s.withdrawGateway))
+	mux.HandleFunc("/v1/realm/sources/", s.authorize(s.publishSource))
 	s.registerStorage(mux)
 	s.registerOrchestration(mux)
 	mux.HandleFunc("/v1/metrics", s.authorize(s.metrics))
@@ -167,6 +175,12 @@ func (s *Server) sourceObject(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		digest, err := s.Sources.Identity(name)
+		if err != nil {
+			writeError(w, 503, err)
+			return
+		}
+		w.Header().Set("X-Titanus-Source-SHA256", digest)
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodGet:
 		exists, err := s.Sources.Exists(name)
@@ -186,15 +200,22 @@ func (s *Server) sourceObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case http.MethodPut:
-		manifest, err := s.Sources.ImportBundle(io.LimitReader(r.Body, 64<<30))
-		if err != nil {
-			if strings.Contains(err.Error(), "already exists") {
-				exists, existsErr := s.Sources.Exists(name)
-				if existsErr == nil && exists {
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
+		expected := r.Header.Get("X-Titanus-Source-SHA256")
+		if exists, e := s.Sources.Exists(name); e != nil {
+			writeError(w, 400, e)
+			return
+		} else if exists {
+			actual, e := s.Sources.Identity(name)
+			if e != nil || expected == "" || actual != expected {
+				writeError(w, 409, fmt.Errorf("existing Source identity differs"))
+				return
 			}
+			w.Header().Set("X-Titanus-Source-SHA256", actual)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		manifest, err := s.Sources.ImportBundleExpected(io.LimitReader(r.Body, 64<<30), name, expected)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -686,7 +707,15 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, fmt.Errorf("role does not permit this operation"))
 			return
 		}
-		if s.Consensus != nil && strings.HasPrefix(r.URL.Path, "/v1/realm/") && r.URL.Path != "/v1/realm/consensus" {
+		if s.Store != nil && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			policy := s.Store.Snapshot().PKI
+			if policy.CA != "" && policy.Revoked(r.TLS.PeerCertificates[0].SerialNumber) {
+				writeError(w, 403, fmt.Errorf("committed PKI policy denies certificate"))
+				return
+			}
+		}
+		pkiMutation := r.URL.Path == "/v1/identity/renew" || r.URL.Path == "/v1/identity/crl" && r.Method == http.MethodPost
+		if s.Consensus != nil && (strings.HasPrefix(r.URL.Path, "/v1/realm/") && r.URL.Path != "/v1/realm/consensus" || pkiMutation) {
 			if err := s.Consensus.CheckLeader(); err != nil {
 				w.Header().Set("X-Titanus-Rejected", "true")
 				w.Header().Set("X-Titanus-Leader", s.Consensus.LeaderAPI())

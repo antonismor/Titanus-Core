@@ -19,6 +19,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/consensus"
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
 	"github.com/antonismor/Titanus-Core/internal/disk"
+	"github.com/antonismor/Titanus-Core/internal/fencing"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/observe"
@@ -101,6 +102,8 @@ func main() {
 		log.Fatal("HA-managed Realm cannot start without TITANUS_HA_CONFIG")
 	}
 	var quorum *consensus.Node
+	var sourcePeers []string
+	var allControllers []string
 	if configPath := strings.TrimSpace(os.Getenv("TITANUS_HA_CONFIG")); configPath != "" {
 		if !envBool("TITANUS_CONTROLLER_MODE") {
 			log.Fatal("HA requires controller mode")
@@ -111,6 +114,12 @@ func main() {
 		}
 		if cfg.Realm != realmName || cfg.ID != os.Getenv("TITANUS_NODE_ID") {
 			log.Fatal("HA config must match daemon Realm and Node identity")
+		}
+		for _, peer := range cfg.Peers {
+			allControllers = append(allControllers, peer.API)
+			if peer.ID != cfg.ID {
+				sourcePeers = append(sourcePeers, peer.API)
+			}
 		}
 		quorum, e = consensus.Open(stateRoot, cfg, store.Snapshot(), api.CAPath, envDefault("TITANUS_CERT", "/etc/titanus/pki/node.crt"), envDefault("TITANUS_KEY", "/etc/titanus/pki/node.key"))
 		if e != nil {
@@ -174,13 +183,16 @@ func main() {
 	}
 	go healthLoop(ctx, store)
 	go runtimeManager.RunHealth(ctx)
-	if api.Authority != nil {
-		go api.Authority.MaintainCRL(ctx)
+	if envBool("TITANUS_CONTROLLER_MODE") {
+		go api.MaintainPKI(ctx)
 	}
 
 	controllerMode := envBool("TITANUS_CONTROLLER_MODE")
 	gatewayMode := envBool("TITANUS_GATEWAY_MODE")
 	controllerEndpoint := strings.TrimSpace(os.Getenv("TITANUS_CONTROLLER_ENDPOINT"))
+	if controllerEndpoint == "" && len(allControllers) > 0 {
+		controllerEndpoint = strings.Join(allControllers, ",")
+	}
 
 	var clusterClient *realmclient.Client
 	if controllerMode || (gatewayMode && controllerEndpoint != "") {
@@ -210,16 +222,38 @@ func main() {
 			log.Printf("Titanus Route gateway disabled: TITANUS_CONTROLLER_ENDPOINT is required on non-controller gateways")
 		}
 		if routeManager != nil {
+			if envBool("TITANUS_GATEWAY_VIP_MANAGEMENT") {
+				if err = routeManager.ConfigureVIP(stateRoot, os.Getenv("TITANUS_NODE_ID"), route.LinuxVIP{}); err != nil {
+					log.Fatalf("Gateway VIP configuration: %v", err)
+				}
+				api.Gateway = routeManager
+			}
 			go routeManager.Run(ctx)
 		}
 	}
 
 	if controllerMode {
+		api.GatewayClient = clusterClient
+		if path := os.Getenv("TITANUS_POWER_FENCING_CONFIG"); path != "" {
+			api.PowerFencer, err = fencing.Load(path)
+			if err != nil {
+				log.Fatalf("Power fencing configuration: %v", err)
+			}
+		}
+		api.SourcePeers = sourcePeers
+		api.SourceReplicator = clusterClient
 		var nodes reconcile.NodeRuntime = clusterClient
 		if quorum != nil {
 			nodes = &reconcile.GuardedNodes{NodeRuntime: clusterClient, Check: quorum.CheckLeader}
 		}
 		controller := &reconcile.Controller{Storage: api.Disks, Store: store, Nodes: nodes, Sources: sourceManager, Interval: 5 * time.Second}
+		controller.ReconcileGateways = api.ReconcileGateways
+		if len(sourcePeers) > 0 {
+			controller.PublishSource = func(name string) error { _, err := api.PublishSourceRecord(name); return err }
+		}
+		controller.ResolveSource = func(ref realm.SourceRecord) error {
+			return clusterClient.RecoverSource(ref, sourcePeers, sourceManager)
+		}
 		go controller.Run(ctx)
 		log.Printf("Titanus Fleet reconciler enabled")
 	}

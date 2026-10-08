@@ -152,7 +152,7 @@ func (p *PlacementEngine) Reconcile(state State, fleet Fleet) ([]Assignment, err
 }
 
 func eligible(node Node, fleet Fleet) bool {
-	if node.State != NodeReady || node.StorageQuarantined {
+	if node.State != NodeReady || (node.StorageQuarantined || node.PowerQuarantined) {
 		return false
 	}
 	if !hasCapability(node.Capabilities, model.CapabilityExecution) {

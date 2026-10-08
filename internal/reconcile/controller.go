@@ -24,13 +24,16 @@ type NodeRuntime interface {
 }
 
 type Controller struct {
-	Storage  StorageFencer
-	Store    *realm.Store
-	Nodes    NodeRuntime
-	Sources  *source.Manager
-	Interval time.Duration
-	samples  map[string]unitruntime.Usage
-	Now      func() time.Time
+	ReconcileGateways func() error
+	ResolveSource     func(realm.SourceRecord) error
+	PublishSource     func(string) error
+	Storage           StorageFencer
+	Store             *realm.Store
+	Nodes             NodeRuntime
+	Sources           *source.Manager
+	Interval          time.Duration
+	samples           map[string]unitruntime.Usage
+	Now               func() time.Time
 }
 
 func (c *Controller) Run(ctx context.Context) {
@@ -60,6 +63,41 @@ func (c *Controller) Once() error {
 	}
 	if err := c.maintainStorageFences(); err != nil {
 		return err
+	}
+	if c.PublishSource != nil {
+		state := c.Store.Snapshot()
+		names := map[string]bool{}
+		for _, f := range state.Fleets {
+			names[f.Template.Source] = true
+			for _, h := range f.History {
+				names[h.Template.Source] = true
+			}
+		}
+		for _, task := range state.Tasks {
+			if !task.Terminal() {
+				names[task.Template.Source] = true
+			}
+		}
+		for name := range names {
+			if _, ok := state.Sources[name]; !ok {
+				if err := c.PublishSource(name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if c.ResolveSource != nil {
+		for _, ref := range c.Store.Snapshot().Sources {
+			if err := c.ResolveSource(ref); err != nil {
+				return err
+			}
+		}
+	}
+	if c.ReconcileGateways != nil {
+		if err := c.ReconcileGateways(); err != nil {
+			return err
+		}
 	}
 	if err := c.reconcileTasks(); err != nil {
 		return err
@@ -102,7 +140,7 @@ func (c *Controller) Once() error {
 }
 func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assignment realm.Assignment) {
 	node, ok := state.Nodes[assignment.NodeID]
-	if !ok || node.State != realm.NodeReady || node.StorageQuarantined {
+	if !ok || node.State != realm.NodeReady || (node.StorageQuarantined || node.PowerQuarantined) {
 		return
 	}
 	if err := c.Store.CheckLeader(); err != nil {
@@ -200,7 +238,7 @@ func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assig
 		return err
 	}
 	node, ok := state.Nodes[assignment.NodeID]
-	if !ok || node.State == realm.NodeUnreachable || node.StorageQuarantined || node.Address == "" {
+	if !ok || node.State == realm.NodeUnreachable || (node.StorageQuarantined || node.PowerQuarantined) || node.Address == "" {
 		fleet, exists := state.Fleets[assignment.Fleet]
 		if !exists {
 			return fmt.Errorf("deleted Fleet requires acknowledged node cleanup")

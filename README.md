@@ -352,6 +352,11 @@ Pulse expiry and lease fencing. These nodes share a runner kernel; physical host
 reboot, site networking and hardware acceptance are not implied. See
 [Release and recovery](docs/RELEASE.md) for prerequisites, migration, key/state
 backups and the distinction between binary rollback and data/schema rollback.
-The current candidate line is `0.4.0-rc.2`; `0.4.0-rc.1` remains an unchanged
+The current candidate line is `0.4.0-rc.3`; `0.4.0-rc.1` remains an unchanged
 published checkpoint. Phase 2 is tracked in issue #20. Code/CI validation is
 separate from pending independent-VM and physical-host acceptance.
+
+Phase-2 HA adds quorum-committed PKI policy/signing sequence, verified controller
+Source replication/recovery, and fenced Gateway VIP epochs. See
+[HA_LIFECYCLE.md](docs/HA_LIFECYCLE.md) for private-key provisioning, optional
+out-of-band power fencing, and deferred independent-host acceptance.

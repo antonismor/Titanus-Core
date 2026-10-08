@@ -44,15 +44,34 @@ func (m *Manager) ImportDirectory(name, sourceDir string) error {
 		return err
 	}
 
-	rootfs := filepath.Join(dest, "rootfs")
+	if err := os.MkdirAll(filepath.Dir(dest), 0750); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(filepath.Dir(dest), ".directory-import-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	rootfs := filepath.Join(staging, "rootfs")
 	if err := os.MkdirAll(rootfs, 0755); err != nil {
 		return err
 	}
 	if err := copyTree(sourceDir, rootfs); err != nil {
-		_ = os.RemoveAll(dest)
+		_ = os.RemoveAll(staging)
 		return err
 	}
-	return nil
+	if err := syncTree(staging); err != nil {
+		return err
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		return err
+	}
+	parent, err := os.Open(filepath.Dir(dest))
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return parent.Sync()
 }
 
 func (m *Manager) Exists(name string) (bool, error) {

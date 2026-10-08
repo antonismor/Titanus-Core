@@ -18,7 +18,11 @@ import (
 type StateProvider func() (realm.State, error)
 
 type Manager struct {
-	state StateProvider
+	nodeID   string
+	vipPath  string
+	vip      VIPBackend
+	vipState vipState
+	state    StateProvider
 
 	mu        sync.Mutex
 	listeners map[string]*routeListener
@@ -29,6 +33,8 @@ type routeListener struct {
 	listener net.Listener
 	cancel   context.CancelFunc
 	rr       atomic.Uint64
+	connsMu  sync.Mutex
+	conns    map[net.Conn]bool
 }
 
 func NewManager(store *realm.Store) *Manager {
@@ -68,16 +74,25 @@ func (m *Manager) Run(ctx context.Context) {
 func (m *Manager) Reconcile() error {
 	state, err := m.snapshot()
 	if err != nil {
+		m.Close()
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := m.reconcileVIPs(state); err != nil {
+		m.closeLocked()
+		return err
+	}
+	for name, desired := range state.Routes {
+		if desired.Gateway != "" && !m.ownsGatewayLocked(state, desired.Gateway) {
+			delete(state.Routes, name)
+		}
+	}
 	for name, running := range m.listeners {
 		desired, ok := state.Routes[name]
 		if !ok || !sameListener(running.spec, desired) {
-			running.cancel()
-			_ = running.listener.Close()
+			running.close()
 			delete(m.listeners, name)
 		}
 	}
@@ -91,7 +106,7 @@ func (m *Manager) Reconcile() error {
 			return fmt.Errorf("Route %s listen %s: %w", name, address, err)
 		}
 		routeCtx, cancel := context.WithCancel(context.Background())
-		running := &routeListener{spec: desired, listener: listener, cancel: cancel}
+		running := &routeListener{spec: desired, listener: listener, cancel: cancel, conns: map[net.Conn]bool{}}
 		m.listeners[name] = running
 		go m.serve(routeCtx, running)
 	}
@@ -101,9 +116,18 @@ func (m *Manager) Reconcile() error {
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.closeLocked()
+	for name, g := range m.vipState.Owned {
+		if m.vip != nil && m.vip.Remove(g) == nil {
+			delete(m.vipState.Owned, name)
+		}
+	}
+	_ = m.saveVIPState()
+}
+
+func (m *Manager) closeLocked() {
 	for name, running := range m.listeners {
-		running.cancel()
-		_ = running.listener.Close()
+		running.close()
 		delete(m.listeners, name)
 	}
 }
@@ -129,6 +153,14 @@ func (m *Manager) serve(ctx context.Context, running *routeListener) {
 
 func (m *Manager) proxy(ctx context.Context, running *routeListener, client net.Conn) {
 	defer client.Close()
+	running.connsMu.Lock()
+	if ctx.Err() != nil {
+		running.connsMu.Unlock()
+		return
+	}
+	running.conns[client] = true
+	running.connsMu.Unlock()
+	defer func() { running.connsMu.Lock(); delete(running.conns, client); running.connsMu.Unlock() }()
 
 	backends := m.backends(running.spec)
 	if len(backends) == 0 {
@@ -150,6 +182,14 @@ func (m *Manager) proxy(ctx context.Context, running *routeListener, client net.
 		return
 	}
 	defer upstream.Close()
+	running.connsMu.Lock()
+	if ctx.Err() != nil {
+		running.connsMu.Unlock()
+		return
+	}
+	running.conns[upstream] = true
+	running.connsMu.Unlock()
+	defer func() { running.connsMu.Lock(); delete(running.conns, upstream); running.connsMu.Unlock() }()
 
 	done := make(chan struct{}, 2)
 	go func() {
@@ -178,6 +218,9 @@ func (m *Manager) backends(route realm.Route) []string {
 	if err != nil {
 		return nil
 	}
+	if route.Gateway != "" && !m.ownsGateway(state, route.Gateway) {
+		return nil
+	}
 	out := make([]string, 0)
 	for _, assignment := range state.Assignments {
 		if assignment.Fleet != route.Fleet ||
@@ -186,7 +229,7 @@ func (m *Manager) backends(route realm.Route) []string {
 			continue
 		}
 		node, ok := state.Nodes[assignment.NodeID]
-		if !ok || node.State != realm.NodeReady {
+		if !ok || node.State != realm.NodeReady || node.StorageQuarantined || node.PowerQuarantined {
 			continue
 		}
 		out = append(out, net.JoinHostPort(assignment.NetworkAddress, strconv.Itoa(route.TargetPort)))
@@ -196,10 +239,20 @@ func (m *Manager) backends(route realm.Route) []string {
 }
 
 func sameListener(a, b realm.Route) bool {
-	return a.Name == b.Name &&
+	return a.Gateway == b.Gateway && a.Name == b.Name &&
 		a.ListenIP == b.ListenIP &&
 		a.ListenPort == b.ListenPort &&
 		a.TargetPort == b.TargetPort &&
 		a.Protocol == b.Protocol &&
 		a.Fleet == b.Fleet
+}
+
+func (r *routeListener) close() {
+	r.cancel()
+	r.listener.Close()
+	r.connsMu.Lock()
+	defer r.connsMu.Unlock()
+	for c := range r.conns {
+		c.Close()
+	}
 }
