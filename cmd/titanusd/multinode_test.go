@@ -61,6 +61,18 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
+		if t.Failed() {
+			for i := 3; i < 5; i++ {
+				for _, args := range [][]string{{"nft", "list", "table", "ip", "titanus_nat"}, {"ip", "route"}} {
+					out, err := exec.Command("nsenter", append([]string{"--net=" + filepath.Join("/run/netns", names[i]), "--"}, args...)...).CombinedOutput()
+					t.Logf("node %d %v: %s (%v)", i, args, out, err)
+				}
+				for _, name := range []string{"agent.log", "fabric/services.json", "fabric/allocations.json"} {
+					b, _ := os.ReadFile(filepath.Join(roots[i], name))
+					t.Logf("node %d %s: %s", i, name, b)
+				}
+			}
+		}
 		for i := 3; i < 5; i++ {
 			m := unitruntime.NewManager(unitruntime.Config{StateRoot: roots[i], CgroupRoot: fmt.Sprintf("/sys/fs/cgroup/titanus-multi-%d", i), InitBinary: filepath.Join(bin, "titanus-init")})
 			items, _ := m.List()
@@ -300,10 +312,13 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 	if e = request(leader, "POST", "/v1/realm/routes", route, &stored); e != nil {
 		t.Fatal(e)
 	}
+	var serviceFailure string
 	service := func(version string) bool {
 		out, e := exec.Command("nsenter", "--net="+filepath.Join("/run/netns", names[4]), "--", "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
+		serviceFailure = fmt.Sprintf("Service %s expected %s: %q (%v)", stored.ServiceIP, version, out, e)
 		return e == nil && string(out) == version
 	}
+	t.Cleanup(func() { if t.Failed() { t.Log(serviceFailure) } })
 	wait(20*time.Second, func() bool { return service("v1") })
 	fleet.Template.Command = []string{"/bin/rollout-app", "v2"}
 	if e = request(leader, "POST", "/v1/realm/fleets", fleet, nil); e != nil {
