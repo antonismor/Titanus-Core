@@ -37,15 +37,17 @@ type cluster struct {
 	seeds              [3]realm.State
 }
 
-func freeAddress(t *testing.T) string {
+// Keep each Raft endpoint bound while selecting the complete membership.
+// Closing a :0 listener immediately lets the kernel return the same port for
+// another peer/API, making a valid security fixture fail membership validation.
+func reserveRaftAddress(t *testing.T) net.Listener {
 	t.Helper()
 	l, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
 	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return addr
+	t.Cleanup(func() { _ = l.Close() })
+	return l
 }
 func newCluster(t *testing.T) *cluster {
 	t.Helper()
@@ -55,6 +57,7 @@ func newCluster(t *testing.T) *cluster {
 	}
 	c := &cluster{t: t, authority: &a}
 	peers := []Peer{}
+	var reservations [3]net.Listener
 	for i := 0; i < 3; i++ {
 		c.roots[i] = t.TempDir()
 		c.apis[i] = httptest.NewUnstartedServer(nil)
@@ -63,7 +66,8 @@ func newCluster(t *testing.T) *cluster {
 		if e != nil {
 			t.Fatal(e)
 		}
-		peers = append(peers, Peer{ID: id, Address: freeAddress(t), API: "https://" + c.apis[i].Listener.Addr().String()})
+		reservations[i] = reserveRaftAddress(t)
+		peers = append(peers, Peer{ID: id, Address: reservations[i].Addr().String(), API: "https://" + c.apis[i].Listener.Addr().String()})
 		s, e := realm.Open(c.roots[i], "LAB")
 		if e != nil {
 			t.Fatal(e)
@@ -85,6 +89,11 @@ func newCluster(t *testing.T) *cluster {
 	})
 	for i := 0; i < 3; i++ {
 		c.configs[i] = Config{ID: peers[i].ID, Realm: "LAB", Peers: peers, Bootstrap: i == 0}
+		// Release only this node's reserved socket immediately before Open;
+		// all later peers and all API listeners remain bound throughout.
+		if err := reservations[i].Close(); err != nil {
+			t.Fatal(err)
+		}
 		c.open(i)
 		mux := http.NewServeMux()
 		api := controlapi.New(c.stores[i], nil, nil, nil)
