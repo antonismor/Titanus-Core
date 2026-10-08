@@ -13,6 +13,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/durable"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
+	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
@@ -24,18 +25,21 @@ type NetworkSpec struct {
 }
 
 type Spec struct {
-	ID          string          `json:"id"`
-	Source      string          `json:"source"`
-	Hostname    string          `json:"hostname"`
-	Command     []string        `json:"command"`
-	Environment []string        `json:"environment,omitempty"`
-	MemoryBytes int64           `json:"memory_bytes"`
-	CPUPercent  int             `json:"cpu_percent"`
-	PidsMax     int             `json:"pids_max"`
-	Network     NetworkSpec     `json:"network"`
-	Mounts      []disk.Mount    `json:"mounts,omitempty"`
-	Health      Health          `json:"health"`
-	Security    security.Policy `json:"security"`
+	SecretRealm    string            `json:"secret_realm,omitempty"`
+	Secrets        []secrets.Ref     `json:"secrets,omitempty"`
+	SecretBindings []secrets.Binding `json:"secret_bindings,omitempty"`
+	ID             string            `json:"id"`
+	Source         string            `json:"source"`
+	Hostname       string            `json:"hostname"`
+	Command        []string          `json:"command"`
+	Environment    []string          `json:"environment,omitempty"`
+	MemoryBytes    int64             `json:"memory_bytes"`
+	CPUPercent     int               `json:"cpu_percent"`
+	PidsMax        int               `json:"pids_max"`
+	Network        NetworkSpec       `json:"network"`
+	Mounts         []disk.Mount      `json:"mounts,omitempty"`
+	Health         Health            `json:"health"`
+	Security       security.Policy   `json:"security"`
 }
 
 type Status string
@@ -93,6 +97,12 @@ func (s *Spec) Normalize() {
 }
 
 func (s Spec) Validate() error {
+	if err := secrets.ValidateRefs(s.Secrets, s.Environment); err != nil {
+		return err
+	}
+	if len(s.Secrets) != len(s.SecretBindings) || (len(s.Secrets) > 0 && s.SecretRealm == "") {
+		return fmt.Errorf("incomplete encrypted secrets")
+	}
 	if err := s.Health.Validate(); err != nil {
 		return fmt.Errorf("Unit health: %w", err)
 	}

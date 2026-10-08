@@ -24,15 +24,16 @@ type LeaderGate interface {
 }
 
 type Server struct {
-	Observations *observe.Recorder
-	Disks        *disk.Manager
-	Consensus    LeaderGate
-	Store        *realm.Store
-	Runtime      *unitruntime.Manager
-	Sources      *source.Manager
-	Leases       *lease.Manager
-	CAPath       string
-	Authority    *identity.Authority
+	SecretKeyring string
+	Observations  *observe.Recorder
+	Disks         *disk.Manager
+	Consensus     LeaderGate
+	Store         *realm.Store
+	Runtime       *unitruntime.Manager
+	Sources       *source.Manager
+	Leases        *lease.Manager
+	CAPath        string
+	Authority     *identity.Authority
 }
 
 type PulseRequest struct {
@@ -45,6 +46,7 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	s.registerOrchestration(mux)
 	mux.HandleFunc("/v1/metrics", s.authorize(s.metrics))
 	mux.HandleFunc("/v1/diagnostics", s.authorize(s.diagnostics))
 	mux.HandleFunc("/v1/events", s.authorize(s.events))
@@ -251,6 +253,15 @@ func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 1 {
 		action = parts[1]
 	}
+	if r.Method == http.MethodGet && action == "usage" && len(parts) == 2 {
+		u, err := s.Runtime.Usage(id)
+		if err != nil {
+			writeError(w, 409, fmt.Errorf("live cgroup measurements unavailable"))
+			return
+		}
+		writeJSON(w, 200, u)
+		return
+	}
 	if r.Method == http.MethodGet && action == "logs" && len(parts) == 2 {
 		p, ok := identity.RequestPrincipal(r)
 		if !ok || p.Role != identity.RoleAdmin {
@@ -342,6 +353,12 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	}
 	state := s.Store.Snapshot()
 	if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
+		state.Secrets = nil
+		for name, t := range state.Tasks {
+			t.Template.Environment = nil
+			t.LeaseToken = ""
+			state.Tasks[name] = t
+		}
 		for name, fleet := range state.Fleets {
 			fleet.Template.Environment = nil
 			for i := range fleet.History {

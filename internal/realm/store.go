@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"github.com/antonismor/Titanus-Core/internal/security"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
 	"net"
@@ -62,6 +63,7 @@ type Node struct {
 }
 
 type UnitTemplate struct {
+	Secrets     []secrets.Ref      `json:"secrets,omitempty"`
 	Health      unitruntime.Health `json:"health"`
 	Source      string             `json:"source"`
 	Command     []string           `json:"command"`
@@ -150,15 +152,18 @@ type Assignment struct {
 }
 
 type State struct {
-	Name        string                   `json:"name"`
-	Network     RealmNetwork             `json:"network"`
-	Revision    uint64                   `json:"revision"`
-	Nodes       map[string]Node          `json:"nodes"`
-	Fleets      map[string]Fleet         `json:"fleets"`
-	Assignments map[string]Assignment    `json:"assignments"`
-	Routes      map[string]Route         `json:"routes"`
-	Policies    map[string]NetworkPolicy `json:"policies"`
-	UpdatedAt   time.Time                `json:"updated_at"`
+	Tasks       map[string]Task             `json:"tasks,omitempty"`
+	Secrets     map[string][]secrets.Record `json:"secrets,omitempty"`
+	Autoscalers map[string]Autoscaler       `json:"autoscalers,omitempty"`
+	Name        string                      `json:"name"`
+	Network     RealmNetwork                `json:"network"`
+	Revision    uint64                      `json:"revision"`
+	Nodes       map[string]Node             `json:"nodes"`
+	Fleets      map[string]Fleet            `json:"fleets"`
+	Assignments map[string]Assignment       `json:"assignments"`
+	Routes      map[string]Route            `json:"routes"`
+	Policies    map[string]NetworkPolicy    `json:"policies"`
+	UpdatedAt   time.Time                   `json:"updated_at"`
 }
 
 type Store struct {
@@ -471,6 +476,9 @@ func (s *Store) putFleet(fleet Fleet) error {
 	if len(fleet.Template.Command) == 0 || strings.TrimSpace(fleet.Template.Source) == "" {
 		return fmt.Errorf("Fleet requires Source and command")
 	}
+	if err := s.validateSecretsLocked(fleet.Template); err != nil {
+		return err
+	}
 	fleet.Template.Health.Normalize("always")
 	if err := fleet.Template.Health.Validate(); err != nil {
 		return fmt.Errorf("Fleet health: %w", err)
@@ -484,6 +492,9 @@ func (s *Store) putFleet(fleet Fleet) error {
 	}
 	if err := disk.ValidateMounts(fleet.Template.Mounts); err != nil {
 		return err
+	}
+	if a, ok := s.data.Autoscalers[fleet.Name]; ok && (fleet.Template.CPUPercent < 1 || len(fleet.Template.Mounts) > 0 || fleet.MinimumAvailable > a.Min || fleet.Instances < a.Min || fleet.Instances > a.Max) {
+		return fmt.Errorf("disable or update autoscaler before incompatible Fleet changes")
 	}
 	if existing, ok := s.data.Fleets[fleet.Name]; ok {
 		fleet.Generation = existing.Generation + 1
@@ -756,6 +767,9 @@ func (s *Store) ScaleFleet(name string, instances int) (Fleet, error) {
 	if instances < 0 {
 		return Fleet{}, fmt.Errorf("Fleet instances cannot be negative")
 	}
+	if a, ok := s.data.Autoscalers[name]; ok && (instances < a.Min || instances > a.Max) {
+		return Fleet{}, fmt.Errorf("manual scale is outside autoscaler bounds; disable policy first")
+	}
 	fleet.Instances = instances
 	if fleet.MinimumAvailable > instances {
 		fleet.MinimumAvailable = instances
@@ -791,6 +805,7 @@ func (s *Store) DeleteFleet(name string) error {
 			}
 		}
 	}
+	delete(s.data.Autoscalers, name)
 	delete(s.data.Fleets, name)
 	return s.commitLocked()
 }
@@ -872,6 +887,15 @@ func (s *Store) load(realmName string) error {
 	}
 	if s.data.Policies == nil {
 		s.data.Policies = map[string]NetworkPolicy{}
+	}
+	if s.data.Tasks == nil {
+		s.data.Tasks = map[string]Task{}
+	}
+	if s.data.Secrets == nil {
+		s.data.Secrets = map[string][]secrets.Record{}
+	}
+	if s.data.Autoscalers == nil {
+		s.data.Autoscalers = map[string]Autoscaler{}
 	}
 	if s.data.Name == "" {
 		s.data.Name = realmName

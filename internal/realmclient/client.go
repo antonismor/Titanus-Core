@@ -201,3 +201,9 @@ func endpoint(address string) string {
 	}
 	return "https://" + net.JoinHostPort(text, "9443")
 }
+
+func (c *Client) UnitUsage(address, id string) (unitruntime.Usage, error) {
+	var u unitruntime.Usage
+	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/units/"+url.PathEscape(id)+"/usage", nil, &u)
+	return u, e
+}

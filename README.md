@@ -166,20 +166,21 @@ Destructive storage operations are never implied by simply entering an IP or sel
 
 ## Current repository stage
 
-**Titanus Core is in early development.**
+**Titanus Core implements a native Linux runtime and clustered control plane.**
 
-The initial bootstrap focuses on:
+The repository includes OverlayFS Units, cgroups v2, mapped Linux namespaces,
+mandatory device/proc/Landlock isolation, bridge/veth/VXLAN/nftables Fabric,
+service routing/DNS, signed mTLS roles, durable quorum control state, health
+probes, readiness-aware rolling updates/rollback, native Ceph storage lifecycle,
+authenticated observations, CPU autoscaling, durable Tasks, encrypted versioned
+secrets and an authenticated Command Center.
 
-1. Native Titanus data model.
-2. ANSI/color CLI and setup flow.
-3. Realm and node planning.
-4. IP/CIDR validation.
-5. SSH reachability/pre-flight checks.
-6. Plan serialization.
-7. Core daemon skeleton.
-8. A clean foundation for the runtime, Fabric, storage and Realm engines.
-
-The project should not yet be treated as a production replacement for mature container or orchestration platforms.
+Each subsystem has explicit operational limits in `docs/`; native AMD64/ARM64
+runtime and real Ceph failure tests are required in CI. Issue #8 records exact
+verified commits. Versioned release, multi-node failure and install/upgrade/
+rollback verification remain separate work; repository CI does not imply
+installation on user servers. The project should not yet be treated as a
+production replacement for mature container or orchestration platforms.
 
 ## Build
 
@@ -290,8 +291,7 @@ leader loss, partition/rejoin, full log restart and snapshot recovery.
 See [Control-plane HA](docs/CONTROL_PLANE_HA.md) for configuration, migration and
 precise limits: 3/5 static voters, a 512 KiB Realm entry cap, Sources pre-staged on
 all controllers, designated-primary PKI signing and separate storage fencing.
-This does not mark the remaining isolation, storage, observability, UI and release
-milestones as complete.
+Versioned release and cross-node installation/failure validation are tracked separately in issue #8.
 
 ## Mandatory native Unit isolation
 
@@ -301,7 +301,7 @@ Missing kernel enforcement aborts startup. Native AMD64/ARM64 CI checks real den
 access, descendant inheritance and restart alongside the existing runtime tests.
 See [Unit isolation](docs/ISOLATION.md) for dedicated-node UID reservations,
 Landlock ABI >=3, legacy layer migration, writable Disk ownership and LSM scope.
-Storage lifecycle/fencing, observability, UI and release remain open in issue #8.
+Isolation is integrated with the owned Disk lifecycle and authenticated observations below.
 
 ### Disk lifecycle and ownership
 
@@ -319,3 +319,18 @@ its existing authenticated listeners. API mutations require durable audit intent
 new Unit starts use independently surviving, byte-bounded log sinks. See
 [Observability](docs/OBSERVABILITY.md) for commands, authorization, redaction,
 node-local retention, partial-collection and logging-failure behavior.
+
+## Native orchestration and Command Center
+
+CPU autoscaling consumes actual per-Unit cgroup counters with complete/fresh
+measurement gates, bounds, cooldown and persisted downscale windows. Durable
+Tasks retain confirmed exits or explicit UNKNOWN outcomes without replaying an
+ambiguous dispatch. Version-pinned AES-256-GCM secrets are stored as ciphertext
+and decrypted only at native launch with separately provisioned private keys.
+
+The embedded `/command-center` UI requires an admin client certificate and uses
+real same-origin APIs for Realm/Fleet/Task state, scaling, rollback, autoscaling,
+secret metadata and audited administration. It includes responsive mobile layouts.
+See [Orchestration, encrypted secrets and Command Center](docs/ORCHESTRATION.md)
+for API/CLI examples, at-most-one dispatch semantics, CPU-only/disk-free scaling,
+HA key provisioning, immutable versions and retained-state capacity boundaries.

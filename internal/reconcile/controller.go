@@ -28,6 +28,8 @@ type Controller struct {
 	Nodes    NodeRuntime
 	Sources  *source.Manager
 	Interval time.Duration
+	samples  map[string]unitruntime.Usage
+	Now      func() time.Time
 }
 
 func (c *Controller) Run(ctx context.Context) {
@@ -55,6 +57,10 @@ func (c *Controller) Once() error {
 	if err := c.Store.CheckLeader(); err != nil {
 		return err
 	}
+	if err := c.reconcileTasks(); err != nil {
+		return err
+	}
+	c.autoscale()
 	state := c.Store.Snapshot()
 	if err := c.cleanupDeletedFleets(state); err != nil {
 		return err
@@ -131,6 +137,10 @@ func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assign
 		return
 	}
 	spec := unitSpec(revision, assignment)
+	if err := realm.BindSecrets(state, revision.Template, &spec); err != nil {
+		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
+		return
+	}
 	if err := c.Nodes.EnsureSource(node.Address, spec.Source, c.Sources); err != nil {
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 		return

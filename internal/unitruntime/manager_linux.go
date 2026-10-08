@@ -20,14 +20,17 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/observe"
+	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"github.com/antonismor/Titanus-Core/internal/security"
 )
 
 type Config struct {
-	Observations *observe.Recorder
-	StateRoot    string
-	CgroupRoot   string
-	InitBinary   string
+	SecretKeyring string
+	SecretRealm   string
+	Observations  *observe.Recorder
+	StateRoot     string
+	CgroupRoot    string
+	InitBinary    string
 }
 
 type Manager struct {
@@ -244,6 +247,20 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 		return State{}, err
 	}
 
+	var keys *secrets.Keyring
+	if len(spec.Secrets) > 0 {
+		if spec.SecretRealm != m.cfg.SecretRealm {
+			return m.fail(state, fmt.Errorf("secret Realm mismatch"))
+		}
+		keys, err = secrets.Load(m.cfg.SecretKeyring)
+		if err != nil {
+			return m.fail(state, err)
+		}
+	}
+	environment, err := keys.Environment(spec.SecretRealm, spec.Secrets, spec.SecretBindings, spec.Environment)
+	if err != nil {
+		return m.fail(state, err)
+	}
 	if _, err := security.LandlockABI(); err != nil {
 		return m.fail(state, err)
 	}
@@ -315,7 +332,7 @@ func (m *Manager) start(id string, automatic bool) (State, error) {
 	cmd := exec.Command(m.cfg.InitBinary, "--unit-monitor", string(monitorJSON))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = append(os.Environ(), spec.Environment...)
+	cmd.Env = environment
 	cmd.ExtraFiles = append([]*os.File{readyRead, statusWrite, controlWrite}, diskFiles...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 

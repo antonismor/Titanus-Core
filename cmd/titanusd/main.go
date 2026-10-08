@@ -66,6 +66,8 @@ func main() {
 	})
 	runtimeConfig := unitruntime.DefaultConfig()
 	runtimeConfig.StateRoot = stateRoot
+	runtimeConfig.SecretKeyring = os.Getenv("TITANUS_SECRET_KEYRING")
+	runtimeConfig.SecretRealm = realmName
 	runtimeConfig.Observations = observations
 	if cgroupRoot := strings.TrimSpace(os.Getenv("TITANUS_CGROUP_ROOT")); cgroupRoot != "" {
 		runtimeConfig.CgroupRoot = cgroupRoot
@@ -85,6 +87,7 @@ func main() {
 	defer leaseManager.Close()
 	api := controlapi.New(store, runtimeManager, sourceManager, leaseManager)
 	api.Observations = observations
+	api.SecretKeyring = os.Getenv("TITANUS_SECRET_KEYRING")
 	api.Disks = disk.NewManager(stateRoot)
 	api.CAPath = envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
 	if _, e := os.Stat(filepath.Join(filepath.Dir(api.CAPath), "ca.key")); envBool("TITANUS_CONTROLLER_MODE") && e == nil {
