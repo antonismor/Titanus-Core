@@ -18,6 +18,7 @@ assert len(versions)==1 and arches=={'amd64','arm64'}
 pathlib.Path('release-version.txt').write_text(versions.pop())
 PY
 version=$(cat release-version.txt)
+python3 scripts/verify-release.py --revision "$TITANUS_VERIFIED_SHA" --version "$version" release-packages/*.tar.gz
 tag="v$version"
 repo="$GITHUB_REPOSITORY"
 # Draft releases may not materialize their tag until publication. Create and
