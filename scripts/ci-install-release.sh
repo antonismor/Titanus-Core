@@ -36,7 +36,38 @@ python3 scripts/install-release.py --root "$stage" --rollback
 "$stage/usr/local/bin/titanus" version --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"]==sys.argv[1]' "$base_version"
 grep -q CONFIG_PRESERVED "$stage/etc/titanus/daemon.env"
 grep -q MAPPING_LEDGER_PRESERVED "$stage/var/lib/titanus/ledger-canary"
+# Pin the selected previous version and revision before allowing rollback.
+revision=$(git rev-parse HEAD)
 selection=$(readlink "$stage/usr/local/lib/titanus/current")
+if python3 scripts/install-release.py --root "$stage" --rollback --expect-version "$base_version" --expect-revision "$revision"; then
+ echo 'Wrong previous release accepted for rollback' >&2; exit 1
+fi
+test "$(readlink "$stage/usr/local/lib/titanus/current")" = "$selection"
+# A fresh configuration is installed only after every file is verified; bad
+# inventory or an existing identity cannot leave partial activation/config.
+python3 - "$fixture/config" <<'CONFIG'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);root.mkdir()
+names=['daemon.env','agent.env','pki/ca.crt','pki/ca.crl','pki/node.crt','pki/node.key']
+hashes={}
+for name in names:
+ p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('GUIDED_'+name);hashes[name]=hashlib.sha256(p.read_bytes()).hexdigest()
+(root/'config.json').write_text(json.dumps(hashes))
+CONFIG
+printf '%s' CORRUPT >> "$fixture/config/pki/node.key"
+if python3 scripts/install-release.py --root "$fixture/bad-config" --bundle "$base" --config "$fixture/config"; then
+ echo 'Corrupt configuration accepted' >&2; exit 1
+fi
+test ! -L "$fixture/bad-config/usr/local/lib/titanus/current"
+test ! -e "$fixture/bad-config/etc/titanus/daemon.env"
+printf '%s' GUIDED_pki/node.key > "$fixture/config/pki/node.key"
+python3 scripts/install-release.py --root "$fixture/configured" --bundle "$base" --config "$fixture/config" --expect-version "$base_version" --expect-revision "$revision"
+test "$(stat -c '%a' "$fixture/configured/etc/titanus/pki/node.key")" = 600
+test "$(stat -c '%a' "$fixture/configured/etc/titanus/pki")" = 700
+if python3 scripts/install-release.py --root "$fixture/configured" --bundle "$next" --config "$fixture/config"; then
+ echo 'Existing configuration overwritten' >&2; exit 1
+fi
+grep -q GUIDED_daemon.env "$fixture/configured/etc/titanus/daemon.env"
 python3 - "$next/bin/titanus" <<'PY'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]);data=bytearray(p.read_bytes());data[-1]^=1;p.write_bytes(data)

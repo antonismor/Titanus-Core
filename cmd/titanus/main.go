@@ -92,6 +92,9 @@ func dispatch(args []string) error {
 		}
 		return runPreflightFile(args[1])
 	case "deploy":
+		if len(args) >= 2 && args[1] == "release" {
+			return runReleaseDeploy(args[2:])
+		}
 		if len(args) >= 2 && args[1] == "bootstrap" {
 			if len(args) != 3 {
 				return fmt.Errorf("usage: titanus deploy bootstrap <plan.json>")
@@ -1962,21 +1965,16 @@ func runSetup() error {
 		fmt.Printf("  %02d  %-9s %-16s %s\n", action.Order, action.Type, action.Target, action.Description)
 	}
 
-	if result.Plan.AutoDeploy {
-		fmt.Println()
-		ansi.Info("Auto-deploy requested: validating Realm before full deployment.")
-		if err := runPreflight(result.Plan); err != nil {
-			return err
-		}
-		binDir, err := discoverBinDir()
-		if err != nil {
-			return err
-		}
-		return deployRealm(result.Plan, deploy.RealmDeployOptions{
-			BinDir: binDir, NodePrefix: 24, VXLANID: 4242,
-			ClusterPort: 9443, StartServices: true,
-		})
+	prepared, err := deploy.PrepareRelease(result.Plan, result.PlanPath+".deployment")
+	if err != nil {
+		return err
 	}
+	fmt.Println("Prepared private deployment:", result.PlanPath+".deployment")
+	if result.Plan.AutoDeploy {
+		_, err = deploy.NewRealmDeployer().ApplyPrepared(result.Plan, prepared)
+		return err
+	}
+
 	return nil
 }
 
@@ -2148,6 +2146,7 @@ Usage:
   titanus plan validate FILE                   Validate a Titanus Plan
   titanus plan show FILE                       Display a Titanus Plan
   titanus preflight FILE                       Test all configured nodes
+  titanus deploy release FILE [--output DIR] [--apply] Verified versioned preparation/application
   titanus deploy bootstrap FILE                Bootstrap validated nodes
   titanus deploy realm FILE [options]          Install and start a complete Realm
   titanus version                              Show version
@@ -2204,5 +2203,34 @@ func printDiskJSON(value any) error {
 		return err
 	}
 	fmt.Println(string(data))
+	return nil
+}
+
+func runReleaseDeploy(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: titanus deploy release PLAN [--output DIR] [--apply]")
+	}
+	fs := flag.NewFlagSet("deploy release", flag.ContinueOnError)
+	output := fs.String("output", args[0]+".deployment", "new private preparation directory")
+	apply := fs.Bool("apply", false, "explicitly apply to configured SSH hosts")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	plan, err := model.LoadPlan(args[0])
+	if err != nil {
+		return err
+	}
+	prepared, err := deploy.PrepareRelease(plan, *output)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Prepared verified deployment:", *output)
+	if *apply {
+		results, e := deploy.NewRealmDeployer().ApplyPrepared(plan, prepared)
+		for _, r := range results {
+			fmt.Printf("%s %s %s\n", r.Node, r.Role, r.Message)
+		}
+		return e
+	}
 	return nil
 }

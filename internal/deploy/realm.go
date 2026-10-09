@@ -36,7 +36,11 @@ type RealmNodeResult struct {
 }
 
 type RealmDeployer struct {
-	SSH *remote.SSHExecutor
+	SSH interface {
+		Run(model.NodeSpec, string) (remote.Result, error)
+		CopyFile(model.NodeSpec, string, string) error
+	}
+	ReleasePreflight func(model.RealmPlan) error
 }
 
 func NewRealmDeployer() *RealmDeployer {
@@ -416,7 +420,7 @@ func agentEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts R
 	}
 	env := fmt.Sprintf(
 		"TITANUS_NODE_ID=%s\nTITANUS_NODE_ADDRESS=%s\nTITANUS_NODE_FABRIC_ADDRESS=%s\nTITANUS_CONTROLLER=https://%s:%d\nTITANUS_CA=/etc/titanus/pki/ca.crt\nTITANUS_CERT=/etc/titanus/pki/node.crt\nTITANUS_KEY=/etc/titanus/pki/node.key\nTITANUS_CAPABILITIES=%s\n",
-		node.Name, node.ManagementIP, fabricAddress, primary.ManagementIP, opts.ClusterPort, strings.Join(caps, ","),
+		node.Name, net.JoinHostPort(node.ManagementIP, strconv.Itoa(opts.ClusterPort)), fabricAddress, primary.ManagementIP, opts.ClusterPort, strings.Join(caps, ","),
 	)
 	peers := controllerPeers(plan, opts)
 	if len(peers) > 1 {

@@ -199,6 +199,9 @@ jobs:
       - name: Verify native versioned install, live upgrade and binary rollback
         run: sudo env "PATH=$PATH" TITANUS_INSTALL_LIVE_TEST=1 bash scripts/ci-install-release.sh
 
+      - name: Verify guided packages, generated PKI and functional three-controller installation
+        run: sudo env "PATH=$PATH" bash scripts/ci-guided-install.sh
+
       - name: Package verified native release candidate
         run: bash scripts/package-release.sh
 
