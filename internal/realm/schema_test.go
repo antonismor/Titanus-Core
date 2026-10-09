@@ -76,7 +76,7 @@ func TestSchemaTransitionPreservesUnknownExecutionAndRejectsRollback(t *testing.
 	if e = json.Unmarshal(raw, &fixture); e != nil {
 		t.Fatal(e)
 	}
-	fixture.SchemaVersion = 2
+	fixture.SchemaVersion = version.MaxSchema + 1
 	if ValidateSchema(fixture) == nil {
 		t.Fatal("future schema admitted")
 	}

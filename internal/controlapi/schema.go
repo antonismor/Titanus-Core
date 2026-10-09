@@ -16,6 +16,7 @@ type CompatibilityInfo struct {
 	Capabilities version.Capabilities `json:"capabilities"`
 }
 type SchemaRequest struct {
+	Target           int    `json:"target,omitempty"`
 	ID               string `json:"id"`
 	ExpectedRevision uint64 `json:"expected_revision"`
 }
@@ -71,14 +72,17 @@ func (s *Server) schemaTransition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := s.Store.Snapshot()
+	if req.Target == 0 {
+		req.Target = 1
+	}
 	// An uncertain committed request is resolved by identity, never applied twice.
 	for _, m := range state.SchemaMigrations {
-		if m.ID == req.ID {
+		if m.ID == req.ID && m.To == req.Target {
 			writeJSON(w, http.StatusOK, m)
 			return
 		}
 	}
-	if state.SchemaVersion != 0 || state.Revision != req.ExpectedRevision || s.StateRoot == "" || s.NodeID == "" {
+	if req.Target != state.SchemaVersion+1 || req.Target > version.MaxSchema || state.Revision != req.ExpectedRevision || s.StateRoot == "" || s.NodeID == "" {
 		writeError(w, http.StatusConflict, fmt.Errorf("unsupported migration or stale revision/host identity"))
 		return
 	}
@@ -111,20 +115,20 @@ func (s *Server) schemaTransition(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		info, e := s.TransitionClient.Compatibility(address)
-		if e != nil || info.NodeID != id || info.Realm != state.Name || !info.Capabilities.Supports(1) {
+		if e != nil || info.NodeID != id || info.Realm != state.Name || !info.Capabilities.Supports(req.Target) {
 			writeError(w, http.StatusConflict, fmt.Errorf("node %s has not advertised verified target-schema support: %v", id, e))
 			return
 		}
 		observations[id] = info.Capabilities
 	}
 	for id, n := range state.Nodes {
-		if !version.Admits(n.Compatibility, 1) {
+		if !version.Admits(n.Compatibility, req.Target) {
 			writeError(w, http.StatusConflict, fmt.Errorf("registered node %s agent is not upgraded", id))
 			return
 		}
 	}
 	sort.Strings(required)
-	floor := offline.NewSchemaFloor(state.Name, req.ID, 1)
+	floor := offline.NewSchemaFloor(state.Name, req.ID, req.Target)
 	if e := floor.Validate(); e != nil {
 		writeError(w, http.StatusBadRequest, e)
 		return
@@ -144,7 +148,7 @@ func (s *Server) schemaTransition(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	m, e := s.Store.TransitionSchema(req.ID, req.ExpectedRevision, observations, required)
+	m, e := s.Store.TransitionSchemaTo(req.ID, req.ExpectedRevision, req.Target, observations, required)
 	if e != nil {
 		writeError(w, http.StatusConflict, e)
 		return

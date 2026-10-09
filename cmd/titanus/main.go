@@ -31,7 +31,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] != "--capabilities-json" && os.Args[1] != "backup" && os.Args[1] != "version" && os.Args[1] != "--version" && os.Args[1] != "-v" && os.Args[1] != "help" && os.Args[1] != "--help" && os.Args[1] != "-h") {
+	if len(os.Args) < 2 || (!(len(os.Args) == 4 && os.Args[1] == "schema" && os.Args[2] == "prepare-floor") && os.Args[1] != "--capabilities-json" && os.Args[1] != "backup" && os.Args[1] != "version" && os.Args[1] != "--version" && os.Args[1] != "-v" && os.Args[1] != "help" && os.Args[1] != "--help" && os.Args[1] != "-h") {
 		lock, err := offline.Shared()
 		if err != nil {
 			ansi.Error(err.Error())
@@ -72,7 +72,7 @@ func dispatch(args []string) error {
 		return nil
 	case "backup":
 		return runBackup(args[1:])
-	case "task", "autoscale", "secret":
+	case "task", "schedule", "autoscale", "secret":
 		return runOrchestration(args[0], args[1:])
 	case "setup":
 		return runSetup()
@@ -2177,7 +2177,7 @@ Usage:
   titanus deploy bootstrap FILE                Bootstrap validated nodes
   titanus deploy realm FILE [options]          Install and start a complete Realm
   titanus schema status                       Show active schema and committed migration
-  titanus schema migrate ID REVISION           Prepare all hosts and commit schema 0 to 1
+  titanus schema migrate ID REVISION           Prepare all hosts and commit next schema (optional TARGET)
   titanus version                              Show version
 
 Unit create options:
@@ -2273,18 +2273,50 @@ func runSchema(args []string) error {
 			return e
 		}
 		out = map[string]any{"schema": state.SchemaVersion, "revision": state.Revision, "migrations": state.SchemaMigrations}
-	} else if len(args) == 3 && args[0] == "migrate" {
+	} else if len(args) == 2 && args[0] == "prepare-floor" {
+		lock, e := offline.Exclusive()
+		if e != nil {
+			return e
+		}
+		defer lock.Close()
+		raw, e := os.ReadFile(args[1])
+		if e != nil {
+			return e
+		}
+		if len(raw) > 4096 {
+			return fmt.Errorf("bounded floor required")
+		}
+		var floor offline.SchemaFloor
+		if e = json.Unmarshal(raw, &floor); e != nil {
+			return e
+		}
+		root := os.Getenv("TITANUS_STATE_ROOT")
+		if root == "" {
+			root = "/var/lib/titanus"
+		}
+		if e = offline.PrepareSchemaFloor(filepath.Clean(root), floor); e != nil {
+			return e
+		}
+		out = floor
+	} else if (len(args) == 3 || len(args) == 4) && args[0] == "migrate" {
 		rev, e := strconv.ParseUint(args[2], 10, 64)
 		if e != nil {
 			return e
 		}
-		m, e := c.TransitionSchema(args[1], rev)
+		target := 1
+		if len(args) == 4 {
+			target, e = strconv.Atoi(args[3])
+			if e != nil {
+				return e
+			}
+		}
+		m, e := c.TransitionSchemaTo(args[1], rev, target)
 		if e != nil {
 			return e
 		}
 		out = m
 	} else {
-		return fmt.Errorf("usage: titanus schema status | migrate MIGRATION_ID EXPECTED_REVISION")
+		return fmt.Errorf("usage: titanus schema status | migrate MIGRATION_ID EXPECTED_REVISION [TARGET_SCHEMA] | prepare-floor PRIVATE_JSON")
 	}
 	b, e := json.MarshalIndent(out, "", "  ")
 	if e != nil {

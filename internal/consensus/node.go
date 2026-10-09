@@ -343,7 +343,7 @@ func (m *machine) Apply(log *raft.Log) any {
 		return e
 	}
 	if next.SchemaVersion > 0 {
-		if e := offline.CheckCommittedFloor(m.root, next.Name, next.SchemaMigrations[0].ID, next.SchemaVersion); e != nil {
+		if e := offline.CheckCommittedFloor(m.root, next.Name, next.SchemaMigrations[len(next.SchemaMigrations)-1].ID, next.SchemaVersion); e != nil {
 			return e
 		}
 	}
@@ -370,7 +370,7 @@ func (m *machine) Restore(r io.ReadCloser) error {
 		return e
 	}
 	if s.SchemaVersion > 0 {
-		if e := offline.CheckCommittedFloor(m.root, s.Name, s.SchemaMigrations[0].ID, s.SchemaVersion); e != nil {
+		if e := offline.CheckCommittedFloor(m.root, s.Name, s.SchemaMigrations[len(s.SchemaMigrations)-1].ID, s.SchemaVersion); e != nil {
 			return e
 		}
 	}

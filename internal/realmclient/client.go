@@ -16,6 +16,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/controllerclient"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
+	"github.com/antonismor/Titanus-Core/internal/observe"
 	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
@@ -251,4 +252,15 @@ func (c *Client) Compatibility(address string) (controlapi.CompatibilityInfo, er
 }
 func (c *Client) PrepareSchemaFloor(address string, f offline.SchemaFloor) error {
 	return c.doJSON(http.MethodPost, endpoint(address)+"/v1/node/schema-floor", f, nil)
+}
+
+func (c *Client) KeyReadiness(address string) (controlapi.KeyReadiness, error) {
+	var out controlapi.KeyReadiness
+	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/secret-keyring", nil, &out)
+	return out, e
+}
+func (c *Client) NodeObservation(address string) (observe.NodeObservation, error) {
+	var out observe.NodeObservation
+	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/observation", nil, &out)
+	return out, e
 }

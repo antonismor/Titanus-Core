@@ -174,3 +174,8 @@ recovery without plaintext. Native AMD64/ARM64 CI additionally executes a Task
 with an injected secret and exit 7, denies a missing-key launch, checks persisted
 state/specs for plaintext, and scales a real CPU-burning Unit from cgroup deltas.
 Existing runtime, isolation, HA, health, rollback and native Ceph CI remain enabled.
+
+For schema-two scheduled/confirmed-retry Tasks, protected reference-preserving
+key rotation and measured memory/PID policies, see
+[PHASE2_ORCHESTRATION.md](PHASE2_ORCHESTRATION.md). Earlier schema-zero/one behavior
+and the original single-dispatch Task limits above remain the legacy profile.

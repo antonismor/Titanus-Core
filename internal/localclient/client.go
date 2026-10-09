@@ -199,3 +199,9 @@ func (c *Client) TransitionSchema(id string, expected uint64) (realm.SchemaMigra
 	e := c.do(http.MethodPost, "/v1/realm/schema", controlapi.SchemaRequest{ID: id, ExpectedRevision: expected}, &m)
 	return m, e
 }
+
+func (c *Client) TransitionSchemaTo(id string, expected uint64, target int) (realm.SchemaMigration, error) {
+	var m realm.SchemaMigration
+	e := c.do(http.MethodPost, "/v1/realm/schema", controlapi.SchemaRequest{ID: id, ExpectedRevision: expected, Target: target}, &m)
+	return m, e
+}

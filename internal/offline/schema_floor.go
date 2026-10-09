@@ -25,7 +25,7 @@ func NewSchemaFloor(realm, id string, schema int) SchemaFloor {
 	return SchemaFloor{"titanus-schema-floor/v1", realm, id, schema}
 }
 func (f SchemaFloor) Validate() error {
-	if f.Format != "titanus-schema-floor/v1" || f.Realm == "" || !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{15,127}$`).MatchString(f.MigrationID) || f.Schema != 1 || !version.Compatible().Supports(f.Schema) {
+	if f.Format != "titanus-schema-floor/v1" || f.Realm == "" || !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{15,127}$`).MatchString(f.MigrationID) || (f.Schema < 1 || f.Schema > version.MaxSchema) || !version.Compatible().Supports(f.Schema) {
 		return fmt.Errorf("unsupported schema rollback floor")
 	}
 	return nil
@@ -72,12 +72,14 @@ func PrepareSchemaFloor(root string, f SchemaFloor) error {
 	for _, p := range []string{floorPath(root), root + ".recovery-pending"} {
 		old, e := readFloor(p)
 		if e == nil {
-			if old != f {
+			if old != f && (old.Realm != f.Realm || old.Schema >= f.Schema) {
 				return fmt.Errorf("different schema floor already prepared")
 			}
-			continue
+			if old == f {
+				continue
+			}
 		}
-		if !os.IsNotExist(e) {
+		if e != nil && !os.IsNotExist(e) {
 			return e
 		}
 		if e = os.MkdirAll(filepath.Dir(p), 0700); e != nil {
@@ -139,7 +141,7 @@ func CheckCommittedFloor(root, realm, migration string, schema int) error {
 	if e != nil {
 		return e
 	}
-	if f.Realm != realm || f.MigrationID != migration || f.Schema != schema {
+	if f.Realm != realm || f.Schema < schema || (f.Schema == schema && f.MigrationID != migration) {
 		return fmt.Errorf("schema floor differs from committed Realm migration")
 	}
 	return nil

@@ -295,6 +295,38 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode, migrated bool) {
 		if _, e = stores[l].TransitionSchema(id, stores[l].Snapshot().Revision, observed, required); e != nil {
 			t.Fatal(e)
 		}
+
+		if version.MaxSchema >= 2 {
+			nextID := "native-backup-schema-two-001"
+			for _, f := range fixtures {
+				if e = offline.PrepareSchemaFloor(f.plan.StateRoot, offline.NewSchemaFloor("NATIVE-DR", nextID, 2)); e != nil {
+					t.Fatal(e)
+				}
+				keys, e := secrets.Load(filepath.Join(f.plan.ConfigRoot, "secrets.json"))
+				if e != nil {
+					t.Fatal(e)
+				}
+				keys.Keys["two"] = bytes.Repeat([]byte{7}, 32)
+				keys.Active = "two"
+				if e = durable.WriteJSON(filepath.Join(f.plan.ConfigRoot, "secrets.json"), keys, 0600); e != nil {
+					t.Fatal(e)
+				}
+			}
+			if _, e = stores[l].TransitionSchemaTo(nextID, stores[l].Snapshot().Revision, 2, observed, required); e != nil {
+				t.Fatal(e)
+			}
+			j := realm.TaskSchedule{Name: "restored-future", Template: realm.UnitTemplate{Source: "app", Command: []string{"/bin/sh"}}, DueAt: time.Now().Add(time.Hour), MaxRuns: 1, MaxAttempts: 2, RetrySeconds: 1}
+			if e = stores[l].CreateTaskSchedule(j); e != nil {
+				t.Fatal(e)
+			}
+			keys, e := secrets.Load(filepath.Join(fixtures[l].plan.ConfigRoot, "secrets.json"))
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = stores[l].RotateSecrets("native-backup-rotation-001", "two", stores[l].Snapshot().Revision, keys); e != nil {
+				t.Fatal(e)
+			}
+		}
 	}
 	before := stores[l].Snapshot()
 	converge(before.Revision)
@@ -492,13 +524,20 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode, migrated bool) {
 	}
 	if migrated {
 		for _, f := range fixtures {
-			if e = offline.CheckCommittedFloor(f.plan.StateRoot, "NATIVE-DR", before.SchemaMigrations[0].ID, 1); e != nil {
+			if e = offline.CheckCommittedFloor(f.plan.StateRoot, "NATIVE-DR", before.SchemaMigrations[len(before.SchemaMigrations)-1].ID, before.SchemaVersion); e != nil {
 				t.Fatal(e)
 			}
 		}
 		task := stores[l].Snapshot().Tasks["unknown-proof"]
 		if task.Phase != realm.TaskUnknown || task.RunID != "uncertain-do-not-replay" || task.ExecutionID != before.Tasks["unknown-proof"].ExecutionID {
 			t.Fatal("restored migration replayed or changed UNKNOWN execution")
+		}
+		if before.SchemaVersion == 2 {
+			state := stores[l].Snapshot()
+			if state.TaskSchedules["restored-future"].Name == "" || len(state.SecretRotations) != 1 {
+				t.Fatal("M6 scheduling/rotation state lost in DR")
+			}
+			t.Log("TITANUS_NATIVE_SCHEMA_TWO_BACKUP_RESTORE_OK")
 		}
 		t.Log("TITANUS_NATIVE_MIGRATED_QUORUM_RESTORE_OK")
 	}

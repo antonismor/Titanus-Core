@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 func runOrchestration(kind string, args []string) error {
@@ -60,7 +61,26 @@ func runOrchestration(kind string, args []string) error {
 		fmt.Println("Private encryption keyring created; provision it separately on authorized controllers and execution nodes.")
 		return nil
 	}
-	endpoint := map[string]string{"task": "tasks", "autoscale": "autoscalers", "secret": "secrets"}[kind]
+	if kind == "secret" && (args[0] == "key-add" || args[0] == "key-activate") {
+		if len(args) != 3 {
+			return fmt.Errorf("usage: titanus secret key-add|key-activate PRIVATE_KEYRING KEY_ID (key-add reads 32 raw bytes from stdin)")
+		}
+		var value []byte
+		var e error
+		if args[0] == "key-add" {
+			value, e = io.ReadAll(io.LimitReader(os.Stdin, 33))
+			if e != nil {
+				return e
+			}
+			defer clear(value)
+		}
+		if e = secrets.Provision(args[1], args[2], value, args[0] == "key-activate"); e != nil {
+			return e
+		}
+		fmt.Println("Private encryption keyring updated; retained keys preserved.")
+		return nil
+	}
+	endpoint := map[string]string{"schedule": "task-schedules", "task": "tasks", "autoscale": "autoscalers", "secret": "secrets"}[kind]
 	path := "/v1/realm/" + endpoint
 	method := http.MethodGet
 	var body any
@@ -82,20 +102,45 @@ func runOrchestration(kind string, args []string) error {
 		}
 		body = json.RawMessage(raw)
 		method = http.MethodPost
-	case "status", "cancel", "delete":
+	case "rotate":
+		if kind != "secret" || len(args) != 4 {
+			return fmt.Errorf("usage: titanus secret rotate ROTATION_ID TARGET_KEY EXPECTED_REVISION")
+		}
+		revision, e := strconv.ParseUint(args[3], 10, 64)
+		if e != nil {
+			return e
+		}
+		path = "/v1/realm/secret-rotation"
+		method = http.MethodPost
+		body = map[string]any{"id": args[1], "target": args[2], "expected_revision": revision}
+	case "alerts", "events":
+		if kind != "schedule" || len(args) != 1 {
+			return fmt.Errorf("use titanus schedule alerts|events")
+		}
+		path = "/v1/realm/alerts"
+		if args[0] == "events" {
+			path = "/v1/realm/observations"
+		}
+	case "status", "cancel", "delete", "pause":
 		if len(args) != 2 {
 			return fmt.Errorf("object name required")
 		}
 		path += "/" + url.PathEscape(args[1])
-		if args[0] == "cancel" {
+		if args[0] == "pause" {
+			if kind != "schedule" {
+				return fmt.Errorf("pause applies to schedules")
+			}
+			path += "/pause"
+			method = http.MethodPost
+		} else if args[0] == "cancel" {
 			if kind != "task" {
 				return fmt.Errorf("cancel applies to Tasks")
 			}
 			path += "/cancel"
 			method = http.MethodPost
 		} else if args[0] == "delete" {
-			if kind == "task" {
-				return fmt.Errorf("Task execution records are retained")
+			if kind == "task" || kind == "schedule" {
+				return fmt.Errorf("Task execution records and schedule identities are retained")
 			}
 			method = http.MethodDelete
 		}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-const MaxSchema = 1
+const MaxSchema = 2
 const Protocol = 1
 
 type Capabilities struct {
