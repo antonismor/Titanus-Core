@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,7 +42,11 @@ type Keyring struct {
 }
 
 func Load(path string) (*Keyring, error) {
-	f, e := os.Open(path)
+	fd, e := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
+	if e != nil {
+		return nil, fmt.Errorf("secret keyring unavailable")
+	}
+	f := os.NewFile(uintptr(fd), path)
 	if e != nil {
 		return nil, fmt.Errorf("secret keyring unavailable")
 	}
@@ -158,4 +163,16 @@ func (k *Keyring) Environment(realm string, refs []Ref, bindings []Binding, env 
 		clear(v)
 	}
 	return out, nil
+}
+
+// Fingerprints allow verified readiness comparisons without transporting keys.
+func (k *Keyring) Fingerprints() map[string]string {
+	out := map[string]string{}
+	if k != nil {
+		for id, value := range k.Keys {
+			h := sha256.Sum256(append([]byte("titanus-key-fingerprint/v1\x00"+id+"\x00"), value...))
+			out[id] = fmt.Sprintf("%x", h)
+		}
+	}
+	return out
 }

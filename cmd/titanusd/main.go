@@ -107,6 +107,10 @@ func main() {
 	api.NodeID = os.Getenv("TITANUS_NODE_ID")
 	api.StateRoot = stateRoot
 	api.Observations = observations
+	api.Central, err = observe.NewCentral(stateRoot)
+	if err != nil {
+		log.Fatalf("central observation recorder: %v", err)
+	}
 	api.SecretKeyring = os.Getenv("TITANUS_SECRET_KEYRING")
 	api.Disks = disk.NewManager(stateRoot)
 	api.CAPath = envDefault("TITANUS_CA", "/etc/titanus/pki/ca.crt")
@@ -259,6 +263,8 @@ func main() {
 		api.SourcePeers = sourcePeers
 		api.SourceReplicator = clusterClient
 		api.TransitionClient = clusterClient
+		api.M6Client = clusterClient
+		go api.MaintainObservations(ctx)
 		var nodes reconcile.NodeRuntime = clusterClient
 		if quorum != nil {
 			nodes = &reconcile.GuardedNodes{NodeRuntime: clusterClient, Check: quorum.CheckLeader}

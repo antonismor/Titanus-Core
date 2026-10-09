@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/antonismor/Titanus-Core/internal/durable"
+	"github.com/antonismor/Titanus-Core/internal/observe"
+	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"net"
 	"net/http"
 	"os"
@@ -80,6 +84,9 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 		sockets[i] = filepath.Join(roots[i], "daemon.sock")
 		configs[i] = filepath.Join(roots[i], "ha.json")
 		logs[i] = filepath.Join(roots[i], "daemon.log")
+		if e := durable.WriteJSON(filepath.Join(roots[i], "private-keys.json"), secrets.Keyring{Active: "one", Keys: map[string][]byte{"one": bytes.Repeat([]byte{1}, 32), "two": bytes.Repeat([]byte{2}, 32)}}, 0600); e != nil {
+			t.Fatal(e)
+		}
 		pkis[i] = filepath.Join(roots[i], "pki")
 		if e := os.Mkdir(pkis[i], 0700); e != nil {
 			t.Fatal(e)
@@ -148,7 +155,7 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 				env = append(env, value)
 			}
 		}
-		env = append(env, "TITANUS_STATE_ROOT="+roots[i], "TITANUS_SOCKET="+sockets[i], "TITANUS_REALM_NAME=HA-CI", "TITANUS_NODE_ID="+peers[i].ID, "TITANUS_CONTROLLER_MODE=true", "TITANUS_GATEWAY_MODE=false", "TITANUS_HA_CONFIG="+configs[i], "TITANUS_CLUSTER_LISTEN="+strings.TrimPrefix(peers[i].API, "https://"), "TITANUS_CA="+filepath.Join(pkis[i], "ca.crt"), "TITANUS_CERT="+certs[i], "TITANUS_KEY="+keys[i], "TITANUS_CGROUP_ROOT="+filepath.Join(roots[i], "unused-cgroups"))
+		env = append(env, "TITANUS_SECRET_KEYRING="+filepath.Join(roots[i], "private-keys.json"), "TITANUS_STATE_ROOT="+roots[i], "TITANUS_SOCKET="+sockets[i], "TITANUS_REALM_NAME=HA-CI", "TITANUS_NODE_ID="+peers[i].ID, "TITANUS_CONTROLLER_MODE=true", "TITANUS_GATEWAY_MODE=false", "TITANUS_HA_CONFIG="+configs[i], "TITANUS_CLUSTER_LISTEN="+strings.TrimPrefix(peers[i].API, "https://"), "TITANUS_CA="+filepath.Join(pkis[i], "ca.crt"), "TITANUS_CERT="+certs[i], "TITANUS_KEY="+keys[i], "TITANUS_CGROUP_ROOT="+filepath.Join(roots[i], "unused-cgroups"))
 		cmd.Env = env
 		cmd.Stdout = file
 		cmd.Stderr = file
@@ -309,6 +316,139 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 		}
 		if _, e = clients[current].CreateFleet(realm.Fleet{Name: "schema1-proof", Instances: 0, Template: realm.UnitTemplate{Source: "app", Command: []string{"v1"}}}); e != nil {
 			t.Fatal("migrated quorum write", e)
+		}
+
+		if version.MaxSchema >= 2 {
+			state, e = clients[current].RealmState()
+			if e != nil {
+				t.Fatal(e)
+			}
+			// The live reconciler can commit between inspection and the guarded
+			// transition. Resolve the same migration ID before retrying with a
+			// fresh inspected revision; never weaken the production CAS gate.
+			migrationID := "native-schema-two-proof-001"
+			migrationDeadline := time.Now().Add(20 * time.Second)
+			for {
+				state, e = clients[current].RealmState()
+				if e != nil {
+					t.Fatal(e)
+				}
+				if state.SchemaVersion == 2 {
+					if len(state.SchemaMigrations) != 2 || state.SchemaMigrations[1].ID != migrationID {
+						t.Fatal("unexpected schema-two migration")
+					}
+					break
+				}
+				if _, e = clients[current].TransitionSchemaTo(migrationID, state.Revision, 2); e == nil {
+					break
+				}
+				if time.Now().After(migrationDeadline) {
+					t.Fatal("schema-two quorum transition", e)
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if _, e = clients[current].Orchestration(http.MethodPut, "/v1/realm/secrets/rotation-proof", map[string][]byte{"value": []byte("NATIVE_ROTATED_VALUE")}); e != nil {
+				t.Fatal(e)
+			}
+			for i := range roots {
+				if e = secrets.Provision(filepath.Join(roots[i], "private-keys.json"), "two", nil, true); e != nil {
+					t.Fatal(e)
+				}
+			}
+			state, e = clients[current].RealmState()
+			if e != nil {
+				t.Fatal(e)
+			}
+			rotation := map[string]any{"id": "native-rotation-proof-001", "target": "two", "expected_revision": state.Revision}
+			raw, e := clients[current].Orchestration(http.MethodPost, "/v1/realm/secret-rotation", rotation)
+			if e != nil {
+				t.Fatal("native readiness-gated rotation", e)
+			}
+			var marker realm.SecretRotation
+			if e = json.Unmarshal(raw, &marker); e != nil {
+				t.Fatal(e)
+			}
+			schedule := realm.TaskSchedule{Name: "future-proof", Template: realm.UnitTemplate{Source: "app", Command: []string{"/bin/sh"}}, DueAt: time.Now().Add(time.Hour), MaxRuns: 1, MaxAttempts: 2, RetrySeconds: 1}
+			if _, e = clients[current].Orchestration(http.MethodPost, "/v1/realm/task-schedules", schedule); e != nil {
+				t.Fatal(e)
+			}
+			stop(current)
+			current = leader(current)
+			raw, e = clients[current].Orchestration(http.MethodPost, "/v1/realm/secret-rotation", rotation)
+			if e != nil {
+				t.Fatal("rotation receipt lost after leader crash", e)
+			}
+			var replay realm.SecretRotation
+			json.Unmarshal(raw, &replay)
+			if replay != marker {
+				t.Fatal("rotation replayed after crash")
+			}
+			deadline := time.Now().Add(35 * time.Second)
+			for {
+				raw, e = clients[current].Orchestration(http.MethodGet, "/v1/realm/alerts", nil)
+				var status observe.CollectionStatus
+				if e == nil && json.Unmarshal(raw, &status) == nil && status.Collected == 2 && status.Expected == 3 {
+					break
+				}
+				// Collection can legitimately report 503 for a dead original host;
+				// verify persisted bounded evidence directly in this native fixture.
+				central, e := observe.NewCentral(roots[current])
+				if e == nil {
+					status, e = central.Status()
+					if e == nil && status.Collected == 2 && status.Expected == 3 {
+						break
+					}
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("central collection hid failed original controller", e)
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			for i := range roots {
+				stop(i)
+			}
+			schemaOne := os.Getenv("TITANUS_SCHEMA_ONE_BINARY")
+			if schemaOne == "" {
+				t.Fatal("actual schema-one legacy binary required")
+			}
+			for i := range roots {
+				floor, e := offline.ReadSchemaFloor(roots[i])
+				if e != nil || floor.Schema != 2 {
+					t.Fatal("schema-two rollback floor absent", e)
+				}
+				loginfo, e := os.Stat(logs[i])
+				if e != nil {
+					t.Fatal(e)
+				}
+				binaries[i] = schemaOne
+				start(i)
+				proc := processes[i]
+				if e := proc.Wait(); e == nil {
+					t.Fatal("schema-one binary admitted schema two")
+				}
+				processes[i] = nil
+				logdata, e := os.ReadFile(logs[i])
+				if e != nil || int64(len(logdata)) < loginfo.Size() || !strings.Contains(string(logdata[loginfo.Size():]), "unfinished offline maintenance blocks startup") {
+					t.Fatal("schema-one binary refused for an unrelated reason", e, string(logdata))
+				}
+				binaries[i] = binary
+				start(i)
+			}
+			current = leader(-1)
+			state, e = clients[current].RealmState()
+			if e != nil || state.SchemaVersion != 2 || state.TaskSchedules[schedule.Name].Name != schedule.Name || len(state.SecretRotations) != 1 {
+				t.Fatal("M6 state lost after full process restart", e)
+			}
+			keys, e := secrets.Load(filepath.Join(roots[current], "private-keys.json"))
+			if e != nil {
+				t.Fatal(e)
+			}
+			plain, e := keys.Decrypt(state.Secrets["rotation-proof"][0])
+			if e != nil || string(plain) != "NATIVE_ROTATED_VALUE" {
+				t.Fatal("rotated ciphertext not functional", e)
+			}
+			clear(plain)
+			t.Log("TITANUS_NATIVE_M6_SCHEMA_ROTATION_COLLECTION_RECOVERY_OK", version.Info().Arch)
 		}
 		t.Log("TITANUS_NATIVE_MIXED_VERSION_SCHEMA_TRANSITION_OK", version.Info().Arch, "old="+os.Getenv("TITANUS_SCHEMA_OLD_REVISION"), "new="+version.Info().Revision)
 		return

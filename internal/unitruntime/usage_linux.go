@@ -12,6 +12,7 @@ import (
 type Usage struct {
 	RunID       string    `json:"run_id"`
 	CPUUsec     uint64    `json:"cpu_usec"`
+	Pids        uint64    `json:"pids"`
 	MemoryBytes uint64    `json:"memory_bytes"`
 	Time        time.Time `json:"time"`
 }
@@ -41,6 +42,14 @@ func (m *Manager) Usage(id string) (Usage, error) {
 	if e != nil {
 		return Usage{}, fmt.Errorf("invalid memory counter")
 	}
+	rawPids, e := os.ReadFile(filepath.Join(m.cgroupDir(id), "pids.current"))
+	if e != nil {
+		return Usage{}, e
+	}
+	pids, e := strconv.ParseUint(strings.TrimSpace(string(rawPids)), 10, 64)
+	if e != nil {
+		return Usage{}, fmt.Errorf("invalid actual PID counter")
+	}
 	var use uint64
 	found := false
 	for _, line := range strings.Split(string(cpu), "\n") {
@@ -56,5 +65,5 @@ func (m *Manager) Usage(id string) (Usage, error) {
 	if !found {
 		return Usage{}, fmt.Errorf("CPU usage counter unavailable")
 	}
-	return Usage{RunID: s.RunID, CPUUsec: use, MemoryBytes: v, Time: time.Now().UTC()}, nil
+	return Usage{RunID: s.RunID, CPUUsec: use, MemoryBytes: v, Pids: pids, Time: time.Now().UTC()}, nil
 }

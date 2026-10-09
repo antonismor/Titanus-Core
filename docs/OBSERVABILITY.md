@@ -91,3 +91,7 @@ isolation, HA, health, rollout and actual Ceph tests remain enabled.
 
 This milestone does not finish Tasks, autoscaling, encrypted secrets, Command
 Center, versioned release or multi-node release certification (milestones 9–10).
+
+Phase-2 M6 adds a separate bounded controller collection of structured audit/runtime
+logs and coverage alerts. The node-local/raw-output limits above still apply; see
+[PHASE2_ORCHESTRATION.md](PHASE2_ORCHESTRATION.md).

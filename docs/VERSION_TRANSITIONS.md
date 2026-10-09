@@ -86,3 +86,12 @@ and legacy reinstall are refused before selection changes. Local floor checks
 are bound to the exact committed Realm and migration. Disposable native CI shares a host kernel/network. Actual
 mixed-version independent-host rolling upgrades remain pending on the central
 large server. No user server is operated by this change.
+
+## Schema 1 → 2 (rc.8)
+
+The next explicit step enables the M6 policies; use `schema migrate ID REVISION 2`.
+Every original host must support schema two before its monotonically higher
+floor is prepared. The migration extends the immutable chain without modifying
+existing execution identities or operational state. rc.7 startup/reinstall and
+rollback are refused after preparation. See PHASE2_ORCHESTRATION.md for interrupted
+floor completion, key provisioning and the evidence/independent-host boundaries.

@@ -63,6 +63,9 @@ func (c *Controller) Once() error {
 	if err := c.maintainStorageFences(); err != nil {
 		return err
 	}
+	if err := c.reconcileSchedules(); err != nil {
+		return err
+	}
 	if err := c.reconcileTasks(); err != nil {
 		return err
 	}

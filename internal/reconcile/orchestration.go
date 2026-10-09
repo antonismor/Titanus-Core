@@ -175,6 +175,7 @@ func (c *Controller) autoscale() {
 		valid := true
 		count := 0
 		total := float64(0)
+		memoryTotal, pidsTotal := float64(0), float64(0)
 		if f.Template.CPUPercent < 1 || len(f.Template.Mounts) > 0 {
 			_ = c.Store.ResetAutoscaleWindow(name)
 			continue
@@ -200,6 +201,16 @@ func (c *Controller) autoscale() {
 				valid = false
 				continue
 			}
+			if (a.TargetMemory > 0 && f.Template.MemoryBytes < 1) || (a.TargetPids > 0 && f.Template.PidsMax < 1) {
+				valid = false
+				continue
+			}
+			if a.TargetMemory > 0 {
+				memoryTotal += float64(u.MemoryBytes) * 100 / float64(f.Template.MemoryBytes)
+			}
+			if a.TargetPids > 0 {
+				pidsTotal += float64(u.Pids) * 100 / float64(f.Template.PidsMax)
+			}
 			total += float64(u.CPUUsec-prev.CPUUsec) / float64(dt.Microseconds()) * 10000 / float64(f.Template.CPUPercent)
 			count++
 		}
@@ -207,12 +218,19 @@ func (c *Controller) autoscale() {
 			_ = c.Store.ResetAutoscaleWindow(name)
 			continue
 		}
-		average := total / float64(count)
-		desired := f.Instances
-		if math.Abs(average-float64(a.TargetCPU)) > float64(a.TargetCPU)*0.10 {
-			raw := math.Ceil(float64(count) * average / float64(a.TargetCPU))
+		desired := a.Min
+		for _, metric := range [][2]float64{{total / float64(count), float64(a.TargetCPU)}, {memoryTotal / float64(count), float64(a.TargetMemory)}, {pidsTotal / float64(count), float64(a.TargetPids)}} {
+			if metric[1] == 0 {
+				continue
+			}
+			raw := float64(f.Instances)
+			if math.Abs(metric[0]-metric[1]) > metric[1]*0.10 {
+				raw = math.Ceil(float64(count) * metric[0] / metric[1])
+			}
 			raw = math.Max(float64(a.Min), math.Min(float64(a.Max), raw))
-			desired = int(raw)
+			if int(raw) > desired {
+				desired = int(raw)
+			}
 		}
 		_ = c.Store.ApplyAutoscale(name, desired, now)
 	}
@@ -237,4 +255,56 @@ func (g *GuardedNodes) UnitUsage(a, id string) (unitruntime.Usage, error) {
 		return unitruntime.Usage{}, fmt.Errorf("runtime measurements unavailable")
 	}
 	return n.UnitUsage(a, id)
+}
+
+func (c *Controller) reconcileSchedules() error {
+	inspector, ok := c.Nodes.(InspectingNodes)
+	if !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	if c.Now != nil {
+		now = c.Now().UTC()
+	}
+	for name, j := range c.Store.Snapshot().TaskSchedules {
+		if j.Done || j.Paused {
+			continue
+		}
+		if e := c.Store.CheckLeader(); e != nil {
+			return e
+		}
+		if j.ActiveTask == "" {
+			if e := c.Store.DispatchScheduledTask(name, now); e != nil {
+				return e
+			}
+			continue
+		}
+		state := c.Store.Snapshot()
+		t, ok := state.Tasks[j.ActiveTask]
+		if !ok || !t.Terminal() {
+			continue
+		}
+		node, ok := state.Nodes[t.NodeID]
+		if !ok || node.State != realm.NodeReady || t.RunID == "" || t.ExitCode == nil {
+			continue
+		}
+		_, u, e := inspector.InspectUnit(node.Address, t.UnitID)
+		if e != nil || u.RunID != t.RunID || u.ExitCode == nil || *u.ExitCode != *t.ExitCode || u.Status == unitruntime.StatusActive || u.Status == unitruntime.StatusStarting {
+			continue
+		}
+		if e = c.Store.CheckLeader(); e != nil {
+			return e
+		}
+		stopped, e := c.Nodes.StopUnit(node.Address, t.UnitID)
+		if e != nil || stopped.PID != 0 || stopped.RunID != t.RunID {
+			continue
+		}
+		if e = c.Nodes.RevokeLease(node.Address, t.UnitID, t.LeaseToken); e != nil {
+			continue
+		}
+		if e = c.Store.FinishScheduledTask(name, t, now); e != nil {
+			return e
+		}
+	}
+	return nil
 }

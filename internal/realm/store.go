@@ -160,6 +160,8 @@ type Assignment struct {
 }
 
 type State struct {
+	TaskSchedules    map[string]TaskSchedule          `json:"task_schedules,omitempty"`
+	SecretRotations  []SecretRotation                 `json:"secret_rotations,omitempty"`
 	SchemaVersion    int                              `json:"schema_version,omitempty"`
 	SchemaMigrations []SchemaMigration                `json:"schema_migrations,omitempty"`
 	Gateways         map[string]Gateway               `json:"gateways,omitempty"`
@@ -917,7 +919,7 @@ func (s *Store) load(realmName string) error {
 		return e
 	}
 	if s.data.SchemaVersion > 0 {
-		if e := offline.CheckCommittedFloor(s.stateRoot, s.data.Name, s.data.SchemaMigrations[0].ID, s.data.SchemaVersion); e != nil {
+		if e := offline.CheckCommittedFloor(s.stateRoot, s.data.Name, s.data.SchemaMigrations[len(s.data.SchemaMigrations)-1].ID, s.data.SchemaVersion); e != nil {
 			return e
 		}
 	}

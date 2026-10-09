@@ -31,7 +31,7 @@ def private_json(path):
  return json.loads(path.read_text())
 if os.path.lexists(floorpath):
  floor=private_json(floorpath)
- if set(floor)!={'format','realm','migration_id','schema'} or floor['format']!='titanus-schema-floor/v1' or floor['schema']!=1 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{15,127}',floor['migration_id']):raise SystemExit('invalid schema floor')
+ if set(floor)!={'format','realm','migration_id','schema'} or floor['format']!='titanus-schema-floor/v1' or floor['schema'] not in (1,2) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{15,127}',floor['migration_id']):raise SystemExit('invalid schema floor')
  marker=pathlib.Path(str(state)+'.recovery-pending')
  if not os.path.lexists(marker) or private_json(marker)!=floor:raise SystemExit('incomplete schema rollback floor')
 for suffix in ['.recovery-pending','.backup-pending','.cluster-recovery-pending','.ceph-recovery-pending']:

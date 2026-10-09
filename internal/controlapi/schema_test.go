@@ -58,7 +58,7 @@ func TestSchemaAPIRequiresEveryOriginalVoterAndResumesInterruptedPrepare(t *test
 	api.Register(mux)
 	h := identity.LocalManagement(mux)
 	call := func() *httptest.ResponseRecorder {
-		b, _ := json.Marshal(SchemaRequest{"schema-api-test-001", store.Snapshot().Revision})
+		b, _ := json.Marshal(SchemaRequest{ID: "schema-api-test-001", ExpectedRevision: store.Snapshot().Revision})
 		r := httptest.NewRequest(http.MethodPost, "/v1/realm/schema", bytes.NewReader(b))
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

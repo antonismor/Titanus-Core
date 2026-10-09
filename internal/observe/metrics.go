@@ -32,7 +32,7 @@ func Operation(path string) string {
 	if len(parts) < 3 {
 		return "unknown"
 	}
-	allowed := map[string]bool{"realm/tasks": true, "realm/autoscalers": true, "realm/secrets": true, "realm/state": true, "realm/nodes": true, "realm/pulse": true, "realm/fleets": true, "realm/routes": true, "realm/policies": true, "realm/consensus": true, "identity/crl": true, "identity/renew": true, "node/units": true, "node/disks": true, "node/sources": true, "node/leases": true}
+	allowed := map[string]bool{"realm/task-schedules": true, "realm/secret-rotation": true, "realm/observations": true, "realm/alerts": true, "node/observation": true, "node/secret-keyring": true, "realm/schema": true, "compatibility": true, "realm/tasks": true, "realm/autoscalers": true, "realm/secrets": true, "realm/state": true, "realm/nodes": true, "realm/pulse": true, "realm/fleets": true, "realm/routes": true, "realm/policies": true, "realm/consensus": true, "identity/crl": true, "identity/renew": true, "node/units": true, "node/disks": true, "node/sources": true, "node/leases": true}
 	op := parts[1] + "/" + parts[2]
 	if !allowed[op] {
 		return "unknown"

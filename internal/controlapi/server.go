@@ -24,6 +24,8 @@ type LeaderGate interface {
 }
 
 type Server struct {
+	Central          *observe.Central
+	M6Client         M6Client
 	NodeID           string
 	StateRoot        string
 	SchemaPeers      []SchemaPeer
@@ -55,6 +57,7 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	s.registerM6(mux)
 	mux.HandleFunc("/v1/compatibility", s.authorize(s.compatibility))
 	mux.HandleFunc("/v1/node/schema-floor", s.authorize(s.schemaFloor))
 	mux.HandleFunc("/v1/realm/schema", s.authorize(s.schemaTransition))
@@ -386,6 +389,8 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		state.UnitMappings = nil
 		state.Disks = nil
 		state.Secrets = nil
+		state.TaskSchedules = nil
+		state.SecretRotations = nil
 		for name, t := range state.Tasks {
 			t.Template.Environment = nil
 			t.LeaseToken = ""

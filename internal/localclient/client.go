@@ -181,7 +181,19 @@ func (c *Client) ConsensusStatus() (map[string]string, error) {
 // Orchestration uses the privileged local management socket, with the same
 // admission, durable audit and consensus rules as the authenticated HTTPS API.
 func (c *Client) Orchestration(method, path string, body any) (json.RawMessage, error) {
-	if path != "/v1/realm/tasks" && path != "/v1/realm/autoscalers" && path != "/v1/realm/secrets" && !strings.HasPrefix(path, "/v1/realm/tasks/") && !strings.HasPrefix(path, "/v1/realm/autoscalers/") && !strings.HasPrefix(path, "/v1/realm/secrets/") {
+	allowed := false
+	for _, collection := range []string{"tasks", "autoscalers", "secrets", "task-schedules"} {
+		prefix := "/v1/realm/" + collection
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			allowed = true
+		}
+	}
+	for _, endpoint := range []string{"secret-rotation", "observations", "alerts"} {
+		if path == "/v1/realm/"+endpoint {
+			allowed = true
+		}
+	}
+	if !allowed {
 		return nil, fmt.Errorf("invalid orchestration endpoint")
 	}
 	var out json.RawMessage
@@ -197,5 +209,11 @@ func (c *Client) Compatibility() (controlapi.CompatibilityInfo, error) {
 func (c *Client) TransitionSchema(id string, expected uint64) (realm.SchemaMigration, error) {
 	var m realm.SchemaMigration
 	e := c.do(http.MethodPost, "/v1/realm/schema", controlapi.SchemaRequest{ID: id, ExpectedRevision: expected}, &m)
+	return m, e
+}
+
+func (c *Client) TransitionSchemaTo(id string, expected uint64, target int) (realm.SchemaMigration, error) {
+	var m realm.SchemaMigration
+	e := c.do(http.MethodPost, "/v1/realm/schema", controlapi.SchemaRequest{ID: id, ExpectedRevision: expected, Target: target}, &m)
 	return m, e
 }

@@ -102,7 +102,7 @@ func validateHostBound(p Plan, roots map[string]string, binding *ClusterBinding)
 	}
 	if state.SchemaVersion > 0 {
 		f, e := offline.ReadSchemaFloor(roots["state"])
-		if e != nil || f.Realm != state.Name || f.MigrationID != state.SchemaMigrations[0].ID {
+		if e != nil || f.Realm != state.Name || f.MigrationID != state.SchemaMigrations[len(state.SchemaMigrations)-1].ID {
 			return state, fmt.Errorf("schema floor missing or differs from committed migration")
 		}
 	}

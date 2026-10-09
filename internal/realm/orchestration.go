@@ -43,6 +43,10 @@ func (s *Store) CreateTask(t Task) error {
 	defer s.Orchestration.Unlock()
 	s.lock()
 	defer s.unlock()
+	return s.createTaskLocked(t)
+}
+
+func (s *Store) createTaskLocked(t Task) error {
 	if len(s.data.Tasks) >= 128 {
 		return fmt.Errorf("retained Task limit reached")
 	}
@@ -53,37 +57,14 @@ func (s *Store) CreateTask(t Task) error {
 		return fmt.Errorf("Task name already exists; execution is immutable")
 	}
 	t.ExecutionID = ""
-	if s.data.SchemaVersion == 1 {
+	if s.data.SchemaVersion >= 1 {
 		t.ExecutionID = taskIdentity(s.data.Name, t.Name, fmt.Sprintf("revision-%d", s.data.Revision+1))
 	}
-	t.UnitID = "task-" + t.Name
-	t.Template.Health.Normalize("never")
-	if t.Template.Health.Restart != "never" {
-		return fmt.Errorf("Tasks require restart never")
-	}
-	if len(t.Template.Secrets) > 0 {
-		if e := s.validateSecretsLocked(t.Template); e != nil {
-			return e
-		}
-	}
-	spec := unitruntime.Spec{ID: t.UnitID, Source: t.Template.Source, Command: t.Template.Command, Environment: t.Template.Environment, MemoryBytes: t.Template.MemoryBytes, CPUPercent: t.Template.CPUPercent, PidsMax: t.Template.PidsMax, Security: t.Template.Security, Health: t.Template.Health, Network: unitruntime.NetworkSpec{Fabric: t.Template.Fabric, Ports: t.Template.Ports}, Mounts: t.Template.Mounts}
-	spec.Normalize()
-	if e := spec.Validate(); e != nil {
+	var e error
+	t, e = normalizeTask(s.data, t)
+	if e != nil {
 		return e
 	}
-	// Normalize all launch fields so retries cannot produce a different spec.
-	t.Template.MemoryBytes = spec.MemoryBytes
-	t.Template.CPUPercent = spec.CPUPercent
-	t.Template.PidsMax = spec.PidsMax
-	t.Template.Security = spec.Security
-	t.Template.Health = spec.Health
-	t.Phase = TaskPending
-	t.NodeID = ""
-	t.LeaseToken = ""
-	t.RunID = ""
-	t.ExitCode = nil
-	t.CancelRequested = false
-	t.UpdatedAt = time.Now().UTC()
 	if s.data.Tasks == nil {
 		s.data.Tasks = map[string]Task{}
 	}
@@ -142,13 +123,14 @@ func (s *Store) PutSecret(r secrets.Record) error {
 	s.data.Secrets[r.Name] = append(s.data.Secrets[r.Name], r)
 	return s.commitLocked()
 }
-func (s *Store) validateSecretsLocked(t UnitTemplate) error {
+func (s *Store) validateSecretsLocked(t UnitTemplate) error { return validateSecretTemplate(s.data, t) }
+func validateSecretTemplate(state State, t UnitTemplate) error {
 	if e := secrets.ValidateRefs(t.Secrets, t.Environment); e != nil {
 		return e
 	}
 	for _, r := range t.Secrets {
 		found := false
-		for _, v := range s.data.Secrets[r.Name] {
+		for _, v := range state.Secrets[r.Name] {
 			if v.Version == r.Version && len(v.Ciphertext) > 0 {
 				found = true
 			}
@@ -208,6 +190,11 @@ func (s *Store) DeleteSecret(name string) error {
 			return fmt.Errorf("secret referenced by retained Task")
 		}
 	}
+	for _, schedule := range s.data.TaskSchedules {
+		if uses(schedule.Template) {
+			return fmt.Errorf("secret referenced by retained Task schedule")
+		}
+	}
 	if _, ok := s.data.Secrets[name]; !ok {
 		return fmt.Errorf("unknown secret")
 	}
@@ -219,6 +206,8 @@ func (s *Store) DeleteSecret(name string) error {
 }
 
 type Autoscaler struct {
+	TargetMemory     int       `json:"target_memory,omitempty"`
+	TargetPids       int       `json:"target_pids,omitempty"`
 	Fleet            string    `json:"fleet"`
 	Min              int       `json:"min"`
 	Max              int       `json:"max"`
@@ -238,7 +227,14 @@ func (s *Store) PutAutoscaler(a Autoscaler) error {
 	if !ok {
 		return fmt.Errorf("unknown Fleet")
 	}
-	if a.Min < 1 || a.Max < a.Min || a.Max > 1000 || a.TargetCPU < 10 || a.TargetCPU > 90 || a.CooldownSeconds < 10 || a.CooldownSeconds > 3600 || a.DownscaleSeconds < 30 || a.DownscaleSeconds > 86400 || f.Template.CPUPercent < 1 || len(f.Template.Mounts) > 0 {
+	if (a.TargetMemory != 0 || a.TargetPids != 0) && s.data.SchemaVersion < 2 {
+		return fmt.Errorf("additional metrics require schema 2")
+	}
+	targetOK := func(v int) bool { return v == 0 || v >= 10 && v <= 90 }
+	if !targetOK(a.TargetCPU) || !targetOK(a.TargetMemory) || !targetOK(a.TargetPids) || (a.TargetCPU == 0 && a.TargetMemory == 0 && a.TargetPids == 0) || (a.TargetMemory > 0 && f.Template.MemoryBytes < 1) || (a.TargetPids > 0 && f.Template.PidsMax < 1) {
+		return fmt.Errorf("invalid measured autoscale targets/limits")
+	}
+	if a.Min < 1 || a.Max < a.Min || a.Max > 1000 || a.CooldownSeconds < 10 || a.CooldownSeconds > 3600 || a.DownscaleSeconds < 30 || a.DownscaleSeconds > 86400 || f.Template.CPUPercent < 1 || len(f.Template.Mounts) > 0 {
 		return fmt.Errorf("invalid autoscaling policy; requires explicit CPU limit and disk-free Fleet")
 	}
 	if a.Min < f.MinimumAvailable {
@@ -320,4 +316,36 @@ func (s *Store) ResetAutoscaleWindow(name string) error {
 	a.LowSince = time.Time{}
 	s.data.Autoscalers[name] = a
 	return s.commitLocked()
+}
+
+func normalizeTask(state State, t Task) (Task, error) {
+	t.UnitID = "task-" + t.Name
+	t.Template.Health.Normalize("never")
+	if t.Template.Health.Restart != "never" {
+		return t, fmt.Errorf("Tasks require restart never")
+	}
+	if len(t.Template.Secrets) > 0 {
+		if e := validateSecretTemplate(state, t.Template); e != nil {
+			return t, e
+		}
+	}
+	spec := unitruntime.Spec{ID: t.UnitID, Source: t.Template.Source, Command: t.Template.Command, Environment: t.Template.Environment, MemoryBytes: t.Template.MemoryBytes, CPUPercent: t.Template.CPUPercent, PidsMax: t.Template.PidsMax, Security: t.Template.Security, Health: t.Template.Health, Network: unitruntime.NetworkSpec{Fabric: t.Template.Fabric, Ports: t.Template.Ports}, Mounts: t.Template.Mounts}
+	spec.Normalize()
+	if e := spec.Validate(); e != nil {
+		return t, e
+	}
+	// Normalize all launch fields so retries cannot produce a different spec.
+	t.Template.MemoryBytes = spec.MemoryBytes
+	t.Template.CPUPercent = spec.CPUPercent
+	t.Template.PidsMax = spec.PidsMax
+	t.Template.Security = spec.Security
+	t.Template.Health = spec.Health
+	t.Phase = TaskPending
+	t.NodeID = ""
+	t.LeaseToken = ""
+	t.RunID = ""
+	t.ExitCode = nil
+	t.CancelRequested = false
+	t.UpdatedAt = time.Now().UTC()
+	return t, nil
 }
