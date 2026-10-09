@@ -190,6 +190,11 @@ func (s *Store) DeleteSecret(name string) error {
 			return fmt.Errorf("secret referenced by retained Task")
 		}
 	}
+	for _, schedule := range s.data.TaskSchedules {
+		if uses(schedule.Template) {
+			return fmt.Errorf("secret referenced by retained Task schedule")
+		}
+	}
 	if _, ok := s.data.Secrets[name]; !ok {
 		return fmt.Errorf("unknown secret")
 	}

@@ -76,6 +76,26 @@ func ValidateSchemaChange(before, after State) error {
 	if after.SchemaVersion < before.SchemaVersion {
 		return fmt.Errorf("data schema rollback is unsupported; recover a pre-migration authenticated backup")
 	}
+	if before.SchemaVersion >= 2 {
+		if len(after.SecretRotations) < len(before.SecretRotations) || (len(before.SecretRotations) > 0 && !reflect.DeepEqual(after.SecretRotations[:len(before.SecretRotations)], before.SecretRotations)) {
+			return fmt.Errorf("immutable secret rotation receipt changed")
+		}
+		if len(after.SecretRotations) > len(before.SecretRotations)+1 || (len(after.SecretRotations) > len(before.SecretRotations) && after.SecretRotations[len(after.SecretRotations)-1].Revision != after.Revision) {
+			return fmt.Errorf("rotation receipt must bind its single commit")
+		}
+		for name, j := range before.TaskSchedules {
+			n, ok := after.TaskSchedules[name]
+			if !ok || !reflect.DeepEqual(schedulePolicy(j), schedulePolicy(n)) {
+				return fmt.Errorf("immutable Task schedule policy changed")
+			}
+		}
+		for name, t := range before.Tasks {
+			n, ok := after.Tasks[name]
+			if !ok || n.UnitID != t.UnitID || !reflect.DeepEqual(n.Template, t.Template) || !reflect.DeepEqual(n.RequiredLabels, t.RequiredLabels) {
+				return fmt.Errorf("retained Task attempt specification changed")
+			}
+		}
+	}
 	if before.SchemaVersion > 0 {
 		if len(after.SchemaMigrations) < len(before.SchemaMigrations) || !reflect.DeepEqual(after.SchemaMigrations[:len(before.SchemaMigrations)], before.SchemaMigrations) {
 			return fmt.Errorf("immutable schema migration changed")
