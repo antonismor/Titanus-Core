@@ -2,9 +2,13 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import http.server
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
 from unittest import mock
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1]
@@ -28,6 +32,42 @@ class Event:
     def is_set(self): return False
 
 
+class BoundedHTTP(unittest.TestCase):
+    def test_redirect_refused_and_slow_response_has_total_budget(self):
+        requests = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                requests.append(self.path)
+                if self.path == '/redirect':
+                    self.send_response(302); self.send_header('Location', '/target'); self.end_headers()
+                    return
+                if self.path == '/slow':
+                    self.send_response(200); self.send_header('Content-Length', '100'); self.end_headers()
+                    for _ in range(100):
+                        try:
+                            self.wfile.write(b'x'); self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+                        time.sleep(0.01)
+                    return
+                self.send_response(200); self.end_headers(); self.wfile.write(b'EXPECTED')
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            url = 'http://127.0.0.1:' + str(server.server_port)
+            opener = urllib.request.build_opener(acceptance.NoRedirect())
+            status, data, _ = acceptance.get(opener, url + '/redirect', 1)
+            self.assertEqual(status, 302)
+            self.assertNotIn('/target', requests)
+            self.assertEqual(acceptance.get(opener, url + '/target', 1)[:2], (200, b'EXPECTED'))
+            begin = time.monotonic()
+            self.assertEqual(acceptance.get(opener, url + '/slow', 0.08)[0], 0)
+            self.assertLess(time.monotonic() - begin, 0.5)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+
 class VMAdmissionAndCleanup(unittest.TestCase):
     def fixture(self, directory):
         sha = '1' * 40
@@ -39,13 +79,13 @@ class VMAdmissionAndCleanup(unittest.TestCase):
                     'cgroup_v2': True, 'boot_id_sha256': str(i) * 64}
             (directory / (node + '.json')).write_text(json.dumps(fact))
             nodes.append({'id': node, 'role': 'controller' if i < 3 else 'worker',
-                          'api': 'https://' + node + ':9443', 'facts': node + '.json'})
+                          'api': f'https://10.180.0.{i+11}:9443', 'facts': node + '.json'})
         key = directory / 'private.key'
         key.write_bytes(b'fixture-only')
         key.chmod(0o600)
         inv = {'format': 'titanus-acceptance-inventory/v1', 'revision': sha, 'realm': 'LAB',
                'ca': 'ca', 'certificate': 'certificate', 'key': key.name, 'nodes': nodes,
-               'canary': {'url': 'http://canary/integrity', 'sha256': hashlib.sha256(b'EXPECTED').hexdigest()},
+               'canary': {'url': 'http://10.180.0.100/integrity', 'sha256': hashlib.sha256(b'EXPECTED').hexdigest()},
                'fault': {'label': 'fixture', 'apply': ['fixture-apply'], 'revert': ['fixture-revert'],
                          'expected_unreachable': ['c0'], 'after_seconds': 5, 'duration_seconds': 5}}
         path = directory / 'inventory.json'
@@ -54,7 +94,7 @@ class VMAdmissionAndCleanup(unittest.TestCase):
                                   rate=1, workers=1, recovery_seconds=15, max_error_fraction=0, max_p95_seconds=2)
 
     def responses(self, opener, url, timeout):
-        node = url.split('//')[1].split(':')[0]
+        node = ['c0', 'c1', 'c2', 'w0', 'w1'][int(url.split('//')[1].split(':')[0].split('.')[-1])-11]
         if url.endswith('/compatibility'):
             return 200, {'node_id': node, 'realm': 'LAB', 'capabilities': {'build': {'revision': '1'*40, 'arch': 'amd64'}}}, 0
         if url.endswith('/diagnostics'):

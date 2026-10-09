@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import datetime
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -129,6 +130,10 @@ def origin(url, secure=True):
         raise ValueError('explicit credential-free HTTP(S) URL required')
     if secure and parsed.path not in ('', '/'):
         raise ValueError('API must be an HTTPS origin')
+    try:
+        ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        raise ValueError('numeric IP URLs required to avoid unbounded DNS resolution') from None
     return url.rstrip('/')
 
 
@@ -140,7 +145,16 @@ def get(opener, url, timeout):
         except urllib.error.HTTPError as error:
             response = error
         with response:
-            data = response.read(LIMIT + 1)
+            chunks, size = [], 0
+            while size <= LIMIT:
+                if time.monotonic() - begin >= timeout:
+                    raise ValueError('total response deadline exceeded')
+                chunk = response.read1(min(64 << 10, LIMIT + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            data = b''.join(chunks)
             if len(data) > LIMIT:
                 raise ValueError('response exceeds 2-MiB bound')
             return response.code, data, time.monotonic() - begin
@@ -189,6 +203,7 @@ def vm(args, out, report):
     report.update(revision=inv['revision'], inventory_sha256=digest(raw_inventory), topology=facts,
                   duration_requested_seconds=args.seconds, requests_per_second=args.rate,
                   integrity_sha256=expected_hash, host_facts_provenance='operator-collected per-host files; API build cross-checked live')
+    report['thresholds'] = {'max_error_fraction': args.max_error_fraction, 'max_p95_seconds': args.max_p95_seconds}
     fault = inv.get('fault')
     if fault:
         if not args.allow_faults:
@@ -239,6 +254,8 @@ def vm(args, out, report):
 
     baseline = probe()
     samples.append(baseline)
+    save(out / 'baseline.json', baseline)
+    report['baseline_sha256'] = digest((out / 'baseline.json').read_bytes())
     code, body, _ = get(public, canary, args.timeout)
     if not complete(baseline) or code != 200 or digest(body) != expected_hash:
         raise ValueError('baseline identity, complete diagnostics/collection and canary integrity required')
@@ -333,17 +350,17 @@ def main():
     facts.add_argument('--binary', default='/usr/local/lib/titanus/current/bin/titanus')
     facts.add_argument('--output', required=True)
     native = sub.add_parser('ci')
-    native.add_argument('--seconds', type=int, choices=range(15, 121), default=30)
-    native.add_argument('--cycles', type=int, choices=range(3, 33), default=10)
+    native.add_argument('--seconds', type=int, choices=range(15, 121), metavar='15..120', default=30)
+    native.add_argument('--cycles', type=int, choices=range(3, 33), metavar='3..32', default=10)
     native.add_argument('--output', required=True)
     lab = sub.add_parser('vm')
     lab.add_argument('--inventory', required=True)
     lab.add_argument('--output', required=True)
-    lab.add_argument('--seconds', type=int, choices=range(60, 3601), default=600)
+    lab.add_argument('--seconds', type=int, choices=range(60, 3601), metavar='60..3600', default=600)
     lab.add_argument('--rate', type=int, choices=range(1, 21), default=5)
     lab.add_argument('--workers', type=int, choices=range(1, 9), default=2)
     lab.add_argument('--timeout', type=float, default=3)
-    lab.add_argument('--recovery-seconds', type=int, choices=range(15, 121), default=90)
+    lab.add_argument('--recovery-seconds', type=int, choices=range(15, 121), metavar='15..120', default=90)
     lab.add_argument('--max-error-fraction', type=float, default=0)
     lab.add_argument('--max-p95-seconds', type=float, default=2)
     lab.add_argument('--allow-faults', action='store_true')
@@ -368,6 +385,8 @@ def main():
     except (Exception, KeyboardInterrupt) as error:
         # Exception classes only: responses/commands may contain private values.
         report['failure_class'] = type(error).__name__
+        if type(error) is ValueError:
+            report['failure_reason'] = str(error)
         print('Acceptance failed (' + type(error).__name__ + '); inspect private evidence and prerequisites.')
     finally:
         report.update(finished_at=utc(), elapsed_seconds=time.monotonic() - begin)

@@ -132,6 +132,7 @@ Create a mode-0600 inventory on the client (replace every sample value):
 All original controllers and registered execution/Gateway hosts must be listed.
 The profile admits exactly three controllers, at least two workers and 5–8 API
 hosts; Ceph-only hosts are documented separately, not invented API observations.
+Use numeric IP URLs (including the canary) to avoid an unbounded DNS resolver.
 Relative private paths resolve against the inventory's directory. CA verification
 and exact node/Realm/build checks are mandatory. Redirects are refused, and admin
 mTLS credentials are never used for the public workload URL. Only GETs are sent.
@@ -145,7 +146,9 @@ python3 scripts/acceptance.py vm --inventory inventory.json --seconds 600 \
 
 Choose availability/latency thresholds **before** running. Duration is 60–3600
 seconds, offered workload rate 1–20/s, workers 1–8, each HTTP timeout <=5 seconds,
-and recovery observation 15–120 seconds. Rate is capped and missed slots are
+and recovery observation 15–120 seconds. Responses are read incrementally under
+a wall-time budget; an in-flight socket read can add at most one socket timeout.
+Rate is capped and missed slots are
 skipped rather than backfilled. Diagnostics/identity/leader coverage probes run
 in parallel every five seconds after the previous finite probe completes, in
 addition to workload requests. Request/probe/cleanup deadlines can extend total
