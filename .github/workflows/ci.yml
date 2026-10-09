@@ -30,6 +30,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Acceptance evidence and release verifier failure checks
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
       - name: Race checks
         run: go test -race ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
 
@@ -205,6 +208,17 @@ jobs:
 
       - name: Exercise five real nodes and execution-network loss
         run: sudo env "PATH=$PATH" TITANUS_MULTINODE_TEST=1 TITANUS_BIN_DIR="$PWD/bin" go test ./cmd/titanusd -run TestNativeMultiNodeFailure -count=1 -v -timeout 480s
+
+      - name: Measure bounded sustained quorum failure and native lifecycle integrity
+        run: sudo env "PATH=$PATH" python3 scripts/acceptance.py ci --seconds 30 --cycles 10 --output /tmp/titanus-acceptance
+
+      - name: Keep measured acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-${{ matrix.runner }}
+          path: /tmp/titanus-acceptance/*
+          if-no-files-found: ignore
 
       - name: Verify native versioned install, live upgrade and binary rollback
         run: sudo env "PATH=$PATH" TITANUS_INSTALL_LIVE_TEST=1 bash scripts/ci-install-release.sh

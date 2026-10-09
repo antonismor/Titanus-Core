@@ -1,6 +1,6 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.8**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.9**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
@@ -50,9 +50,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.8-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.8-linux-amd64.tar.gz
-./titanus-0.4.0-rc.8-linux-amd64/bin/titanus setup
+sha256sum -c titanus-0.4.0-rc.9-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.9-linux-amd64.tar.gz
+./titanus-0.4.0-rc.9-linux-amd64/bin/titanus setup
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -211,3 +211,10 @@ are unsupported and refused. See BACKUP_RECOVERY.md for the complete procedure.
 Schema transitions and rollback limits: see [VERSION_TRANSITIONS.md](VERSION_TRANSITIONS.md). Binary installation never changes the data schema.
 
 Phase-2 M6 schema-two orchestration, central structured collection/alerts, reference-preserving key rotation and measured memory/PID policies: [PHASE2_ORCHESTRATION.md](PHASE2_ORCHESTRATION.md).
+
+## Measured acceptance profile
+
+See [ACCEPTANCE.md](ACCEPTANCE.md) for bounded native load/failure/lifecycle evidence,
+independent VM prerequisites, explicit fault cleanup, machine-readable reports and
+the central-server runbook. rc.9 retains the M4/M5/M6 scope limits. Publication
+checks the complete internal inventory and all four ELF architectures per package.
