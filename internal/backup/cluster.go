@@ -556,7 +556,12 @@ func verifyInstalledEntries(m Manifest) error {
 		want[n].MTimeNS = 0
 	}
 	if !reflect.DeepEqual(actual, want) {
-		return fmt.Errorf("restored inventory changed/contains extra paths")
+		for i := 0; i < len(actual) && i < len(want); i++ {
+			if actual[i] != want[i] {
+				return fmt.Errorf("restored inventory differs: actual=%+v expected=%+v", actual[i], want[i])
+			}
+		}
+		return fmt.Errorf("restored inventory changed/contains extra paths: actual=%d expected=%d", len(actual), len(want))
 	}
 
 	for _, v := range m.Entries {
@@ -591,18 +596,28 @@ func CompleteClusterRecovery(setPath, keyPath, proofPaths, output string) error 
 	if e != nil {
 		return e
 	}
-	seen := map[string]bool{}
 	proofs := []RecoveryProof{}
-	storage := false
-	if len(paths) != len(set.Hosts)+1 {
-		return fmt.Errorf("every host plus storage proof required")
-	}
 	for _, p := range paths {
 		var proof RecoveryProof
 		if e = readSigned(p, keyPath, &proof); e != nil {
 			return e
 		}
-		if proof.Format != "titanus-recovery-proof/v1" || proof.SetSHA256 != sha || proof.ID != set.Intent.Binding.ID || proof.StateSHA256 != set.Intent.Binding.RealmSHA256 || proof.CreatedAt.IsZero() {
+		proofs = append(proofs, proof)
+	}
+	if e = validateRecoveryProofs(set, sha, proofs); e != nil {
+		return e
+	}
+	sort.Slice(proofs, func(i, j int) bool { return proofs[i].Node < proofs[j].Node })
+	return writeSigned(output, keyPath, RecoveryCompletion{"titanus-recovery-completion/v1", sha, set.Intent.Binding.ID, proofs})
+}
+func validateRecoveryProofs(set ClusterSet, sha string, proofs []RecoveryProof) error {
+	if len(proofs) != len(set.Hosts)+1 {
+		return fmt.Errorf("every host plus storage proof required")
+	}
+	seen := map[string]bool{}
+	storage := false
+	for _, proof := range proofs {
+		if proof.Format != "titanus-recovery-proof/v1" || proof.SetSHA256 != sha || proof.ID != set.Intent.Binding.ID || proof.StateSHA256 != set.Intent.Binding.RealmSHA256 || proof.CreatedAt.IsZero() || proof.CreatedAt.After(time.Now().UTC()) {
 			return fmt.Errorf("mixed recovery proof")
 		}
 		if proof.Storage {
@@ -622,13 +637,11 @@ func CompleteClusterRecovery(setPath, keyPath, proofPaths, output string) error 
 			}
 			seen[proof.Node] = true
 		}
-		proofs = append(proofs, proof)
 	}
 	if !storage || len(seen) != len(set.Hosts) {
 		return fmt.Errorf("incomplete recovered cluster")
 	}
-	sort.Slice(proofs, func(i, j int) bool { return proofs[i].Node < proofs[j].Node })
-	return writeSigned(output, keyPath, RecoveryCompletion{"titanus-recovery-completion/v1", sha, set.Intent.Binding.ID, proofs})
+	return nil
 }
 func FinalizeClusterHost(setPath, keyPath, node, completionPath string) error {
 	l, e := offline.Exclusive()
@@ -653,6 +666,9 @@ func FinalizeClusterHost(setPath, keyPath, node, completionPath string) error {
 	}
 	if c.Format != "titanus-recovery-completion/v1" || c.SetSHA256 != sha || c.ID != set.Intent.Binding.ID || len(c.Proofs) != len(set.Hosts)+1 {
 		return fmt.Errorf("complete matching cluster receipt required")
+	}
+	if e = validateRecoveryProofs(set, sha, c.Proofs); e != nil {
+		return e
 	}
 	for _, h := range set.Hosts {
 		if h.Plan.Node == node {

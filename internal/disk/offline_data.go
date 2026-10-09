@@ -3,6 +3,7 @@ package disk
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,17 +47,23 @@ func (m *Manager) ExportOfflineData(c Catalog, destination string) (digest strin
 		return "", e
 	}
 	defer guard()
-	a, e := m.acquire(s.Name, "maintenance", "offline-export")
+	a, e := m.acquireOffline(s.Name, "offline-export")
 	if e != nil {
 		return "", e
 	}
-	defer func() { a.Close(); m.detach(s.Name) }()
+	defer func() {
+		if a.File != nil {
+			err = errors.Join(err, a.Close())
+		}
+		err = errors.Join(err, m.detach(s.Name))
+	}()
 	if s.Provider == ProviderCephFS {
 		return "", copyTree(a.Path, destination)
 	}
 	if e = a.Close(); e != nil {
 		return "", e
 	}
+	a.File = nil
 	if e = m.detach(s.Name); e != nil {
 		return "", e
 	}
@@ -74,7 +81,7 @@ func (m *Manager) ExportOfflineData(c Catalog, destination string) (digest strin
 // ImportOfflineData preserves the exact original backend object identity. It
 // cannot provision an unrelated Ceph cluster or replace a reused object name.
 // The caller authenticates the entire recovery set and fencing BEFORE invoking.
-func (m *Manager) ImportOfflineData(c Catalog, source string) error {
+func (m *Manager) ImportOfflineData(c Catalog, source string) (err error) {
 	if e := c.Validate(); e != nil {
 		return e
 	}
@@ -105,11 +112,16 @@ func (m *Manager) ImportOfflineData(c Catalog, source string) error {
 		return e
 	}
 	defer guard()
-	a, e := m.acquire(s.Name, "maintenance", "offline-import")
+	a, e := m.acquireOffline(s.Name, "offline-import")
 	if e != nil {
 		return e
 	}
-	defer func() { a.Close(); m.detach(s.Name) }()
+	defer func() {
+		if a.File != nil {
+			err = errors.Join(err, a.Close())
+		}
+		err = errors.Join(err, m.detach(s.Name))
+	}()
 	if s.Provider == ProviderCephFS {
 		entries, e := os.ReadDir(a.Path)
 		if e != nil {
@@ -128,6 +140,7 @@ func (m *Manager) ImportOfflineData(c Catalog, source string) error {
 	if e = a.Close(); e != nil {
 		return e
 	}
+	a.File = nil
 	if e = m.detach(s.Name); e != nil {
 		return e
 	}
@@ -149,7 +162,7 @@ func (m *Manager) ImportOfflineData(c Catalog, source string) error {
 }
 
 // WithOfflineData is bounded by native ownership, not a lease timeout.
-func (m *Manager) WithOfflineData(c Catalog, check func(string) error) error {
+func (m *Manager) WithOfflineData(c Catalog, check func(string) error) (err error) {
 	unlock, e := m.lock(c.Spec.Name)
 	if e != nil {
 		return e
@@ -171,15 +184,20 @@ func (m *Manager) WithOfflineData(c Catalog, check func(string) error) error {
 		return e
 	}
 	defer guard()
-	a, e := m.acquire(s.Name, "maintenance", "offline-verify")
+	a, e := m.acquireOffline(s.Name, "offline-verify")
 	if e != nil {
 		return e
 	}
-	defer func() { a.Close(); m.detach(s.Name) }()
+	defer func() {
+		if a.File != nil {
+			err = errors.Join(err, a.Close())
+		}
+		err = errors.Join(err, m.detach(s.Name))
+	}()
 	return check(a.Path)
 }
 
-func (m *Manager) RawImageDigest(c Catalog) (string, error) {
+func (m *Manager) RawImageDigest(c Catalog) (digest string, err error) {
 	if c.Spec.Provider != ProviderCephRBD {
 		return "", fmt.Errorf("RBD required")
 	}
@@ -206,7 +224,10 @@ func (m *Manager) RawImageDigest(c Catalog) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	defer commandOutput("rbd", append(m.rbdBaseArgs(cfg), "device", "unmap", device)...)
+	defer func() {
+		_, cleanup := commandOutput("rbd", append(m.rbdBaseArgs(cfg), "device", "unmap", device)...)
+		err = errors.Join(err, cleanup)
+	}()
 	f, e := os.Open(device)
 	if e != nil {
 		return "", e

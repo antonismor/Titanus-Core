@@ -47,6 +47,17 @@ func (m *Manager) Acquire(name, unit, run string) (*Attachment, error) {
 	return m.acquire(name, unit, run)
 }
 func (m *Manager) acquire(name, unit, run string) (*Attachment, error) {
+	return m.acquireMode(name, unit, run, true)
+}
+
+// Offline recovery must not rewrite the restored host's ownership journal.
+// The same native lock is still acquired; only execution-journal publication is
+// suppressed because no Unit incarnation is being started.
+func (m *Manager) acquireOffline(name, run string) (*Attachment, error) {
+	return m.acquireMode(name, "maintenance", run, false)
+}
+
+func (m *Manager) acquireMode(name, unit, run string, publishOwner bool) (*Attachment, error) {
 	spec, err := m.Inspect(name)
 	if err != nil {
 		return nil, err
@@ -59,7 +70,7 @@ func (m *Manager) acquire(name, unit, run string) (*Attachment, error) {
 	}
 	var before []Writer
 	reused := mounted(m.mountPath(name))
-	if spec.ManagedID != "" {
+	if spec.ManagedID != "" && publishOwner {
 		before, err = m.writers(spec)
 		if err != nil {
 			return nil, err
@@ -69,7 +80,7 @@ func (m *Manager) acquire(name, unit, run string) (*Attachment, error) {
 	if err != nil {
 		return nil, err
 	}
-	if spec.ManagedID != "" {
+	if spec.ManagedID != "" && publishOwner {
 		if err = m.captureWriter(spec, before, reused); err != nil {
 			return nil, err
 		}
@@ -128,9 +139,11 @@ func (m *Manager) acquire(name, unit, run string) (*Attachment, error) {
 	}
 	boot, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	a := &Attachment{Path: data, File: f, Owner: Owner{Unit: unit, Run: run, Boot: string(boot), Token: hex.EncodeToString(token[:]), AcquiredAt: time.Now().UTC()}}
-	if err = writeJSON(filepath.Join(control, "owner.json"), a.Owner, 0600); err != nil {
-		f.Close()
-		return nil, err
+	if publishOwner {
+		if err = writeJSON(filepath.Join(control, "owner.json"), a.Owner, 0600); err != nil {
+			f.Close()
+			return nil, err
+		}
 	}
 	return a, nil
 }
