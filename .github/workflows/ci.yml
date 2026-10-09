@@ -94,6 +94,28 @@ jobs:
       - name: Verify mapped namespaces, device and LSM kernel enforcement
         run: sudo env "PATH=$PATH" TITANUS_ISOLATION_KERNEL_TEST=1 TITANUS_INIT_BINARY="$PWD/bin/titanus-init" go test ./internal/unitruntime -run 'TestNative(Isolation|DiskOwnership|LogSinkFailure)' -count=1 -v -timeout 180s
 
+      - name: Measure bounded sustained quorum failure and native lifecycle integrity
+        run: |
+          set +e
+          sudo env "PATH=$PATH" python3 scripts/acceptance.py ci --seconds 30 --cycles 10 --output /tmp/titanus-acceptance
+          status=$?
+          if [[ -d /tmp/titanus-acceptance ]]; then
+            sudo chown -R "$(id -u):$(id -g)" /tmp/titanus-acceptance
+            cat /tmp/titanus-acceptance/summary.json
+            if [[ "$status" != 0 && -f /tmp/titanus-acceptance/go-test.ndjson ]]; then
+              tail -n 100 /tmp/titanus-acceptance/go-test.ndjson
+            fi
+          fi
+          exit "$status"
+
+      - name: Keep measured acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-${{ matrix.runner }}
+          path: /tmp/titanus-acceptance/*
+          if-no-files-found: ignore
+
       - name: Verify replicated Control-plane HA on native architecture
         run: go test -race ./internal/consensus ./internal/controllerclient -count=1 -timeout 180s
 
@@ -208,17 +230,6 @@ jobs:
 
       - name: Exercise five real nodes and execution-network loss
         run: sudo env "PATH=$PATH" TITANUS_MULTINODE_TEST=1 TITANUS_BIN_DIR="$PWD/bin" go test ./cmd/titanusd -run TestNativeMultiNodeFailure -count=1 -v -timeout 480s
-
-      - name: Measure bounded sustained quorum failure and native lifecycle integrity
-        run: sudo env "PATH=$PATH" python3 scripts/acceptance.py ci --seconds 30 --cycles 10 --output /tmp/titanus-acceptance
-
-      - name: Keep measured acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: acceptance-${{ matrix.runner }}
-          path: /tmp/titanus-acceptance/*
-          if-no-files-found: ignore
 
       - name: Verify native versioned install, live upgrade and binary rollback
         run: sudo env "PATH=$PATH" TITANUS_INSTALL_LIVE_TEST=1 bash scripts/ci-install-release.sh
