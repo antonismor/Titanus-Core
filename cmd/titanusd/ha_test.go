@@ -334,7 +334,7 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 					t.Fatal(e)
 				}
 				if state.SchemaVersion == 2 {
-					if state.Migrations[len(state.Migrations)-1].ID != migrationID {
+					if len(state.SchemaMigrations) != 2 || state.SchemaMigrations[1].ID != migrationID {
 						t.Fatal("unexpected schema-two migration")
 					}
 					break
