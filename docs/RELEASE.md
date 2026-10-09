@@ -1,6 +1,6 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.3**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.4**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
@@ -38,7 +38,7 @@ or releases with a different revision are rejected. No PR-run artifact is
 published. Archives contain no user state, PKI, encryption keys or Source payloads.
 The SHA files provide integrity; no external signing identity or KMS is claimed.
 
-## Fresh install
+## Guided preparation and fresh install
 
 On a dedicated supported Linux host, install prerequisites: cgroups v2, OverlayFS,
 user/PID/mount/net namespaces, nftables/iproute2/nsenter, Landlock ABI >=3,
@@ -50,10 +50,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.3-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.3-linux-amd64.tar.gz
-sudo bash titanus-0.4.0-rc.3-linux-amd64/scripts/install-release.sh \
-  --bundle "$PWD/titanus-0.4.0-rc.3-linux-amd64"
+sha256sum -c titanus-0.4.0-rc.4-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.4-linux-amd64.tar.gz
+./titanus-0.4.0-rc.4-linux-amd64/bin/titanus setup
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -66,16 +65,31 @@ service paths are rejected; migrate them explicitly instead of silently replacin
 an existing installation. `--root /absolute/staging-root` exercises file activation
 without controlling the host's services.
 
-Configure `/etc/titanus/daemon.env` and `agent.env`, PKI, controller membership,
-networking and pre-staged Source/remote Disk configuration using the existing
-Realm deployment documentation as a configuration reference. The legacy
-`realm deploy`/interactive SSH provisioner installs flat binaries and is not an
-upgrade/configuration command for versioned hosts; it refuses those hosts before
-staging or rewriting their PKI/configuration. Configure versioned hosts explicitly.
-Provision secret keyrings separately as in
-ORCHESTRATION.md. The installer creates directories, but never generates user
-PKI, changes networking, provisions Ceph devices or starts a new unconfigured
-cluster implicitly. Start the configured daemon/agent with systemctl.
+The rc.4 wizard writes a versioned plan and prepares verified per-node installation
+files locally. Supply both AMD64/ARM64 archives, their independently obtained
+SHA-256 values and the exact published revision, even for a single-architecture
+Realm. Review the adjacent private `.deployment` directory before application.
+For a saved plan, `titanus deploy release plan.json --output ./reviewed-deployment`
+also prepares files without contacting hosts. Application requires a new output
+directory and explicit `--apply`, or an explicit affirmative wizard answer.
+See [GUIDED_INSTALL.md](GUIDED_INSTALL.md) for the complete workflow.
+
+Fresh preparation generates private role-scoped PKI, `/etc/titanus/daemon.env`
+and `agent.env`, per-voter membership and identical network seeds. Only the first
+voter bootstraps. Admin credentials stay in the preparation's local `operator/`
+directory (`ca.crt`, `ca.crl`, `admin.crt`, `admin.key`); workers receive only their
+node identity. Keep these files private and renew the initial 24-hour certificates
+through the authenticated lifecycle. Ceph credentials and secret keyrings require
+separate protected provisioning. Host prerequisites/interfaces are not installed
+or configured by preparation; managed VIP ownership requires separate registration
+with its exclusion policy. Explicit initial Ceph provisioning runs after Realm
+installation and is outside the binary activation transaction.
+
+The low-level installer remains available with `--bundle DIR` and, for initial
+configuration, `--config DIR` from the prepared node inventory. It does not generate
+PKI or start a new unconfigured cluster implicitly. The legacy `titanus deploy
+realm` provisioner installs flat binaries and refuses versioned hosts before
+staging or rewriting configuration; use the guided versioned workflow instead.
 
 ## Upgrade and binary rollback
 
@@ -84,7 +98,7 @@ Source/Disk/snapshot catalogs, data and separately backed-up PKI/keyrings. Stora
 snapshots have offline/ownership requirements; see STORAGE_LIFECYCLE.md. Do not
 roll back the UID mapping ledger independently of data.
 
-Install the next compatible verified bundle with the same command. The installer
+Prepare a guided `upgrade` plan with the next compatible verified bundle. The installer
 stops only active Titanus agent/daemon services, atomically changes the selected
 release and keeps the prior selection. `KillMode=process` preserves native Unit
 PID 1 and host monitors; changing the binaries does not terminate live workloads.
@@ -103,10 +117,13 @@ Rollback is **binary selection only**, never an automatic reversal of live Realm
 PKI, secret, Source or storage data. It is permitted only between installed
 bundles with the same explicit supported state profile. In an HA cluster, perform
 one controller at a time, maintain quorum and verify the leader/replicated state.
-Full mixed-version wire/schema compatibility is not promised. This first release
-has no prior publicly released compatible version; CI upgrades between separately
-identified fixture builds with the same profile and verifies live-daemon service
-restart and a retained Unit.
+Full mixed-version wire/schema compatibility and availability-preserving rollout
+ordering are not promised; M5 remains open. rc.3 and rc.4 declare the same v3
+state profile, but CI upgrades between separately identified fixture builds of
+the current source with that profile, verifies live-daemon service restart and a
+retained Unit, and does not prove an rc.3/rc.4 mixed-version cluster. Guided
+rollback additionally requires the actual previous selection to match its exact
+requested version/revision. It preserves configuration, identities and data.
 
 Old release directories are retained for operator-directed cleanup. Installer
 selection failures do not delete them or discard persistent configuration/data.
@@ -114,17 +131,29 @@ To leave the versioned line for a legacy flat install or a changed schema,
 perform an explicitly planned offline migration and restore; automatic downgrade
 to pre-isolation/pre-storage ownership versions is unsupported.
 
-## Candidate 2 storage boundary
+## Candidate state-profile boundaries
 
 Candidate 2 adds opt-in replicated Disk catalogs, exact native writer identities,
 durable automatic remote fencing/transfer, node quarantine and cluster-owned
-UID/GID mappings. See STORAGE_FAILOVER.md. The state profile is now v2: the
-versioned installer deliberately rejects cross-profile activation/rollback,
+UID/GID mappings. See STORAGE_FAILOVER.md. rc.1 uses v1, rc.2 uses v2, and
+rc.3/rc.4 use v3. The versioned installer deliberately rejects cross-profile activation/rollback,
 including rc.1 to rc.2 and rc.2 to rc.3. A tested cross-version migration is phase-2 M5 work;
 do not run old controller binaries against catalogs or new mapping state.
 Same-profile native installation/upgrade/rollback is still tested using distinct
 fixture version identities, not a claim of a mixed-version cluster upgrade.
-The published rc.1 archive/tag is preserved. Final VM/site acceptance remains open.
+All published rc.1/rc.2/rc.3 archives and tags are preserved. Final VM/site
+acceptance remains open.
+
+## Guided native verification
+
+Both native architecture jobs verify staged initial configuration, corrupt
+inventory/overwrite rejection and exact-target rollback. The guided test validates
+both archives (its foreign architecture is a private cross-built fixture), installs
+three generated controller configurations in separate roots and starts their real
+native daemons with separate loopback binds and Unix sockets. It requires mTLS
+admin access, functional quorum-backed PKI and preserved seeded network state.
+This shares one disposable runner kernel and does not exercise real SSH host
+application, independent boot/power, heterogeneous VMs or external VIP routing.
 
 The default Make build version comes from `internal/version/version.go`.
 Packaging and publication compare every binary/archive against that exact

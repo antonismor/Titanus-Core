@@ -140,29 +140,24 @@ Run:
 titanus setup
 ```
 
-The ANSI interface collects the Realm topology and network/storage requirements, including management IPs, Fabric IPs, control VIP, Ceph public and cluster IPs, Fabric and service CIDRs, node capabilities and SSH/bootstrap access.
+The ANSI interface collects Realm topology, management/Fabric and optional Ceph
+addresses, capabilities, SSH access, API/Raft ports and exact release identities.
+It supports initial installation, same-profile upgrade and pinned binary rollback
+through a validated `titanus-plan/v2` plan. Preparation verifies both native
+archives and writes an adjacent private `.deployment` directory for review.
 
-The lifecycle is:
+Preparation is offline by default. Host application requires explicitly enabling
+it in the wizard or using `titanus deploy release plan.json --output ./deployment --apply`
+with a new output directory. That action performs SSH preflight before
+transfer, applies nodes serially and records partial completion. Initial operator
+admin credentials remain in the private local `operator/` directory; they are
+not installed on workers. See [Guided lifecycle installation](docs/GUIDED_INSTALL.md)
+for the review workflow, credential handling and transition limits.
 
-```text
-DISCOVER
-   ↓
-ASK
-   ↓
-PLAN
-   ↓
-VALIDATE
-   ↓
-SIMULATE
-   ↓
-CONFIRM
-   ↓
-DEPLOY
-   ↓
-VERIFY
-```
-
-Destructive storage operations are never implied by simply entering an IP or selecting a node. They require an explicit reviewed Plan.
+Gateway VIP ownership is registered separately with its fencing policy. Ceph
+provisioning requires explicit initial-plan approval and selected devices;
+upgrade/rollback refuses provisioning. Independent VM/host application remains
+deferred to final laboratory acceptance.
 
 ## Current repository stage
 
@@ -282,15 +277,16 @@ and Fleet rollback histories. Followers and minority partitions reject Realm
 operations. Agents and Gateways discover the available leader among explicitly
 configured mTLS endpoints; the reconciler verifies quorum before node actions.
 
-`realm deploy` configures all voters and a separate authenticated consensus port
-(default 9444). `titanus realm consensus` reports local Raft status. Standalone
+The guided versioned installer configures all voters and a separate authenticated
+consensus port (default 9444). `titanus realm consensus` reports local Raft status. Standalone
 single-controller behavior remains available; HA-managed state cannot be edited
 through the old direct-file path. Native AMD64/ARM64 CI exercises real TLS quorum,
 leader loss, partition/rejoin, full log restart and snapshot recovery.
 
 See [Control-plane HA](docs/CONTROL_PLANE_HA.md) for configuration, migration and
-precise limits: 3/5 static voters, a 512 KiB Realm entry cap, Sources pre-staged on
-all controllers, designated-primary PKI signing and separate storage fencing.
+precise consensus limits: 3/5 static voters and a 512 KiB Realm entry cap. Phase-2
+[HA lifecycle](docs/HA_LIFECYCLE.md) extends the original baseline with verified
+Source distribution, quorum-controlled signing and fenced Gateway VIP ownership.
 Release-candidate verification includes isolated-node transport and failure tests; physical host/site acceptance remains separate.
 
 ## Mandatory native Unit isolation
@@ -352,8 +348,8 @@ Pulse expiry and lease fencing. These nodes share a runner kernel; physical host
 reboot, site networking and hardware acceptance are not implied. See
 [Release and recovery](docs/RELEASE.md) for prerequisites, migration, key/state
 backups and the distinction between binary rollback and data/schema rollback.
-The current candidate line is `0.4.0-rc.3`; `0.4.0-rc.1` remains an unchanged
-published checkpoint. Phase 2 is tracked in issue #20. Code/CI validation is
+The current candidate line is `0.4.0-rc.4`; published `rc.1`, `rc.2` and `rc.3`
+remain unchanged checkpoints. Phase 2 is tracked in issue #20. Code/CI validation is
 separate from pending independent-VM and physical-host acceptance.
 
 Phase-2 HA adds quorum-committed PKI policy/signing sequence, verified controller
