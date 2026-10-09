@@ -1,9 +1,11 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sort"
@@ -31,31 +33,32 @@ type NodeSpec struct {
 	SSHUser       string       `json:"ssh_user"`
 	SSHPort       int          `json:"ssh_port"`
 	Capabilities  []Capability `json:"capabilities"`
-	CephDevices  []string     `json:"ceph_devices,omitempty"`
+	CephDevices   []string     `json:"ceph_devices,omitempty"`
 }
 
 type CephSpec struct {
-	Enabled        bool   `json:"enabled"`
-	PublicCIDR     string `json:"public_cidr,omitempty"`
-	ClusterCIDR    string `json:"cluster_cidr,omitempty"`
-	Replication    int    `json:"replication"`
-	EnableRBD      bool   `json:"enable_rbd"`
-	EnableCephFS   bool   `json:"enable_cephfs"`
-	EnableRGW      bool   `json:"enable_rgw"`
-	RequestedTB    int    `json:"requested_usable_tb,omitempty"`
-	Provision      bool   `json:"provision"`
+	Enabled      bool   `json:"enabled"`
+	PublicCIDR   string `json:"public_cidr,omitempty"`
+	ClusterCIDR  string `json:"cluster_cidr,omitempty"`
+	Replication  int    `json:"replication"`
+	EnableRBD    bool   `json:"enable_rbd"`
+	EnableCephFS bool   `json:"enable_cephfs"`
+	EnableRGW    bool   `json:"enable_rgw"`
+	RequestedTB  int    `json:"requested_usable_tb,omitempty"`
+	Provision    bool   `json:"provision"`
 }
 
 type RealmPlan struct {
-	Version      string     `json:"version"`
-	RealmName    string     `json:"realm_name"`
-	ControlVIP   string     `json:"control_vip,omitempty"`
-	FabricCIDR   string     `json:"fabric_cidr"`
-	ServiceCIDR  string     `json:"service_cidr"`
-	CreatedAt    time.Time  `json:"created_at"`
-	Nodes        []NodeSpec `json:"nodes"`
-	Ceph         CephSpec   `json:"ceph"`
-	AutoDeploy   bool       `json:"auto_deploy"`
+	Version      string        `json:"version"`
+	RealmName    string        `json:"realm_name"`
+	ControlVIP   string        `json:"control_vip,omitempty"`
+	FabricCIDR   string        `json:"fabric_cidr"`
+	ServiceCIDR  string        `json:"service_cidr"`
+	CreatedAt    time.Time     `json:"created_at"`
+	Nodes        []NodeSpec    `json:"nodes"`
+	Ceph         CephSpec      `json:"ceph"`
+	AutoDeploy   bool          `json:"auto_deploy"`
+	Installation *Installation `json:"installation,omitempty"`
 }
 
 func (p *RealmPlan) Normalize() {
@@ -79,6 +82,23 @@ func (p *RealmPlan) Normalize() {
 }
 
 func (p RealmPlan) Validate() error {
+	if err := p.validateInstallation(); err != nil {
+		return err
+	}
+	if p.Version != "" && p.Version != "titanus-plan/v1" && p.Version != "titanus-plan/v2" {
+		return fmt.Errorf("unsupported plan version")
+	}
+	if p.Installation != nil {
+		if p.Version != "titanus-plan/v2" {
+			return fmt.Errorf("versioned installation requires plan v2")
+		}
+		if err := p.Installation.Validate(); err != nil {
+			return err
+		}
+		if p.ControlVIP != "" {
+			return fmt.Errorf("control VIP requires a separately registered/fenced Gateway; controller origins are used for installation")
+		}
+	}
 	if strings.TrimSpace(p.RealmName) == "" {
 		return errors.New("realm name is required")
 	}
@@ -117,9 +137,9 @@ func (p RealmPlan) Validate() error {
 		}
 
 		for label, ip := range map[string]string{
-			"management": n.ManagementIP,
-			"fabric": n.FabricIP,
-			"ceph-public": n.CephPublicIP,
+			"management":   n.ManagementIP,
+			"fabric":       n.FabricIP,
+			"ceph-public":  n.CephPublicIP,
 			"ceph-cluster": n.CephClusterIP,
 		} {
 			if ip == "" {
@@ -172,6 +192,9 @@ func (p RealmPlan) Validate() error {
 		}
 	}
 
+	if p.Installation != nil && controlCount != 1 && controlCount != 3 && controlCount != 5 {
+		return fmt.Errorf("CONTROL node count must be 1, 3 or 5")
+	}
 	if controlCount == 0 {
 		return errors.New("at least one CONTROL-capable node is required")
 	}
@@ -213,7 +236,7 @@ func nodesWithCapability(nodes []NodeSpec, wanted Capability) []NodeSpec {
 				out = append(out, n)
 				break
 			}
-	}
+		}
 	}
 	return out
 }
@@ -232,8 +255,13 @@ func LoadPlan(path string) (RealmPlan, error) {
 	if err != nil {
 		return p, err
 	}
-	if err := json.Unmarshal(data, &p); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&p); err != nil {
 		return p, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return p, fmt.Errorf("trailing plan content")
 	}
 	p.Normalize()
 	return p, p.Validate()

@@ -360,3 +360,5 @@ Phase-2 HA adds quorum-committed PKI policy/signing sequence, verified controlle
 Source replication/recovery, and fenced Gateway VIP epochs. See
 [HA_LIFECYCLE.md](docs/HA_LIFECYCLE.md) for private-key provisioning, optional
 out-of-band power fencing, and deferred independent-host acceptance.
+
+The versioned terminal installer and its offline review/apply workflow are documented in [Guided lifecycle installation](docs/GUIDED_INSTALL.md).

@@ -11,7 +11,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/ansi"
 	"github.com/antonismor/Titanus-Core/internal/model"
-	"github.com/antonismor/Titanus-Core/internal/remote"
+	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
 type Wizard struct {
@@ -44,11 +44,17 @@ func (w *Wizard) Run() (Result, error) {
 		return Result{}, err
 	}
 
+	operation, err := w.askInt("Operation: 1 initial install, 2 upgrade, 3 binary rollback", 1, 1, 3)
+	if err != nil {
+		return Result{}, err
+	}
+	install := &model.Installation{Operation: []string{"install", "upgrade", "rollback"}[operation-1], APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242, Start: true}
 	plan := model.RealmPlan{
-		Version:     "titanus-plan/v1",
-		CreatedAt:   time.Now().UTC(),
-		FabricCIDR:  "10.210.0.0/16",
-		ServiceCIDR: "10.220.0.0/16",
+		Installation: install,
+		Version:      "titanus-plan/v2",
+		CreatedAt:    time.Now().UTC(),
+		FabricCIDR:   "10.210.0.0/16",
+		ServiceCIDR:  "10.220.0.0/16",
 	}
 
 	plan.RealmName, err = w.ask("Realm name", "TITANUS-REALM", true)
@@ -64,12 +70,7 @@ func (w *Wizard) Run() (Result, error) {
 		return Result{}, err
 	}
 
-	if mode != 1 {
-		plan.ControlVIP, err = w.ask("Control virtual IP (optional)", "", false)
-		if err != nil {
-			return Result{}, err
-		}
-	}
+	fmt.Fprintln(w.out, "Controllers use the configured HTTPS origins; register Gateway VIPs separately after exclusion policy is configured.")
 
 	defaultNodes := 1
 	if mode != 1 {
@@ -165,7 +166,9 @@ func (w *Wizard) Run() (Result, error) {
 	if mode == 3 {
 		plan.Ceph.Enabled = true
 		fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Magenta, "Ceph storage"))
-		plan.Ceph.Provision, err = w.askBool("Provision a new Ceph cluster automatically", true)
+		if install.Operation == "install" {
+			plan.Ceph.Provision, err = w.askBool("Provision a new Ceph cluster automatically", false)
+		}
 		if err != nil {
 			return Result{}, err
 		}
@@ -215,7 +218,6 @@ func (w *Wizard) Run() (Result, error) {
 			fmt.Fprintln(w.out)
 			fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Yellow, "Ceph OSD device selection"))
 			fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "Only devices explicitly selected here may be erased by Titanus."))
-			executor := remote.NewSSHExecutor()
 			for i := range plan.Nodes {
 				if !hasCapability(plan.Nodes[i], model.CapabilityStorage) {
 					continue
@@ -223,19 +225,7 @@ func (w *Wizard) Run() (Result, error) {
 				node := &plan.Nodes[i]
 				fmt.Fprintln(w.out)
 				fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Cyan, node.Name+" ("+node.ManagementIP+")"))
-				discovered, discoverErr := executor.DiscoverBlockDevices(*node)
-				known := map[string]remote.BlockDevice{}
-				if discoverErr != nil {
-					fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "  Automatic disk discovery failed: "+discoverErr.Error()))
-				} else if len(discovered) == 0 {
-					fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "  No unused whole disks were discovered automatically."))
-				} else {
-					fmt.Fprintln(w.out, "  Eligible unmounted whole disks:")
-					for _, device := range discovered {
-						known[device.Path] = device
-						fmt.Fprintf(w.out, "    %-14s %-10s %s\n", device.Path, humanBytes(device.Size), device.Model)
-					}
-				}
+
 				raw, askErr := w.ask("  Ceph data devices (comma separated, e.g. /dev/sdb,/dev/sdc)", "", true)
 				if askErr != nil {
 					return Result{}, askErr
@@ -246,9 +236,6 @@ func (w *Wizard) Run() (Result, error) {
 						continue
 					}
 					node.CephDevices = append(node.CephDevices, device)
-					if _, ok := known[device]; !ok && len(known) > 0 {
-						fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "  Warning: "+device+" was not in the automatically discovered safe-device list."))
-					}
 				}
 			}
 
@@ -262,7 +249,59 @@ func (w *Wizard) Run() (Result, error) {
 		}
 	}
 
-	plan.AutoDeploy, err = w.askBool("Deploy the complete Titanus Realm automatically after saving the Plan", false)
+	install.ReleaseVersion, err = w.ask("Target release version", version.Version, true)
+	if err != nil {
+		return Result{}, err
+	}
+	revision := version.Revision
+	if revision == "unknown" {
+		revision = ""
+	}
+	install.Revision, err = w.ask("Exact tested main SHA for target release", revision, true)
+	if err != nil {
+		return Result{}, err
+	}
+	if install.Operation != "rollback" {
+		install.Archives = map[string]model.Archive{}
+		for _, arch := range []string{"amd64", "arm64"} {
+			file, e := w.ask(arch+" downloaded native archive", "", true)
+			if e != nil {
+				return Result{}, e
+			}
+			sum, e := w.ask(arch+" published archive SHA256", "", true)
+			if e != nil {
+				return Result{}, e
+			}
+			install.Archives[arch] = model.Archive{Path: file, SHA256: sum}
+		}
+	}
+	install.PKIDir, err = w.ask("Persistent private Realm PKI directory", ".titanus-pki/"+plan.RealmName, true)
+	if err != nil {
+		return Result{}, err
+	}
+	install.APIPort, err = w.askInt("mTLS API port", 9443, 1, 65535)
+	if err != nil {
+		return Result{}, err
+	}
+	install.RaftPort, err = w.askInt("mTLS Raft port", install.APIPort+1, 1, 65535)
+	if err != nil {
+		return Result{}, err
+	}
+	install.NodePrefix, err = w.askInt("Per-node Unit subnet prefix", 24, 16, 30)
+	if err != nil {
+		return Result{}, err
+	}
+	install.VXLANID, err = w.askInt("Fabric VXLAN ID", 4242, 1, 16777215)
+	if err != nil {
+		return Result{}, err
+	}
+	if install.Operation == "install" {
+		install.Start, err = w.askBool("Start services when the prepared installation is applied", true)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	plan.AutoDeploy, err = w.askBool("Apply the verified deployment to hosts after saving and preparing the Plan", false)
 	if err != nil {
 		return Result{}, err
 	}
