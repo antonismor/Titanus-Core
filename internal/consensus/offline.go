@@ -64,6 +64,9 @@ func ReadOfflineState(root string) (realm.State, error) {
 	if e = json.Unmarshal(data, &c); e != nil || c.Profile != version.StateProfile || c.State.Revision == 0 || c.State.Nodes == nil || c.State.Fleets == nil || c.State.Assignments == nil || c.State.Routes == nil || c.State.Policies == nil {
 		return realm.State{}, fmt.Errorf("invalid HA shutdown checkpoint")
 	}
+	if e := realm.ValidateSchema(c.State); e != nil {
+		return realm.State{}, e
+	}
 	for name, want := range map[string]string{"raft.db": c.DatabaseSHA256, "membership.json": c.MembershipSHA256} {
 		got, e := fileDigest(filepath.Join(dir, name))
 		if e != nil || got != want {
@@ -94,6 +97,9 @@ func ReadOfflineState(root string) (realm.State, error) {
 		var state realm.State
 		if len(log.Data) > MaxStateBytes || json.Unmarshal(log.Data, &state) != nil || state.Name != c.State.Name || state.Revision > c.State.Revision {
 			return realm.State{}, fmt.Errorf("unapplied/uncertain Raft command prevents offline backup")
+		}
+		if e := realm.ValidateSchema(state); e != nil {
+			return realm.State{}, e
 		}
 		if state.Revision == c.State.Revision {
 			want, _ := json.Marshal(c.State)

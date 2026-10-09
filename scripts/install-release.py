@@ -12,8 +12,30 @@ if live:
  if not stat.S_ISREG(maintenance_stat.st_mode) or maintenance_stat.st_uid!=0 or maintenance_stat.st_mode&0o777!=0o600:raise SystemExit('unsafe offline maintenance lock')
  try:fcntl.flock(maintenance_fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
  except BlockingIOError:raise SystemExit('offline Titanus maintenance is active')
- for suffix in ['.recovery-pending','.backup-pending']:
-  if os.path.lexists('/var/lib/titanus'+suffix):raise SystemExit('unfinished offline maintenance blocks installation')
+ schema_fd=os.open('/run/titanus-schema.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+ schema_stat=os.fstat(schema_fd)
+ if not stat.S_ISREG(schema_stat.st_mode) or schema_stat.st_uid!=0 or schema_stat.st_mode&0o777!=0o600:raise SystemExit('unsafe schema maintenance lock')
+ fcntl.flock(schema_fd,fcntl.LOCK_EX)
+state=root/'var/lib/titanus'
+if live:
+ envfile=root/'etc/titanus/daemon.env'
+ if envfile.is_file():
+  configured=dict(line.split('=',1) for line in envfile.read_text().splitlines() if '=' in line).get('TITANUS_STATE_ROOT','/var/lib/titanus')
+  if not configured.startswith('/') or pathlib.Path(configured).is_symlink():raise SystemExit('unsafe configured state root')
+  state=pathlib.Path(configured)
+floor=None
+floorpath=state/'compatibility/schema-floor.json'
+def private_json(path):
+ st=path.lstat()
+ if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_mode&0o777!=0o600 or st.st_size>4096:raise ValueError('unsafe schema floor')
+ return json.loads(path.read_text())
+if os.path.lexists(floorpath):
+ floor=private_json(floorpath)
+ if set(floor)!={'format','realm','migration_id','schema'} or floor['format']!='titanus-schema-floor/v1' or floor['schema']!=1 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{15,127}',floor['migration_id']):raise SystemExit('invalid schema floor')
+ marker=pathlib.Path(str(state)+'.recovery-pending')
+ if not os.path.lexists(marker) or private_json(marker)!=floor:raise SystemExit('incomplete schema rollback floor')
+for suffix in ['.recovery-pending','.backup-pending','.cluster-recovery-pending','.ceph-recovery-pending']:
+ if os.path.lexists(str(state)+suffix) and not (suffix=='.recovery-pending' and floor):raise SystemExit('unfinished offline maintenance blocks installation')
 base=root/'usr/local/lib/titanus';base.mkdir(parents=True,exist_ok=True)
 def syncdir(path):
  fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
@@ -43,6 +65,12 @@ def verified(bundle,inspect_binaries=True,checksum_data=None):
   command=[str(bundle/'bin'/name),'version','--json'] if name=='titanus' else [str(bundle/'bin'/name),'--version-json']
   if json.loads(subprocess.check_output(command,timeout=5))!=meta:raise ValueError('binary manifest identity mismatch')
  return meta
+def check_schema(bundle,meta):
+ if floor is None:return
+ for name in ['titanus','titanusd','titanus-agent','titanus-init']:
+  try:c=json.loads(subprocess.check_output([str(bundle/'bin'/name),'--capabilities-json'],timeout=5,stderr=subprocess.DEVNULL))
+  except Exception as e:raise ValueError('binary rollback lacks advertised schema support: '+name) from e
+  if c.get('format')!='titanus-capabilities/v1' or c.get('build')!=meta or not c['protocol_min']<=1<=c['protocol_max'] or not c['read_schema_min']<=floor['schema']<=c['read_schema_max'] or not c['write_schema_min']<=floor['schema']<=c['write_schema_max']:raise ValueError('binary is incompatible with prepared data schema: '+name)
 lock=(base/'install.lock').open('a');os.chmod(base/'install.lock',0o600);fcntl.flock(lock,fcntl.LOCK_EX)
 current=base/'current';previous=base/'previous';old=os.readlink(current) if current.is_symlink() else None
 services=[];created_links=[];created_config=[];switched=False
@@ -74,6 +102,7 @@ try:
     if stage.exists():shutil.rmtree(stage)
  if args.expect_version and meta['version']!=args.expect_version:raise ValueError('selected version differs from requested target')
  if args.expect_revision and meta['revision']!=args.expect_revision:raise ValueError('selected revision differs from requested tested SHA')
+ check_schema(candidate,meta)
  configuration={}
  if args.config:
   if args.rollback or old:raise ValueError('configuration is for initial installation only')
@@ -97,6 +126,7 @@ try:
  if old:
   oldpath=(base/old).resolve()
   if oldpath.parent!=(base/'releases').resolve() or verified(oldpath)['state_profile']!=meta['state_profile']:raise ValueError('incompatible current state profile')
+  check_schema(oldpath,verified(oldpath))
  if live:
   for service in ['titanus-agent.service','titanusd.service']:
    if subprocess.run(['systemctl','is-active','--quiet',service]).returncode==0:services.append(service)

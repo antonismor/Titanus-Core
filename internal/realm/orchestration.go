@@ -21,6 +21,7 @@ const (
 )
 
 type Task struct {
+	ExecutionID     string            `json:"execution_id,omitempty"`
 	Name            string            `json:"name"`
 	Template        UnitTemplate      `json:"template"`
 	RequiredLabels  map[string]string `json:"required_labels,omitempty"`
@@ -50,6 +51,10 @@ func (s *Store) CreateTask(t Task) error {
 	}
 	if _, ok := s.data.Tasks[t.Name]; ok {
 		return fmt.Errorf("Task name already exists; execution is immutable")
+	}
+	t.ExecutionID = ""
+	if s.data.SchemaVersion == 1 {
+		t.ExecutionID = taskIdentity(s.data.Name, t.Name, fmt.Sprintf("revision-%d", s.data.Revision+1))
 	}
 	t.UnitID = "task-" + t.Name
 	t.Template.Health.Normalize("never")
@@ -94,6 +99,7 @@ func (s *Store) UpdateTask(t Task) error {
 	if !ok || old.Terminal() {
 		return fmt.Errorf("Task cannot be updated")
 	}
+	t.ExecutionID = old.ExecutionID
 	t.Template = old.Template
 	t.RequiredLabels = old.RequiredLabels
 	t.UnitID = old.UnitID

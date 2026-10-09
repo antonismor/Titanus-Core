@@ -20,6 +20,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
 type NodeState string
@@ -49,20 +50,21 @@ type RealmNetwork struct {
 }
 
 type Node struct {
-	PowerQuarantined   bool               `json:"power_quarantined,omitempty"`
-	StorageQuarantined bool               `json:"storage_quarantined,omitempty"`
-	ID                 string             `json:"id"`
-	Address            string             `json:"address"`
-	FabricAddress      string             `json:"fabric_address,omitempty"`
-	FabricCIDR         string             `json:"fabric_cidr,omitempty"`
-	Capabilities       []model.Capability `json:"capabilities"`
-	Labels             map[string]string  `json:"labels,omitempty"`
-	Resources          Resources          `json:"resources"`
-	State              NodeState          `json:"state"`
-	LastPulse          time.Time          `json:"last_pulse"`
-	JoinedAt           time.Time          `json:"joined_at"`
-	Failures           uint64             `json:"failures"`
-	Successes          uint64             `json:"successes"`
+	Compatibility      *version.Capabilities `json:"compatibility,omitempty"`
+	PowerQuarantined   bool                  `json:"power_quarantined,omitempty"`
+	StorageQuarantined bool                  `json:"storage_quarantined,omitempty"`
+	ID                 string                `json:"id"`
+	Address            string                `json:"address"`
+	FabricAddress      string                `json:"fabric_address,omitempty"`
+	FabricCIDR         string                `json:"fabric_cidr,omitempty"`
+	Capabilities       []model.Capability    `json:"capabilities"`
+	Labels             map[string]string     `json:"labels,omitempty"`
+	Resources          Resources             `json:"resources"`
+	State              NodeState             `json:"state"`
+	LastPulse          time.Time             `json:"last_pulse"`
+	JoinedAt           time.Time             `json:"joined_at"`
+	Failures           uint64                `json:"failures"`
+	Successes          uint64                `json:"successes"`
 }
 
 type UnitTemplate struct {
@@ -157,6 +159,8 @@ type Assignment struct {
 }
 
 type State struct {
+	SchemaVersion    int                              `json:"schema_version,omitempty"`
+	SchemaMigrations []SchemaMigration                `json:"schema_migrations,omitempty"`
 	Gateways         map[string]Gateway               `json:"gateways,omitempty"`
 	GatewayTransfers map[string]GatewayTransfer       `json:"gateway_transfers,omitempty"`
 	Sources          map[string]SourceRecord          `json:"sources,omitempty"`
@@ -182,6 +186,7 @@ type Store struct {
 	// Serializes desired changes and physical rollout operations.
 	Orchestration     sync.Mutex
 	path              string
+	stateRoot         string
 	mu                sync.Mutex
 	data              State
 	consensus         Consensus
@@ -198,7 +203,7 @@ func Open(stateRoot, realmName string) (*Store, error) {
 	if haErr != nil && !os.IsNotExist(haErr) {
 		return nil, haErr
 	}
-	store := &Store{path: path, haManaged: haErr == nil}
+	store := &Store{stateRoot: stateRoot, path: path, haManaged: haErr == nil}
 	if err := store.load(realmName); err != nil {
 		return nil, err
 	}
@@ -216,6 +221,9 @@ func (s *Store) UpsertNode(node Node) error {
 	defer s.unlock()
 	if strings.TrimSpace(node.ID) == "" {
 		return fmt.Errorf("node ID is required")
+	}
+	if !version.Admits(node.Compatibility, s.data.SchemaVersion) {
+		return fmt.Errorf("node protocol/data capabilities do not admit active schema")
 	}
 	existing, existed := s.data.Nodes[node.ID]
 	if node.JoinedAt.IsZero() {
@@ -904,6 +912,9 @@ func (s *Store) load(realmName string) error {
 	if err := json.Unmarshal(data, &s.data); err != nil {
 		return err
 	}
+	if e := ValidateSchema(s.data); e != nil {
+		return e
+	}
 	if s.data.Nodes == nil {
 		s.data.Nodes = map[string]Node{}
 	}
@@ -964,6 +975,9 @@ func (s *Store) commitLocked() error {
 	}
 	s.data.Revision++
 	s.data.UpdatedAt = time.Now().UTC()
+	if e := ValidateSchema(s.data); e != nil {
+		return e
+	}
 	if s.consensus != nil {
 		return s.consensus.Apply(cloneState(s.data))
 	}

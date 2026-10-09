@@ -18,14 +18,22 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/controllerclient"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/localclient"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
+	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
 // Native CI runs this against the built production daemon on AMD64 and ARM64.
 // It kills real processes, rather than gracefully closing Raft fixture objects.
-func TestNativeHADaemonCrash(t *testing.T) {
-	if os.Getenv("TITANUS_HA_DAEMON_TEST") != "1" {
+func TestNativeHADaemonCrash(t *testing.T)    { runNativeHADaemon(t, false) }
+func TestNativeSchemaTransition(t *testing.T) { runNativeHADaemon(t, true) }
+func runNativeHADaemon(t *testing.T, transition bool) {
+	mode := "TITANUS_HA_DAEMON_TEST"
+	if transition {
+		mode = "TITANUS_SCHEMA_NATIVE_TEST"
+	}
+	if os.Getenv(mode) != "1" {
 		t.Skip("requires explicit native daemon integration mode")
 	}
 	if os.Geteuid() != 0 {
@@ -34,6 +42,14 @@ func TestNativeHADaemonCrash(t *testing.T) {
 	binary := os.Getenv("TITANUS_DAEMON_BINARY")
 	if !filepath.IsAbs(binary) {
 		t.Fatal("absolute daemon binary required")
+	}
+	binaries := [3]string{binary, binary, binary}
+	if transition {
+		old := os.Getenv("TITANUS_SCHEMA_OLD_BINARY")
+		if !filepath.IsAbs(old) {
+			t.Fatal("pinned legacy daemon binary required")
+		}
+		binaries = [3]string{old, old, old}
 	}
 	ca, err := identity.InitAuthority(t.TempDir(), "HA-CI")
 	if err != nil {
@@ -123,7 +139,7 @@ func TestNativeHADaemonCrash(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		cmd := exec.Command(binary)
+		cmd := exec.Command(binaries[i])
 		// Replace inherited task configuration so the fixture cannot address a real
 		// Realm, a host Unix socket or user cgroups. No Units are created in this test.
 		env := []string{}
@@ -169,6 +185,134 @@ func TestNativeHADaemonCrash(t *testing.T) {
 		return -1
 	}
 	current := leader(-1)
+
+	if transition {
+		migration := "native-schema-transition-001"
+		for i := 0; i < 3; i++ {
+			stop(i)
+			binaries[i] = binary
+			start(i)
+			current = leader(-1)
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				info, e := clients[i].Compatibility()
+				if e == nil && info.Capabilities.Supports(1) {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			state, e := clients[current].RealmState()
+			if e != nil {
+				t.Fatal(e)
+			}
+			if state.SchemaVersion != 0 {
+				t.Fatal("binary upgrade migrated data automatically")
+			}
+			if i < 2 {
+				// Target migration must be denied while even one original voter runs the
+				// actual legacy binary. Writes remain possible under the legacy schema.
+				if _, e = clients[i].TransitionSchema(migration, state.Revision); e == nil {
+					t.Fatal("migration accepted legacy voter")
+				}
+				if _, e = clients[current].CreateFleet(realm.Fleet{Name: fmt.Sprintf("mixed-%d", i), Instances: 0, Template: realm.UnitTemplate{Source: "app", Command: []string{"v1"}}}); e != nil {
+					t.Fatal("mixed-version quorum write", e)
+				}
+			}
+		}
+		current = leader(-1)
+		// Simulate an interrupted preparation on one host. Restart preserves the
+		// prepared floor but does not manufacture a committed migration.
+		partial := (current + 1) % 3
+		if e := offline.PrepareSchemaFloor(roots[partial], offline.NewSchemaFloor("HA-CI", migration, 1)); e != nil {
+			t.Fatal(e)
+		}
+		stop(partial)
+		start(partial)
+		current = leader(-1)
+		before, e := clients[current].RealmState()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if before.SchemaVersion != 0 {
+			t.Fatal("interrupted preparation altered quorum schema")
+		}
+		// Unreachable original voter rejects full prepare without committing.
+		stop(partial)
+		if _, e = clients[current].TransitionSchema(migration, before.Revision); e == nil {
+			t.Fatal("migration accepted absent original voter")
+		}
+		after, e := clients[current].RealmState()
+		if e != nil || after.SchemaVersion != 0 {
+			t.Fatal("failed prepare committed schema", e)
+		}
+		start(partial)
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, e = clients[partial].Compatibility(); e == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		current = leader(-1)
+		before, e = clients[current].RealmState()
+		if e != nil {
+			t.Fatal(e)
+		}
+		committed, e := clients[current].TransitionSchema(migration, before.Revision)
+		if e != nil {
+			t.Fatal("prepared quorum migration", e)
+		}
+		state, e := clients[current].RealmState()
+		if e != nil || state.SchemaVersion != 1 {
+			t.Fatal("migration not committed", e)
+		}
+		if len(state.Fleets) != 2 {
+			t.Fatal("mixed-version state lost")
+		}
+		// Lost-response retry returns the same identity/revision, even with a stale
+		// expected revision, without proposing another schema change.
+		again, e := clients[current].TransitionSchema(migration, before.Revision)
+		if e != nil || again.ID != committed.ID || again.Revision != committed.Revision {
+			t.Fatal("migration replay not idempotent", e)
+		}
+		stop(current)
+		current = leader(current)
+		state, e = clients[current].RealmState()
+		if e != nil || state.SchemaVersion != 1 {
+			t.Fatal("schema lost after controller crash", e)
+		}
+		for i := 0; i < 3; i++ {
+			stop(i)
+		}
+		for i := 0; i < 3; i++ {
+			if e := offline.CheckSchemaFloor(roots[i]); e != nil {
+				t.Fatal("floor missing on voter", e)
+			}
+			binaries[i] = os.Getenv("TITANUS_SCHEMA_OLD_BINARY")
+			start(i)
+			proc := processes[i]
+			if e := proc.Wait(); e == nil {
+				t.Fatal("legacy daemon accepted migrated data")
+			}
+			processes[i] = nil
+			logdata, _ := os.ReadFile(logs[i])
+			if !strings.Contains(string(logdata), "unfinished offline maintenance") {
+				t.Fatal("old binary refused for an unrelated reason")
+			}
+			binaries[i] = binary
+			start(i)
+		}
+		current = leader(-1)
+		state, e = clients[current].RealmState()
+		if e != nil || state.SchemaVersion != 1 {
+			t.Fatal("migrated quorum did not restart", e)
+		}
+		if _, e = clients[current].CreateFleet(realm.Fleet{Name: "schema1-proof", Instances: 0, Template: realm.UnitTemplate{Source: "app", Command: []string{"v1"}}}); e != nil {
+			t.Fatal("migrated quorum write", e)
+		}
+		t.Log("TITANUS_NATIVE_MIXED_VERSION_SCHEMA_TRANSITION_OK", version.Info().Arch, "old="+os.Getenv("TITANUS_SCHEMA_OLD_REVISION"), "new="+version.Info().Revision)
+		return
+	}
 	input := t.TempDir()
 	write(filepath.Join(input, "app"), []byte("native-source-data"), 0755)
 	if e := source.NewManager(roots[current]).ImportDirectory("app", input); e != nil {

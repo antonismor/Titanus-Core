@@ -19,6 +19,9 @@ func (s *Store) EnableConsensus(c Consensus) error {
 	if s.consensus != nil {
 		return fmt.Errorf("Realm consensus already enabled")
 	}
+	if e := ValidateSchema(c.Snapshot()); e != nil {
+		return e
+	}
 	s.consensus = c
 	s.data = c.Snapshot()
 	return nil

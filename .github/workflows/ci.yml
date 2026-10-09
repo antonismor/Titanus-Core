@@ -96,6 +96,9 @@ jobs:
       - name: Kill and recover real HA daemons
         run: sudo env "PATH=$PATH" TITANUS_HA_DAEMON_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" go test ./cmd/titanusd -run TestNativeHADaemonCrash -count=1 -v -timeout 180s
 
+      - name: Upgrade real legacy/current voters and commit a guarded schema transition
+        run: sudo env "PATH=$PATH" bash scripts/ci-schema-transition.sh
+
       - name: Verify native Gateway VIP withdrawal and retired-epoch restart
         run: sudo env "PATH=$PATH" TITANUS_GATEWAY_VIP_TEST=1 go test ./internal/route -run TestNativeGatewayVIP -count=1 -v -timeout 90s
 

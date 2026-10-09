@@ -199,7 +199,7 @@ func restoreBound(archive, keyPath, fencePath string, expected Plan, afterRename
 	if binding != nil {
 		return m, syncDir(filepath.Dir(expected.StateRoot))
 	}
-	if e = os.Remove(expected.StateRoot + ".recovery-pending"); e != nil {
+	if e = offline.FinishRecovery(expected.StateRoot); e != nil {
 		return m, e
 	}
 	return m, syncDir(filepath.Dir(expected.StateRoot))

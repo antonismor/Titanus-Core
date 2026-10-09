@@ -348,7 +348,7 @@ Pulse expiry and lease fencing. These nodes share a runner kernel; physical host
 reboot, site networking and hardware acceptance are not implied. See
 [Release and recovery](docs/RELEASE.md) for prerequisites, migration, key/state
 backups and the distinction between binary rollback and data/schema rollback.
-The current candidate line is `0.4.0-rc.6`; published `rc.1`, `rc.2`, `rc.3`, `rc.4` and `rc.5`
+The current candidate line is `0.4.0-rc.7`; published `rc.1`, `rc.2`, `rc.3`, `rc.4` and `rc.5`
 remain unchanged checkpoints. Phase 2 is tracked in issue #20. Code/CI validation is
 separate from pending independent-VM and physical-host acceptance.
 
@@ -368,3 +368,5 @@ omitting them. See [BACKUP_RECOVERY.md](docs/BACKUP_RECOVERY.md) for prerequisit
 operator fencing, encryption/metadata limits and the exact supported scope.
 Independent-host disaster acceptance and fresh-backend/snapshot-history recovery
 are not claimed by this profile.
+
+Version/schema transitions: [docs/VERSION_TRANSITIONS.md](docs/VERSION_TRANSITIONS.md).

@@ -24,6 +24,10 @@ type LeaderGate interface {
 }
 
 type Server struct {
+	NodeID           string
+	StateRoot        string
+	SchemaPeers      []SchemaPeer
+	TransitionClient TransitionClient
 	Gateway          GatewayRuntime
 	GatewayClient    GatewayClient
 	PowerFencer      PowerFencer
@@ -51,6 +55,9 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/compatibility", s.authorize(s.compatibility))
+	mux.HandleFunc("/v1/node/schema-floor", s.authorize(s.schemaFloor))
+	mux.HandleFunc("/v1/realm/schema", s.authorize(s.schemaTransition))
 	mux.HandleFunc("/v1/realm/gateways/", s.authorize(s.gateway))
 	mux.HandleFunc("/v1/node/gateway/withdraw", s.authorize(s.withdrawGateway))
 	mux.HandleFunc("/v1/realm/sources/", s.authorize(s.publishSource))

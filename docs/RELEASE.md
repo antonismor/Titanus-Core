@@ -1,6 +1,6 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.6**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.7**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
@@ -50,9 +50,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.6-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.6-linux-amd64.tar.gz
-./titanus-0.4.0-rc.6-linux-amd64/bin/titanus setup
+sha256sum -c titanus-0.4.0-rc.7-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.7-linux-amd64.tar.gz
+./titanus-0.4.0-rc.7-linux-amd64/bin/titanus setup
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -205,3 +205,5 @@ The rc.6 recovery set binds all hosts to authenticated external Ceph payloads an
 requires signed all-host plus storage completion before startup. Backend object
 identity must be retained; a new Ceph FSID and Ceph snapshot-history migration
 are unsupported and refused. See BACKUP_RECOVERY.md for the complete procedure.
+
+Schema transitions and rollback limits: see [VERSION_TRANSITIONS.md](VERSION_TRANSITIONS.md). Binary installation never changes the data schema.

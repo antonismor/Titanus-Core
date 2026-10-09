@@ -695,7 +695,7 @@ func FinalizeClusterHost(setPath, keyPath, node, completionPath string) error {
 			if e = createPrivate(h.Plan.StateRoot+".cluster-recovery-complete.json", mustJSON(c)); e != nil {
 				return e
 			}
-			if e = os.Remove(h.Plan.StateRoot + ".recovery-pending"); e != nil {
+			if e = offline.FinishRecovery(h.Plan.StateRoot); e != nil {
 				return e
 			}
 			if e = os.Remove(h.Plan.StateRoot + ".cluster-recovery-pending"); e != nil {
