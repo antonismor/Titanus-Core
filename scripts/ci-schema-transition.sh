@@ -4,10 +4,9 @@ cd "$(dirname "$0")/.."
 # Immutable tested schema-zero fixture; never select a moving branch or tag.
 old_revision=d85d76626f72a9f642363a2eaa34a853a792573d
 fixture=$(mktemp -d /tmp/titanus-schema.XXXXXX)
-trap 'rm -rf "$fixture"' EXIT
+trap 'git worktree remove --force "$fixture/old" 2>/dev/null || true; rm -rf "$fixture"' EXIT
 git cat-file -e "$old_revision^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$old_revision"
-git clone --quiet --shared --no-checkout "$PWD" "$fixture/old"
-git -C "$fixture/old" checkout --quiet --detach "$old_revision"
+git worktree add --quiet --detach "$fixture/old" "$old_revision"
 (cd "$fixture/old" && make build && TITANUS_RELEASE_OUTPUT="$fixture/old-package" bash scripts/package-release.sh)
 make build
 TITANUS_SCHEMA_NATIVE_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" TITANUS_SCHEMA_OLD_BINARY="$fixture/old/bin/titanusd" TITANUS_SCHEMA_OLD_REVISION="$old_revision" go test ./cmd/titanusd -run '^TestNativeSchemaTransition$' -count=1 -v -timeout 180s
