@@ -117,11 +117,12 @@ Rollback is **binary selection only**, never an automatic reversal of live Realm
 PKI, secret, Source or storage data. It is permitted only between installed
 bundles with the same explicit supported state profile. In an HA cluster, perform
 one controller at a time, maintain quorum and verify the leader/replicated state.
-Full mixed-version wire/schema compatibility and availability-preserving rollout
-ordering are not promised; M5 remains open. rc.3 and rc.4 declare the same v3
-state profile, but CI upgrades between separately identified fixture builds of
-the current source with that profile, verifies live-daemon service restart and a
-retained Unit, and does not prove an rc.3/rc.4 mixed-version cluster. Guided
+rc.7 supports the documented controller-first schema-zero rolling upgrade and
+explicit schema 0 to 1 transition. Native CI exercises actual immutable rc.5 and
+current daemon processes, interrupted preparation, exact migrated rollback floors,
+functional restored quorum and old/current installer rollback gates. Independent
+multi-host availability remains pending. Earlier rc.3/rc.4 fixture tests do not
+prove that specific pair as a mixed-version cluster. Guided
 rollback additionally requires the actual previous selection to match its exact
 requested version/revision. It preserves configuration, identities and data.
 
@@ -136,12 +137,13 @@ to pre-isolation/pre-storage ownership versions is unsupported.
 Candidate 2 adds opt-in replicated Disk catalogs, exact native writer identities,
 durable automatic remote fencing/transfer, node quarantine and cluster-owned
 UID/GID mappings. See STORAGE_FAILOVER.md. rc.1 uses v1, rc.2 uses v2, and
-rc.3/rc.4/rc.5 use v3. The versioned installer deliberately rejects cross-profile activation/rollback,
-including rc.1 to rc.2 and rc.2 to rc.3. A tested cross-version migration is phase-2 M5 work;
+rc.3 through rc.7 use v3. The versioned installer deliberately rejects cross-profile activation/rollback,
+including rc.1 to rc.2 and rc.2 to rc.3. Those older profile transitions remain
+unsupported; M5 schema migration operates within the existing v3 profile;
 do not run old controller binaries against catalogs or new mapping state.
-Same-profile native installation/upgrade/rollback is still tested using distinct
-fixture version identities, not a claim of a mixed-version cluster upgrade.
-All published rc.1/rc.2/rc.3/rc.4 archives and tags are preserved. Final VM/site
+Same-profile native installer fixture tests remain, alongside the actual
+legacy/current process and bundle evidence documented in VERSION_TRANSITIONS.md.
+All prior published candidate archives and tags are preserved. Final VM/site
 acceptance remains open.
 
 ## Authenticated offline host backups (M4, partial)
