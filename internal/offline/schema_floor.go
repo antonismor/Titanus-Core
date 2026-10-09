@@ -69,6 +69,10 @@ func PrepareSchemaFloor(root string, f SchemaFloor) error {
 	if e := f.Validate(); e != nil {
 		return e
 	}
+	// Validate both old records before publishing either one. A conflicting
+	// retry must not overwrite the earlier record and make an interrupted
+	// higher-schema preparation impossible to resume with its original ID.
+	publish := []string{}
 	for _, p := range []string{floorPath(root), root + ".recovery-pending"} {
 		old, e := readFloor(p)
 		if e == nil {
@@ -82,6 +86,9 @@ func PrepareSchemaFloor(root string, f SchemaFloor) error {
 		if e != nil && !os.IsNotExist(e) {
 			return e
 		}
+		publish = append(publish, p)
+	}
+	for _, p := range publish {
 		if e = os.MkdirAll(filepath.Dir(p), 0700); e != nil {
 			return e
 		}
