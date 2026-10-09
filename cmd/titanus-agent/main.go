@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/fabricdns"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/pulse"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 )
@@ -62,6 +64,16 @@ func main() {
 
 	if cfg.NodeID == "" || cfg.Controller == "" {
 		log.Fatal("--node and --controller are required")
+	}
+	maintenanceLock, lockErr := offline.Shared()
+	if lockErr != nil {
+		log.Fatal(lockErr)
+	}
+	if maintenanceLock != nil {
+		defer maintenanceLock.Close()
+	}
+	if e := offline.CheckStartup(filepath.Clean(cfg.StateRoot)); e != nil {
+		log.Fatal(e)
 	}
 	parsedCaps, err := model.ParseCapabilities(caps)
 	if err != nil {

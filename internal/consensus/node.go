@@ -85,6 +85,7 @@ func LoadConfig(path string) (Config, error) {
 }
 
 type Node struct {
+	root      string
 	raft      *raft.Raft
 	fsm       *machine
 	db        *raftbolt.BoltStore
@@ -199,7 +200,7 @@ func Open(root string, cfg Config, seed realm.State, ca, cert, key string) (*Nod
 	}
 	closeDB = false
 	keepTransport = true
-	return &Node{raft: r, fsm: fsm, db: db, transport: transport, cfg: cfg, seed: clone(seed), timeout: 4 * time.Second}, nil
+	return &Node{root: root, raft: r, fsm: fsm, db: db, transport: transport, cfg: cfg, seed: clone(seed), timeout: 4 * time.Second}, nil
 }
 
 func emptyState(name string) realm.State {
@@ -305,6 +306,9 @@ func (n *Node) Close() error {
 		}
 		if e := n.db.Close(); n.closeErr == nil {
 			n.closeErr = e
+		}
+		if n.closeErr == nil {
+			n.closeErr = n.writeOfflineCheckpoint()
 		}
 	})
 	return n.closeErr

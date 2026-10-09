@@ -20,6 +20,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/localclient"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
 	"github.com/antonismor/Titanus-Core/internal/realm"
@@ -30,6 +31,24 @@ import (
 )
 
 func main() {
+	if len(os.Args) < 2 || (os.Args[1] != "backup" && os.Args[1] != "version" && os.Args[1] != "--version" && os.Args[1] != "-v" && os.Args[1] != "help" && os.Args[1] != "--help" && os.Args[1] != "-h") {
+		lock, err := offline.Shared()
+		if err != nil {
+			ansi.Error(err.Error())
+			os.Exit(1)
+		}
+		if lock != nil {
+			defer lock.Close()
+		}
+		root := os.Getenv("TITANUS_STATE_ROOT")
+		if root == "" {
+			root = "/var/lib/titanus"
+		}
+		if err := offline.CheckStartup(filepath.Clean(root)); err != nil {
+			ansi.Error(err.Error())
+			os.Exit(1)
+		}
+	}
 	if len(os.Args) == 1 {
 		if err := menu(); err != nil {
 			ansi.Error(err.Error())
@@ -46,6 +65,8 @@ func main() {
 
 func dispatch(args []string) error {
 	switch args[0] {
+	case "backup":
+		return runBackup(args[1:])
 	case "task", "autoscale", "secret":
 		return runOrchestration(args[0], args[1:])
 	case "setup":
@@ -2093,6 +2114,7 @@ func printHelp() {
 Usage:
   titanus                                      Interactive ANSI menu
   titanus setup                                Guided Realm setup
+  titanus backup <keygen|create|verify|attest-fence|restore> [flags]
   titanus realm init --name NAME --node ID --address IP
   titanus realm status
   titanus realm issue-node --node ID --address IP

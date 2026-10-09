@@ -23,6 +23,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
 	"github.com/antonismor/Titanus-Core/internal/observe"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/realmclient"
 	"github.com/antonismor/Titanus-Core/internal/reconcile"
@@ -43,8 +44,16 @@ func main() {
 	if os.Geteuid() != 0 {
 		log.Fatal("titanusd must run as root")
 	}
+	maintenanceLock, err := offline.Shared()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer maintenanceLock.Close()
 
 	stateRoot := envDefault("TITANUS_STATE_ROOT", "/var/lib/titanus")
+	if err := offline.CheckStartup(filepath.Clean(stateRoot)); err != nil {
+		log.Fatal(err)
+	}
 	observations, err := observe.New(stateRoot)
 	if err != nil {
 		log.Fatal("observability initialization failed")
