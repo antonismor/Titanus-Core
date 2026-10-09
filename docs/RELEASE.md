@@ -1,6 +1,6 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.4**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.5**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
@@ -50,9 +50,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.4-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.4-linux-amd64.tar.gz
-./titanus-0.4.0-rc.4-linux-amd64/bin/titanus setup
+sha256sum -c titanus-0.4.0-rc.5-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.5-linux-amd64.tar.gz
+./titanus-0.4.0-rc.5-linux-amd64/bin/titanus setup
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -65,7 +65,7 @@ service paths are rejected; migrate them explicitly instead of silently replacin
 an existing installation. `--root /absolute/staging-root` exercises file activation
 without controlling the host's services.
 
-The rc.4 wizard writes a versioned plan and prepares verified per-node installation
+The wizard introduced in rc.4 writes a versioned plan and prepares verified per-node installation
 files locally. Supply both AMD64/ARM64 archives, their independently obtained
 SHA-256 values and the exact published revision, even for a single-architecture
 Realm. Review the adjacent private `.deployment` directory before application.
@@ -136,13 +136,52 @@ to pre-isolation/pre-storage ownership versions is unsupported.
 Candidate 2 adds opt-in replicated Disk catalogs, exact native writer identities,
 durable automatic remote fencing/transfer, node quarantine and cluster-owned
 UID/GID mappings. See STORAGE_FAILOVER.md. rc.1 uses v1, rc.2 uses v2, and
-rc.3/rc.4 use v3. The versioned installer deliberately rejects cross-profile activation/rollback,
+rc.3/rc.4/rc.5 use v3. The versioned installer deliberately rejects cross-profile activation/rollback,
 including rc.1 to rc.2 and rc.2 to rc.3. A tested cross-version migration is phase-2 M5 work;
 do not run old controller binaries against catalogs or new mapping state.
 Same-profile native installation/upgrade/rollback is still tested using distinct
 fixture version identities, not a claim of a mixed-version cluster upgrade.
-All published rc.1/rc.2/rc.3 archives and tags are preserved. Final VM/site
+All published rc.1/rc.2/rc.3/rc.4 archives and tags are preserved. Final VM/site
 acceptance remains open.
+
+## Authenticated offline host backups (M4, partial)
+
+rc.5 adds `titanus backup keygen|create|verify|attest-fence|restore`. The versioned
+host plan binds exact original state/configuration/node-global ledger paths,
+Realm, logical Node and certificate role. Creation/recovery requires root and
+host-wide exclusive offline maintenance; supported daemon/agent/CLI/live binary
+installation paths share that gate. Active Units, native Disk locks, mounted
+trees, invalid identities/keyrings/mappings, external Disks and unsupported
+filesystem metadata cause refusal. HA backups require a database-bound export
+written after Raft shutdown and database close; stale/crashed/unapplied exports
+are rejected. Old processes must also be stopped. Use one dedicated logical Node
+per host, preserve its full ledger and independently exclude external actors.
+
+Each 0600 archive authenticates a bounded versioned complete inventory with
+HMAC-SHA256, including SHA256 content, numeric owners, modes, times and symlinks.
+The independent 32-byte recovery key must remain outside the archive roots.
+Archives contain private signing/encryption material and are **not encrypted**;
+keep them in protected encrypted backup storage. Verification exposes metadata
+only. Restore checks the entire archive before touching destinations, requires
+a short-lived archive/Node-bound signed record of independently obtained fencing,
+refuses existing identities/data, fsyncs private stages and publishes with
+no-replace renames. It does not start services or automatically roll back data.
+An interrupted restore retains a persistent startup blocker and progress receipt;
+replay is refused pending explicit offline inspection.
+
+Native AMD64/ARM64 tests restore three original Raft voters from authenticated
+per-host archives, then prove replicated new writes, signing policy, secret
+decryption, Sources, local bytes, numeric ownership and actual daemon startup
+denial after interrupted recovery. These voters share one runner kernel. The
+operator must coordinate a common quiescent cluster cut; the current profile
+does not validate a complete cross-host recovery set, move identities/paths or
+restore backups produced by a different version,
+export/import Ceph data, preserve hardlinks/xattrs/special files or restore a
+whole operating system. Symbolic-link targets outside archived trees are not
+copied. Restore retains historical certificates/policy: expiry, revocations or
+issuance after the backup point require separately planned offline identity
+recovery. M4 remains open. See repository docs/BACKUP_RECOVERY.md for the plan,
+fencing-record fields, CLI procedure and exact remaining boundaries.
 
 ## Guided native verification
 

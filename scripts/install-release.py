@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Verified versioned activation; shared state/configuration are never rewritten."""
-import argparse,fcntl,hashlib,json,os,pathlib,platform,re,shutil,subprocess,sys,tempfile
+import argparse,fcntl,hashlib,json,os,pathlib,platform,re,shutil,stat,subprocess,sys,tempfile
 p=argparse.ArgumentParser();p.add_argument('--bundle',type=pathlib.Path);p.add_argument('--root',type=pathlib.Path,default=pathlib.Path('/'));p.add_argument('--rollback',action='store_true');p.add_argument('--config',type=pathlib.Path);p.add_argument('--expect-version');p.add_argument('--expect-revision');args=p.parse_args()
 if bool(args.bundle)==args.rollback:p.error('choose --bundle DIRECTORY or --rollback')
 if not args.root.is_absolute() or args.root.is_symlink():p.error('installation root must be an absolute real directory')
 root=args.root.resolve();live=root==pathlib.Path('/')
 if live and os.geteuid()!=0:p.error('live installation requires root')
+if live:
+ maintenance_fd=os.open('/run/titanus-offline.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+ maintenance_stat=os.fstat(maintenance_fd)
+ if not stat.S_ISREG(maintenance_stat.st_mode) or maintenance_stat.st_uid!=0 or maintenance_stat.st_mode&0o777!=0o600:raise SystemExit('unsafe offline maintenance lock')
+ try:fcntl.flock(maintenance_fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
+ except BlockingIOError:raise SystemExit('offline Titanus maintenance is active')
+ for suffix in ['.recovery-pending','.backup-pending']:
+  if os.path.lexists('/var/lib/titanus'+suffix):raise SystemExit('unfinished offline maintenance blocks installation')
 base=root/'usr/local/lib/titanus';base.mkdir(parents=True,exist_ok=True)
 def syncdir(path):
  fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)

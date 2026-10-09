@@ -29,7 +29,7 @@ jobs:
         run: go vet ./...
 
       - name: Race checks
-        run: go test -race ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
+        run: go test -race ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
 
       - name: Cross-build native ARM64 runtime
         run: |
@@ -89,6 +89,9 @@ jobs:
 
       - name: Verify replicated Control-plane HA on native architecture
         run: go test -race ./internal/consensus ./internal/controllerclient -count=1 -timeout 180s
+
+      - name: Restore offline three-voter state, private keys, Sources and local bytes
+        run: sudo env "PATH=$PATH" TITANUS_BACKUP_NATIVE_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" TITANUS_BACKUP_TEST_REVISION="$(git rev-parse HEAD)" go test ./internal/backup -run 'TestNativeOfflineQuorumRecovery|TestNativePendingRestoreBlocksDaemon|TestMappedOwnershipLedgerPreserved' -count=1 -v -timeout 120s
 
       - name: Kill and recover real HA daemons
         run: sudo env "PATH=$PATH" TITANUS_HA_DAEMON_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" go test ./cmd/titanusd -run TestNativeHADaemonCrash -count=1 -v -timeout 180s
