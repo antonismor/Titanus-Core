@@ -44,6 +44,10 @@ func loadJSON(path string, value any) error {
 func validateHost(p Plan) (realm.State, error) { return validateHostAt(p, p.roots()) }
 
 func validateHostAt(p Plan, roots map[string]string) (realm.State, error) {
+	return validateHostBound(p, roots, nil)
+}
+
+func validateHostBound(p Plan, roots map[string]string, binding *ClusterBinding) (realm.State, error) {
 	var state realm.State
 	for name, root := range roots {
 		st, e := os.Lstat(root)
@@ -110,7 +114,7 @@ func validateHostAt(p Plan, roots map[string]string) (realm.State, error) {
 		if e := c.Validate(); e != nil {
 			return state, e
 		}
-		if c.Spec.Provider != disk.ProviderLocal {
+		if c.Spec.Provider != disk.ProviderLocal && (binding == nil || !reflect.DeepEqual(binding.Catalogs[c.Spec.Name], c)) {
 			return state, fmt.Errorf("external Ceph data is not included; full recovery requires a coordinated external-storage backup")
 		}
 	}
@@ -226,11 +230,50 @@ func validateHostAt(p Plan, roots map[string]string) (realm.State, error) {
 		if e := loadJSON(filepath.Join(roots["state"], "disks", d.Name(), "disk.json"), &spec); e != nil {
 			return state, e
 		}
-		if spec.Name != d.Name() || spec.Provider != disk.ProviderLocal || !spec.Initialized || spec.LayoutVersion != 1 {
+		if spec.Name != d.Name() || !spec.Initialized || spec.LayoutVersion != 1 {
 			return state, fmt.Errorf("only initialized local Disk data is supported by host-local backup")
+		}
+		if spec.Provider != disk.ProviderLocal {
+			c, ok := disk.Catalog{}, false
+			if binding != nil {
+				c, ok = binding.Catalogs[spec.Name]
+			}
+			copy := spec
+			copy.ManagedID = ""
+			if !ok || !reflect.DeepEqual(c.Spec, copy) || (spec.ManagedID != "" && spec.ManagedID != c.ID()) {
+				return state, fmt.Errorf("remote Disk missing/conflicting in authenticated set")
+			}
+			continue
 		}
 		if st, e := os.Lstat(filepath.Join(roots["state"], "disks", d.Name(), "data")); e != nil || !st.IsDir() {
 			return state, fmt.Errorf("missing local Disk data")
+		}
+	}
+	if binding != nil && len(binding.Catalogs) > 0 {
+		if _, err := os.Lstat(filepath.Join(roots["state"], "storage/ceph.json")); err == nil {
+			cfg, err := disk.NewManager(roots["state"]).CephConfig()
+			if err != nil {
+				return state, err
+			}
+			for _, path := range []string{cfg.Conf, cfg.Keyring} {
+				if path == "" {
+					continue
+				}
+				if !within(path, p.ConfigRoot) {
+					return state, fmt.Errorf("Ceph credentials/config must be inside backed-up configuration root")
+				}
+				rel, err := filepath.Rel(p.ConfigRoot, path)
+				if err != nil {
+					return state, err
+				}
+				f, err := openRegular(filepath.Join(roots["configuration"], rel))
+				if err != nil {
+					return state, fmt.Errorf("Ceph credentials/config missing from backup")
+				}
+				f.Close()
+			}
+		} else if !os.IsNotExist(err) {
+			return state, err
 		}
 	}
 	return state, nil

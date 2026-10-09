@@ -48,7 +48,7 @@ func acquire(path string, exclusive bool) (*os.File, error) {
 }
 
 func CheckStartup(stateRoot string) error {
-	for _, path := range []string{stateRoot + ".recovery-pending", stateRoot + ".backup-pending"} {
+	for _, path := range []string{stateRoot + ".recovery-pending", stateRoot + ".backup-pending", stateRoot + ".cluster-recovery-pending", stateRoot + ".ceph-recovery-pending"} {
 		if _, e := os.Lstat(path); !os.IsNotExist(e) {
 			return fmt.Errorf("unfinished offline maintenance blocks startup: %s", path)
 		}

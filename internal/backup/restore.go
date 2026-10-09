@@ -65,6 +65,10 @@ func Restore(archive, keyPath, fencePath string, expected Plan) (Manifest, error
 
 // The hook is private and used only to inject a power-loss boundary in tests.
 func restore(archive, keyPath, fencePath string, expected Plan, afterRename func(int) error) (Manifest, error) {
+	return restoreBound(archive, keyPath, fencePath, expected, afterRename, nil)
+}
+
+func restoreBound(archive, keyPath, fencePath string, expected Plan, afterRename func(int) error, binding *ClusterBinding) (Manifest, error) {
 	var m Manifest
 	if e := expected.Validate(); e != nil {
 		return m, e
@@ -78,6 +82,9 @@ func restore(archive, keyPath, fencePath string, expected Plan, afterRename func
 	m, e = readArchive(archive, key, nil)
 	if e != nil {
 		return m, e
+	}
+	if !reflect.DeepEqual(m.Cluster, binding) {
+		return m, fmt.Errorf("cluster backup requires complete authenticated recovery set")
 	}
 	if m.Plan != expected || m.Build.Version != version.Version || m.Build.StateProfile != version.StateProfile || m.Build.Arch != version.Info().Arch {
 		return m, fmt.Errorf("restore requires exact original paths, logical Node/Realm and native profile/architecture")
@@ -98,7 +105,7 @@ func restore(archive, keyPath, fencePath string, expected Plan, afterRename func
 	if fence.Format != "titanus-recovery-fence/v1" || fence.BackupID != m.ID || fence.ArchiveSHA256 != digest || fence.Record.Node != expected.Node || fence.Record.Realm != expected.Realm || !fence.Record.OldControllersExcluded || !fence.Record.OldWritersExcluded || !fence.Record.GatewaysWithdrawn || len(fence.Record.Evidence) < 16 || fence.IssuedAt.After(now) || !fence.ExpiresAt.After(now) || fence.ExpiresAt.Sub(fence.IssuedAt) > 15*time.Minute {
 		return m, fmt.Errorf("expired, mismatched or incomplete recovery fencing")
 	}
-	if e = offline.CheckStartup(expected.StateRoot); e != nil {
+	if e = checkHostRestoreStartup(expected.StateRoot, binding); e != nil {
 		return m, e
 	}
 	if e = rejectMounts(expected.roots()); e != nil {
@@ -151,7 +158,7 @@ func restore(archive, keyPath, fencePath string, expected Plan, afterRename func
 	if e = validateMappedOwners(m.Entries, stages["ledger"]); e != nil {
 		return m, e
 	}
-	state, e := validateHostAt(expected, stages)
+	state, e := validateHostBound(expected, stages, binding)
 	if e != nil {
 		return m, e
 	}
@@ -188,6 +195,9 @@ func restore(archive, keyPath, fencePath string, expected Plan, afterRename func
 	progress["status"] = "complete"
 	if e = durable.WriteJSON(receipt, progress, 0600); e != nil {
 		return m, e
+	}
+	if binding != nil {
+		return m, syncDir(filepath.Dir(expected.StateRoot))
 	}
 	if e = os.Remove(expected.StateRoot + ".recovery-pending"); e != nil {
 		return m, e

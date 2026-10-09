@@ -53,14 +53,15 @@ type Entry struct {
 }
 
 type Manifest struct {
-	Format        string        `json:"format"`
-	ID            string        `json:"id"`
-	CreatedAt     time.Time     `json:"created_at"`
-	Build         version.Build `json:"build"`
-	Plan          Plan          `json:"plan"`
-	RealmRevision uint64        `json:"realm_revision"`
-	RealmSHA256   string        `json:"realm_sha256"`
-	Entries       []Entry       `json:"entries"`
+	Cluster       *ClusterBinding `json:"cluster,omitempty"`
+	Format        string          `json:"format"`
+	ID            string          `json:"id"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Build         version.Build   `json:"build"`
+	Plan          Plan            `json:"plan"`
+	RealmRevision uint64          `json:"realm_revision"`
+	RealmSHA256   string          `json:"realm_sha256"`
+	Entries       []Entry         `json:"entries"`
 }
 
 type envelope struct {

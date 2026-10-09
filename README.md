@@ -348,7 +348,7 @@ Pulse expiry and lease fencing. These nodes share a runner kernel; physical host
 reboot, site networking and hardware acceptance are not implied. See
 [Release and recovery](docs/RELEASE.md) for prerequisites, migration, key/state
 backups and the distinction between binary rollback and data/schema rollback.
-The current candidate line is `0.4.0-rc.5`; published `rc.1`, `rc.2`, `rc.3` and `rc.4`
+The current candidate line is `0.4.0-rc.6`; published `rc.1`, `rc.2`, `rc.3`, `rc.4` and `rc.5`
 remain unchanged checkpoints. Phase 2 is tracked in issue #20. Code/CI validation is
 separate from pending independent-VM and physical-host acceptance.
 
@@ -359,12 +359,12 @@ out-of-band power fencing, and deferred independent-host acceptance.
 
 The versioned terminal installer and its offline review/apply workflow are documented in [Guided lifecycle installation](docs/GUIDED_INSTALL.md).
 
-Phase-2 M4 now has an authenticated **offline host-local backup/restore** profile:
-Realm/Raft, role-bound PKI, keyrings, retained UID/GID ledger, Sources, node
-catalogs and local Disk bytes are verified and restored together. Native CI
-destroys/restores three voter states and proves new quorum writes, PKI signing,
-secret decryption, Source integrity and independent local data. Interrupted
-restore blocks daemon startup. See [Backup and recovery](docs/BACKUP_RECOVERY.md).
-Ceph data export/import, coordinated cluster recovery-set validation and final
-independent-host disaster recovery remain open in M4; this host profile refuses
-external Disks rather than publishing an incomplete recovery archive.
+Phase-2 M4 includes authenticated offline host backups plus a coordinated
+complete host recovery set bound to one committed Realm revision. The rc.6
+identity-preserving Ceph profile exports/imports actual RBD/CephFS bytes and
+retains startup blockers until all hosts and storage produce verified recovery
+proofs. It refuses changed Ceph FSIDs/objects and snapshot histories instead of
+omitting them. See [BACKUP_RECOVERY.md](docs/BACKUP_RECOVERY.md) for prerequisites,
+operator fencing, encryption/metadata limits and the exact supported scope.
+Independent-host disaster acceptance and fresh-backend/snapshot-history recovery
+are not claimed by this profile.

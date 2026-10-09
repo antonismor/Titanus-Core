@@ -129,3 +129,7 @@ ln -s busybox "$root/failover-source/bin/sh"
 CGO_ENABLED=0 go build -o "$root/titanus-init" ./cmd/titanus-init
 export TITANUS_STORAGE_FAILOVER_TEST=1 TITANUS_INIT_BINARY="$root/titanus-init" TITANUS_FAILOVER_SOURCE="$root/failover-source"
 go test ./internal/reconcile -run '^TestNativeAutomaticStorageFailover$' -count=1 -v -timeout 8m
+
+# Authenticate a complete three-voter + Ceph data recovery set, destroy original
+# host roots and both backend payloads, then prove all-host completion and quorum.
+TITANUS_BACKUP_NATIVE_TEST=1 TITANUS_BACKUP_TEST_REVISION="$(git rev-parse HEAD)" go test ./internal/backup -run '^TestNativeClusterRecovery$' -count=1 -v -timeout 8m
