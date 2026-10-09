@@ -43,6 +43,7 @@ cat > "$conf" <<CFG
 [global]
 fsid = $uuid
 mon host = 127.0.0.1
+monmap = $root/monmap
 public network = 127.0.0.0/8
 cluster network = 127.0.0.0/8
 auth cluster required = none
@@ -73,6 +74,8 @@ ceph-mon -i a --mkfs --monmap "$root/monmap" -c "$conf"
 ceph-mon -i a -f -c "$conf" >"$root/mon.stdout" 2>&1 & pids+=("$!")
 for attempt in $(seq 1 60); do if timeout 3 ceph -s >/dev/null 2>&1; then break; fi; sleep 1; done
 ceph -s
+actual_fsid=$(ceph fsid)
+if [[ "$actual_fsid" != "$uuid" ]]; then echo 'Native Ceph monitor FSID differs from fixture' >&2; exit 1; fi
 osd_uuid=$(cat /proc/sys/kernel/random/uuid)
 ceph osd new "$osd_uuid"
 truncate -s 4G "$root/osd.0/block"
@@ -83,8 +86,14 @@ if ! ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf"; then
   done
   exit 1
 fi
+if [[ $(cat "$root/osd.0/ceph_fsid") != "$uuid" ]]; then echo 'Native Ceph OSD FSID differs from fixture' >&2; exit 1; fi
 ceph osd crush add osd.0 1 root=default host=ci
-ceph-osd -i 0 -f -c "$conf" >"$root/osd.stdout" 2>&1 & pids+=("$!")
+# MonMap::build_initial can prefer bootstrap-config addresses over the local
+# FSID before the live monmap arrives. Pin this disposable OSD to the generated
+# map and local configuration; an auth-none startup command must never race
+# with discovery using an all-zero cluster identity. Storage assertions below
+# still require an actually up/in OSD, real I/O, fencing and retained data.
+ceph-osd -i 0 -f -c "$conf" --no-mon-config --monmap "$root/monmap" >"$root/osd.stdout" 2>&1 & pids+=("$!")
 ceph-mgr -i a -f -c "$conf" >"$root/mgr.stdout" 2>&1 & pids+=("$!")
 mgr_ready=0
 for attempt in $(seq 1 60); do if ceph mgr dump -f json | jq -e '.active_name == "a"' >/dev/null; then mgr_ready=1; break; fi; sleep 1; done
