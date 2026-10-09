@@ -4,6 +4,8 @@ import importlib.util
 import json
 import http.server
 import pathlib
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -66,6 +68,20 @@ class BoundedHTTP(unittest.TestCase):
             self.assertLess(time.monotonic() - begin, 0.5)
         finally:
             server.shutdown(); server.server_close(); thread.join()
+
+
+class NativeCommandEvidence(unittest.TestCase):
+    def test_native_child_permissions_and_stderr_do_not_corrupt_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            raw, errors = directory / 'events', directory / 'errors'
+            script = 'import os,sys,json; mode=os.umask(0o022); print(json.dumps({"umask":mode})); print("go: fixture dependency diagnostic",file=sys.stderr)'
+            with raw.open('xb') as output, errors.open('xb') as error_output:
+                code = acceptance.command([sys.executable, '-c', script], 5, output=output,
+                                          error_output=error_output, child_umask=0o022)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(raw.read_text()), {'umask': 0o022})
+            self.assertIn('go: fixture', errors.read_text())
 
 
 class VMAdmissionAndCleanup(unittest.TestCase):

@@ -38,6 +38,7 @@ measurements, not saturation or production performance claims.
 `summary.json` contains build/revision/architecture, topology, kernel, CPU count,
 requested/actual duration, test results, measurements and the raw evidence hash.
 `go-test.ndjson` preserves Go's machine-readable events and failure output;
+`go-stderr.log` separately retains dependency/compiler diagnostics;
 required tests must pass rather than skip. CI uploads `acceptance-ubuntu-24.04`
 and `acceptance-ubuntu-24.04-arm`. On ordinary failure the Go fixtures clean up
 their own objects. A process timeout/SIGKILL can prevent fixture cleanup: the

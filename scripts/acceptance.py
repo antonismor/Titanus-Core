@@ -49,10 +49,12 @@ def private(path):
     return path
 
 
-def command(argv, timeout, env=None, output=None):
+def command(argv, timeout, env=None, output=None, error_output=None, child_umask=-1):
     # A separate process group prevents timed-out hooks leaving command children.
     p = subprocess.Popen(argv, cwd=ROOT, env=env, start_new_session=True,
-                         stdout=output or subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                         stdout=output or subprocess.DEVNULL,
+                         stderr=error_output if error_output is not None else subprocess.STDOUT,
+                         umask=child_umask)
     try:
         return p.wait(timeout=timeout)
     except BaseException:
@@ -98,12 +100,15 @@ def ci(args, out, report):
                TITANUS_ACCEPTANCE_SECONDS=str(args.seconds), TITANUS_ACCEPTANCE_CYCLES=str(args.cycles),
                TITANUS_ACCEPTANCE_REVISION=sha, TITANUS_INIT_BINARY=str(ROOT / 'bin/titanus-init'))
     raw = out / 'go-test.ndjson'
-    with raw.open('xb') as stream:
+    errors = out / 'go-stderr.log'
+    with raw.open('xb') as stream, errors.open('xb') as error_stream:
         code = command(['go', 'test', '-json', './internal/consensus', './internal/unitruntime',
                         '-run', '^Test(AcceptanceSustainedQuorum|NativeAcceptanceLifecycle)$',
-                        '-count=1', '-timeout', '240s'], args.seconds + 180, env, stream)
-    if raw.stat().st_size > 32 << 20:
+                        '-count=1', '-timeout', '240s'], args.seconds + 180, env, stream,
+                       error_output=error_stream, child_umask=0o022)
+    if raw.stat().st_size > 32 << 20 or errors.stat().st_size > 32 << 20:
         raise ValueError('CI raw evidence exceeds 32-MiB bound')
+    report.update(raw_sha256=digest(raw.read_bytes()), stderr_sha256=digest(errors.read_bytes()), return_code=code)
     measurements, passed = [], set()
     for line in raw.read_text().splitlines():
         event = json.loads(line)
