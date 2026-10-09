@@ -22,6 +22,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
+	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
 type fixture struct {
@@ -492,4 +493,48 @@ func TestMappedOwnershipLedgerPreserved(t *testing.T) {
 		t.Fatal("missing completed receipt")
 	}
 	t.Log("TITANUS_NATIVE_BACKUP_NUMERIC_OWNERSHIP_OK")
+}
+
+func TestMigratedBackupRestoresRollbackFloorAndImmutableUnknownTask(t *testing.T) {
+	f := newFixture(t)
+	if e := f.store.CreateTask(realm.Task{Name: "unknown-proof", Template: realm.UnitTemplate{Source: "app", Command: []string{"/bin/sh"}}}); e != nil {
+		t.Fatal(e)
+	}
+	task := f.store.Snapshot().Tasks["unknown-proof"]
+	task.Phase = realm.TaskUnknown
+	task.RunID = "uncertain-original"
+	if e := f.store.UpdateTask(task); e != nil {
+		t.Fatal(e)
+	}
+	id := "backup-migration-proof-001"
+	if _, e := f.store.TransitionSchema(id, f.store.Snapshot().Revision, map[string]version.Capabilities{f.plan.Node: version.Compatible()}, []string{f.plan.Node}); e != nil {
+		t.Fatal(e)
+	}
+	before := f.store.Snapshot()
+	f.capture(t)
+	f.attest(t)
+	f.loseRoots(t)
+	if e := os.Remove(f.plan.StateRoot + ".recovery-pending"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := restore(f.archive, f.key, f.fence, f.plan, nil); e != nil {
+		t.Fatal(e)
+	}
+	if e := offline.CheckCommittedFloor(f.plan.StateRoot, f.plan.Realm, id, 1); e != nil {
+		t.Fatal(e)
+	}
+	restored, e := realm.Open(f.plan.StateRoot, f.plan.Realm)
+	if e != nil {
+		t.Fatal(e)
+	}
+	got := restored.Snapshot().Tasks["unknown-proof"]
+	if got.Phase != realm.TaskUnknown || got.RunID != task.RunID || got.ExecutionID != before.Tasks["unknown-proof"].ExecutionID {
+		t.Fatal("restore lost immutable uncertain execution")
+	}
+	if e := os.Remove(f.plan.StateRoot + ".recovery-pending"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = realm.Open(f.plan.StateRoot, f.plan.Realm); e == nil {
+		t.Fatal("migrated state without legacy blocker opened")
+	}
 }

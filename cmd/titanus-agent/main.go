@@ -44,6 +44,10 @@ type config struct {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--capabilities-json" {
+		buildversion.PrintCapabilities()
+		return
+	}
 	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "--version-json") {
 		buildversion.Print(os.Args[1] == "--version-json")
 		return
@@ -147,8 +151,10 @@ func main() {
 }
 
 func register(client *http.Client, cfg config) (realm.Node, error) {
+	capabilities := buildversion.Compatible()
 	node := realm.Node{
-		ID: cfg.NodeID, Address: cfg.Address, FabricAddress: cfg.FabricAddress,
+		Compatibility: &capabilities,
+		ID:            cfg.NodeID, Address: cfg.Address, FabricAddress: cfg.FabricAddress,
 		Capabilities: cfg.Capabilities, Labels: cfg.Labels,
 		Resources: pulse.Discover(cfg.StateRoot),
 		State:     realm.NodeReady,

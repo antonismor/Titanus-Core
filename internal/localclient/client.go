@@ -188,3 +188,14 @@ func (c *Client) Orchestration(method, path string, body any) (json.RawMessage, 
 	e := c.do(method, path, body, &out)
 	return out, e
 }
+
+func (c *Client) Compatibility() (controlapi.CompatibilityInfo, error) {
+	var info controlapi.CompatibilityInfo
+	e := c.do(http.MethodGet, "/v1/compatibility", nil, &info)
+	return info, e
+}
+func (c *Client) TransitionSchema(id string, expected uint64) (realm.SchemaMigration, error) {
+	var m realm.SchemaMigration
+	e := c.do(http.MethodPost, "/v1/realm/schema", controlapi.SchemaRequest{ID: id, ExpectedRevision: expected}, &m)
+	return m, e
+}

@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout Titanus
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -52,6 +54,8 @@ jobs:
     steps:
       - name: Checkout Titanus
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -91,10 +95,13 @@ jobs:
         run: go test -race ./internal/consensus ./internal/controllerclient -count=1 -timeout 180s
 
       - name: Restore offline three-voter state, private keys, Sources and local bytes
-        run: sudo env "PATH=$PATH" TITANUS_BACKUP_NATIVE_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" TITANUS_BACKUP_TEST_REVISION="$(git rev-parse HEAD)" go test ./internal/backup -run 'TestNativeOfflineQuorumRecovery|TestNativePendingRestoreBlocksDaemon|TestMappedOwnershipLedgerPreserved|TestNativeClusterRecovery' -count=1 -v -timeout 120s
+        run: sudo env "PATH=$PATH" TITANUS_BACKUP_NATIVE_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" TITANUS_BACKUP_TEST_REVISION="$(git rev-parse HEAD)" go test ./internal/backup -run 'TestNativeOfflineQuorumRecovery|TestNativeMigratedQuorumRecovery|TestNativePendingRestoreBlocksDaemon|TestMappedOwnershipLedgerPreserved|TestNativeClusterRecovery' -count=1 -v -timeout 120s
 
       - name: Kill and recover real HA daemons
         run: sudo env "PATH=$PATH" TITANUS_HA_DAEMON_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" go test ./cmd/titanusd -run TestNativeHADaemonCrash -count=1 -v -timeout 180s
+
+      - name: Upgrade real legacy/current voters and commit a guarded schema transition
+        run: sudo env "PATH=$PATH" bash scripts/ci-schema-transition.sh
 
       - name: Verify native Gateway VIP withdrawal and retired-epoch restart
         run: sudo env "PATH=$PATH" TITANUS_GATEWAY_VIP_TEST=1 go test ./internal/route -run TestNativeGatewayVIP -count=1 -v -timeout 90s
@@ -255,6 +262,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.12'

@@ -18,6 +18,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/consensus"
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/identity"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"github.com/antonismor/Titanus-Core/internal/source"
@@ -95,6 +96,15 @@ func validateHostBound(p Plan, roots map[string]string, binding *ClusterBinding)
 	}
 	if state.Name != p.Realm || state.Nodes == nil || state.Fleets == nil || state.Assignments == nil || state.Routes == nil || state.Policies == nil {
 		return state, fmt.Errorf("Realm identity/state mismatch")
+	}
+	if e := realm.ValidateSchema(state); e != nil {
+		return state, e
+	}
+	if state.SchemaVersion > 0 {
+		f, e := offline.ReadSchemaFloor(roots["state"])
+		if e != nil || f.Realm != state.Name || f.MigrationID != state.SchemaMigrations[0].ID {
+			return state, fmt.Errorf("schema floor missing or differs from committed migration")
+		}
 	}
 	if e := validatePKI(p, roots["configuration"], state.PKI); e != nil {
 		return state, e

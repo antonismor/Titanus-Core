@@ -26,6 +26,9 @@ func Exclusive() (*os.File, error) {
 }
 
 func acquire(path string, exclusive bool) (*os.File, error) {
+	return acquireMode(path, exclusive, true)
+}
+func acquireMode(path string, exclusive, nonblocking bool) (*os.File, error) {
 	fd, e := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	if e != nil {
 		return nil, e
@@ -36,9 +39,15 @@ func acquire(path string, exclusive bool) (*os.File, error) {
 		f.Close()
 		return nil, fmt.Errorf("unsafe offline lock")
 	}
-	mode := syscall.LOCK_SH | syscall.LOCK_NB
+	mode := syscall.LOCK_SH
+	if nonblocking {
+		mode |= syscall.LOCK_NB
+	}
 	if exclusive {
-		mode = syscall.LOCK_EX | syscall.LOCK_NB
+		mode = syscall.LOCK_EX
+		if nonblocking {
+			mode |= syscall.LOCK_NB
+		}
 	}
 	if e = syscall.Flock(fd, mode); e != nil {
 		f.Close()
@@ -50,8 +59,14 @@ func acquire(path string, exclusive bool) (*os.File, error) {
 func CheckStartup(stateRoot string) error {
 	for _, path := range []string{stateRoot + ".recovery-pending", stateRoot + ".backup-pending", stateRoot + ".cluster-recovery-pending", stateRoot + ".ceph-recovery-pending"} {
 		if _, e := os.Lstat(path); !os.IsNotExist(e) {
+			if path == stateRoot+".recovery-pending" && CheckSchemaFloor(stateRoot) == nil {
+				continue
+			}
 			return fmt.Errorf("unfinished offline maintenance blocks startup: %s", path)
 		}
+	}
+	if _, e := os.Lstat(floorPath(stateRoot)); !os.IsNotExist(e) {
+		return CheckSchemaFloor(stateRoot)
 	}
 	return nil
 }

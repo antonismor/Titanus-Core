@@ -21,6 +21,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--capabilities-json" {
+		buildversion.PrintCapabilities()
+		return
+	}
 	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "--version-json") {
 		buildversion.Print(os.Args[1] == "--version-json")
 		return

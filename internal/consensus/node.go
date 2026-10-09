@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/durable"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/hashicorp/raft"
 	raftbolt "github.com/hashicorp/raft-boltdb/v2"
@@ -98,6 +99,10 @@ type Node struct {
 }
 
 func Open(root string, cfg Config, seed realm.State, ca, cert, key string) (*Node, error) {
+	if e := realm.ValidateSchema(seed); e != nil {
+		return nil, e
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -193,7 +198,7 @@ func Open(root string, cfg Config, seed realm.State, ca, cert, key string) (*Nod
 			return nil, err
 		}
 	}
-	fsm := &machine{data: emptyState(cfg.Realm)}
+	fsm := &machine{root: root, data: emptyState(cfg.Realm)}
 	r, err := raft.NewRaft(config, fsm, db, db, snapshots, transport)
 	if err != nil {
 		return nil, err
@@ -315,6 +320,7 @@ func (n *Node) Close() error {
 }
 
 type machine struct {
+	root string
 	mu   sync.RWMutex
 	data realm.State
 }
@@ -332,6 +338,14 @@ func (m *machine) Apply(log *raft.Log) any {
 	}
 	if next.Nodes == nil || next.Fleets == nil || next.Assignments == nil || next.Routes == nil || next.Policies == nil {
 		return fmt.Errorf("incomplete replicated Realm")
+	}
+	if e := realm.ValidateSchemaChange(m.data, next); e != nil {
+		return e
+	}
+	if next.SchemaVersion > 0 {
+		if e := offline.CheckCommittedFloor(m.root, next.Name, next.SchemaMigrations[0].ID, next.SchemaVersion); e != nil {
+			return e
+		}
 	}
 	m.data = next
 	return nil
@@ -351,6 +365,14 @@ func (m *machine) Restore(r io.ReadCloser) error {
 	defer m.mu.Unlock()
 	if s.Name != m.data.Name || s.Nodes == nil || s.Fleets == nil || s.Assignments == nil || s.Routes == nil || s.Policies == nil {
 		return fmt.Errorf("snapshot Realm identity/state mismatch")
+	}
+	if e := realm.ValidateSchema(s); e != nil {
+		return e
+	}
+	if s.SchemaVersion > 0 {
+		if e := offline.CheckCommittedFloor(m.root, s.Name, s.SchemaMigrations[0].ID, s.SchemaVersion); e != nil {
+			return e
+		}
 	}
 	m.data = s
 	return nil

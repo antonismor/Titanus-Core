@@ -37,6 +37,10 @@ const (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--capabilities-json" {
+		buildversion.PrintCapabilities()
+		return
+	}
 	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "--version-json") {
 		buildversion.Print(os.Args[1] == "--version-json")
 		return
@@ -100,6 +104,8 @@ func main() {
 	}
 	defer leaseManager.Close()
 	api := controlapi.New(store, runtimeManager, sourceManager, leaseManager)
+	api.NodeID = os.Getenv("TITANUS_NODE_ID")
+	api.StateRoot = stateRoot
 	api.Observations = observations
 	api.SecretKeyring = os.Getenv("TITANUS_SECRET_KEYRING")
 	api.Disks = disk.NewManager(stateRoot)
@@ -126,6 +132,7 @@ func main() {
 		}
 		for _, peer := range cfg.Peers {
 			allControllers = append(allControllers, peer.API)
+			api.SchemaPeers = append(api.SchemaPeers, controlapi.SchemaPeer{ID: peer.ID, API: peer.API})
 			if peer.ID != cfg.ID {
 				sourcePeers = append(sourcePeers, peer.API)
 			}
@@ -251,6 +258,7 @@ func main() {
 		}
 		api.SourcePeers = sourcePeers
 		api.SourceReplicator = clusterClient
+		api.TransitionClient = clusterClient
 		var nodes reconcile.NodeRuntime = clusterClient
 		if quorum != nil {
 			nodes = &reconcile.GuardedNodes{NodeRuntime: clusterClient, Check: quorum.CheckLeader}

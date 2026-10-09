@@ -16,6 +16,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/controllerclient"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
 	"github.com/antonismor/Titanus-Core/internal/unitruntime"
@@ -32,8 +33,9 @@ func New(ca, cert, key string) (*Client, error) {
 	}
 	return &Client{
 		http: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, TLSHandshakeTimeout: 2 * time.Second, ResponseHeaderTimeout: 3 * time.Second},
-			Timeout:   20 * time.Second,
+			Transport:     &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, TLSHandshakeTimeout: 2 * time.Second, ResponseHeaderTimeout: 3 * time.Second},
+			Timeout:       20 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}, nil
 }
@@ -238,4 +240,15 @@ func (c *Client) DiskCatalog(address, name string) (disk.Catalog, error) {
 	var catalog disk.Catalog
 	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/node/disks/"+url.PathEscape(name)+"/catalog", nil, &catalog)
 	return catalog, e
+}
+
+// These calls are peer-specific: never follow a leader redirect when validating
+// the capability and durable floor of a particular host.
+func (c *Client) Compatibility(address string) (controlapi.CompatibilityInfo, error) {
+	var info controlapi.CompatibilityInfo
+	e := c.doJSON(http.MethodGet, endpoint(address)+"/v1/compatibility", nil, &info)
+	return info, e
+}
+func (c *Client) PrepareSchemaFloor(address string, f offline.SchemaFloor) error {
+	return c.doJSON(http.MethodPost, endpoint(address)+"/v1/node/schema-floor", f, nil)
 }

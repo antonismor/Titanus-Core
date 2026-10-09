@@ -31,7 +31,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] != "backup" && os.Args[1] != "version" && os.Args[1] != "--version" && os.Args[1] != "-v" && os.Args[1] != "help" && os.Args[1] != "--help" && os.Args[1] != "-h") {
+	if len(os.Args) < 2 || (os.Args[1] != "--capabilities-json" && os.Args[1] != "backup" && os.Args[1] != "version" && os.Args[1] != "--version" && os.Args[1] != "-v" && os.Args[1] != "help" && os.Args[1] != "--help" && os.Args[1] != "-h") {
 		lock, err := offline.Shared()
 		if err != nil {
 			ansi.Error(err.Error())
@@ -65,6 +65,11 @@ func main() {
 
 func dispatch(args []string) error {
 	switch args[0] {
+	case "schema":
+		return runSchema(args[1:])
+	case "--capabilities-json":
+		buildversion.PrintCapabilities()
+		return nil
 	case "backup":
 		return runBackup(args[1:])
 	case "task", "autoscale", "secret":
@@ -742,7 +747,7 @@ func runRealm(args []string) error {
 		}
 		if err := store.UpsertNode(realm.Node{
 			ID: *nodeID, Address: *address, Capabilities: caps,
-			State: realm.NodeReady, Labels: map[string]string{},
+			State: realm.NodeReady, Labels: map[string]string{}, Compatibility: func() *buildversion.Capabilities { c := buildversion.Compatible(); return &c }(),
 		}); err != nil {
 			return err
 		}
@@ -2171,6 +2176,8 @@ Usage:
   titanus deploy release FILE [--output DIR] [--apply] Verified versioned preparation/application
   titanus deploy bootstrap FILE                Bootstrap validated nodes
   titanus deploy realm FILE [options]          Install and start a complete Realm
+  titanus schema status                       Show active schema and committed migration
+  titanus schema migrate ID REVISION           Prepare all hosts and commit schema 0 to 1
   titanus version                              Show version
 
 Unit create options:
@@ -2254,5 +2261,35 @@ func runReleaseDeploy(args []string) error {
 		}
 		return e
 	}
+	return nil
+}
+
+func runSchema(args []string) error {
+	c := localclient.New(os.Getenv("TITANUS_SOCKET"))
+	var out any
+	if len(args) == 1 && args[0] == "status" {
+		state, e := c.RealmState()
+		if e != nil {
+			return e
+		}
+		out = map[string]any{"schema": state.SchemaVersion, "revision": state.Revision, "migrations": state.SchemaMigrations}
+	} else if len(args) == 3 && args[0] == "migrate" {
+		rev, e := strconv.ParseUint(args[2], 10, 64)
+		if e != nil {
+			return e
+		}
+		m, e := c.TransitionSchema(args[1], rev)
+		if e != nil {
+			return e
+		}
+		out = m
+	} else {
+		return fmt.Errorf("usage: titanus schema status | migrate MIGRATION_ID EXPECTED_REVISION")
+	}
+	b, e := json.MarshalIndent(out, "", "  ")
+	if e != nil {
+		return e
+	}
+	fmt.Println(string(b))
 	return nil
 }

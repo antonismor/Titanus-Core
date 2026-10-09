@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
 type NodeScore struct {
@@ -36,7 +37,7 @@ func (p *PlacementEngine) Rank(state State, fleet Fleet, existing []Assignment) 
 
 	scores := make([]NodeScore, 0)
 	for _, node := range state.Nodes {
-		if !eligible(node, fleet) || !catalogPlacement(state, node, fleet) {
+		if !version.Admits(node.Compatibility, state.SchemaVersion) || !eligible(node, fleet) || !catalogPlacement(state, node, fleet) {
 			continue
 		}
 		if len(fleet.Template.Ports) > 0 && countsByNode[node.ID] > 0 {

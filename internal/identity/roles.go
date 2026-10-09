@@ -85,7 +85,7 @@ func Allowed(p Principal, method, path string) bool {
 	if method == http.MethodGet && (path == "/v1/metrics" || path == "/v1/diagnostics" || path == "/v1/events") {
 		return p.Role == RoleController
 	}
-	if method == http.MethodGet && (path == "/v1/health" || path == "/v1/version" || path == "/v1/realm/state" || path == "/v1/identity/crl") {
+	if method == http.MethodGet && (path == "/v1/compatibility" || path == "/v1/health" || path == "/v1/version" || path == "/v1/realm/state" || path == "/v1/identity/crl") {
 		return p.Role == RoleNode || p.Role == RoleController
 	}
 	if method == http.MethodPost && (path == "/v1/realm/pulse" || path == "/v1/realm/nodes" || path == "/v1/identity/renew") {

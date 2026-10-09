@@ -22,6 +22,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/secrets"
 	"github.com/antonismor/Titanus-Core/internal/source"
+	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
 // This is a disposable native-runner recovery, sharing one kernel. It destroys
@@ -34,17 +35,24 @@ func TestNativeOfflineQuorumRecovery(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("native recovery requires root")
 	}
-	runNativeOfflineQuorumRecovery(t, false)
+	runNativeOfflineQuorumRecovery(t, false, false)
 }
 
 func TestNativeClusterRecovery(t *testing.T) {
 	if os.Getenv("TITANUS_BACKUP_NATIVE_TEST") != "1" {
 		t.Skip("opt-in native cluster recovery")
 	}
-	runNativeOfflineQuorumRecovery(t, true)
+	runNativeOfflineQuorumRecovery(t, true, false)
 }
 
-func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode bool) {
+func TestNativeMigratedQuorumRecovery(t *testing.T) {
+	if os.Getenv("TITANUS_BACKUP_NATIVE_TEST") != "1" {
+		t.Skip("opt-in migrated native quorum recovery")
+	}
+	runNativeOfflineQuorumRecovery(t, false, true)
+}
+
+func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode, migrated bool) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "external.key")
 	if e := Keygen(keyPath); e != nil {
@@ -264,6 +272,30 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode bool) {
 	if e = stores[l].PutSecret(r); e != nil {
 		t.Fatal(e)
 	}
+	if migrated {
+		id := "native-backup-migration-001"
+		if e = stores[l].CreateTask(realm.Task{Name: "unknown-proof", Template: realm.UnitTemplate{Source: "app", Command: []string{"/bin/sh"}}}); e != nil {
+			t.Fatal(e)
+		}
+		task := stores[l].Snapshot().Tasks["unknown-proof"]
+		task.Phase = realm.TaskUnknown
+		task.RunID = "uncertain-do-not-replay"
+		if e = stores[l].UpdateTask(task); e != nil {
+			t.Fatal(e)
+		}
+		observed := map[string]version.Capabilities{}
+		required := []string{}
+		for _, f := range fixtures {
+			if e = offline.PrepareSchemaFloor(f.plan.StateRoot, offline.NewSchemaFloor("NATIVE-DR", id, 1)); e != nil {
+				t.Fatal(e)
+			}
+			observed[f.plan.Node] = version.Compatible()
+			required = append(required, f.plan.Node)
+		}
+		if _, e = stores[l].TransitionSchema(id, stores[l].Snapshot().Revision, observed, required); e != nil {
+			t.Fatal(e)
+		}
+	}
 	before := stores[l].Snapshot()
 	converge(before.Revision)
 	if _, e = Create(fixtures[0].plan, fixtures[0].archive, keyPath); e == nil {
@@ -288,6 +320,11 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode bool) {
 			}
 			f.attest(t)
 			f.loseRoots(t)
+			if migrated {
+				if e = os.Remove(f.plan.StateRoot + ".recovery-pending"); e != nil {
+					t.Fatal(e)
+				}
+			}
 			os.RemoveAll(filepath.Join(f.dir, "original-source"))
 			if _, e = Restore(f.archive, keyPath, f.fence, f.plan); e != nil {
 				t.Fatalf("restore voter %d: %v", i, e)
@@ -440,7 +477,7 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode bool) {
 	if _, e = stores[l].MutatePKI(func(p identity.Policy) (identity.Policy, error) { return restoredAuthority.SignPolicy(p, nil) }); e != nil {
 		t.Fatal("restored signer cannot commit quorum PKI policy", e)
 	}
-	if e = stores[l].UpsertNode(realm.Node{ID: "after-recovery", Address: "127.0.0.1"}); e != nil {
+	if e = stores[l].UpsertNode(realm.Node{ID: "after-recovery", Address: "127.0.0.1", Compatibility: func() *version.Capabilities { c := version.Compatible(); return &c }()}); e != nil {
 		t.Fatal("restored Realm cannot commit new state", e)
 	}
 	converge(stores[l].Snapshot().Revision)
@@ -452,6 +489,18 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode bool) {
 	// Subsequent startup changes the original database; the old export must fail.
 	if _, e = consensus.ReadOfflineState(fixtures[l].plan.StateRoot); e == nil {
 		t.Fatal("stale graceful checkpoint validated a running/changed database")
+	}
+	if migrated {
+		for _, f := range fixtures {
+			if e = offline.CheckCommittedFloor(f.plan.StateRoot, "NATIVE-DR", before.SchemaMigrations[0].ID, 1); e != nil {
+				t.Fatal(e)
+			}
+		}
+		task := stores[l].Snapshot().Tasks["unknown-proof"]
+		if task.Phase != realm.TaskUnknown || task.RunID != "uncertain-do-not-replay" || task.ExecutionID != before.Tasks["unknown-proof"].ExecutionID {
+			t.Fatal("restored migration replayed or changed UNKNOWN execution")
+		}
+		t.Log("TITANUS_NATIVE_MIGRATED_QUORUM_RESTORE_OK")
 	}
 	t.Log("TITANUS_NATIVE_OFFLINE_QUORUM_RESTORE_OK")
 	evidence := map[string]any{"architecture": runtime.GOARCH, "revision": os.Getenv("TITANUS_BACKUP_TEST_REVISION"), "voters": 3, "original_revision": before.Revision, "restored_revision": stores[l].Snapshot().Revision, "sources_verified": true, "secrets_decrypted": true, "local_bytes_verified": true, "original_roots_destroyed": true}
