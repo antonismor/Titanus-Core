@@ -118,3 +118,78 @@ func TestScheduleAtomicAttemptIdentityAndUnknownHold(t *testing.T) {
 		t.Fatal("retry reused original immutable execution")
 	}
 }
+
+func TestScheduledSecretReferenceCannotBeDeletedBeforeFirstAttempt(t *testing.T) {
+	s := schemaTwoStore(t)
+	keys := &secrets.Keyring{Active: "one", Keys: map[string][]byte{"one": bytes.Repeat([]byte{1}, 32)}}
+	r, e := keys.Encrypt("LAB", "password", 1, []byte("SCHEDULE_PINNED_VALUE"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.PutSecret(r); e != nil {
+		t.Fatal(e)
+	}
+	j := TaskSchedule{Name: "future-secret", Template: UnitTemplate{Source: "app", Command: []string{"app"}, Secrets: []secrets.Ref{{Name: "password", Version: 1, Environment: "PASSWORD"}}}, DueAt: time.Now().Add(time.Hour), MaxRuns: 1, MaxAttempts: 1, RetrySeconds: 1}
+	if e = s.CreateTaskSchedule(j); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.PauseTaskSchedule(j.Name); e != nil {
+		t.Fatal(e)
+	}
+	before := s.Snapshot()
+	if len(before.Tasks) != 0 {
+		t.Fatal("fixture already dispatched")
+	}
+	if e = s.DeleteSecret("password"); e == nil {
+		t.Fatal("paused future schedule lost its pinned secret")
+	}
+	after := s.Snapshot()
+	plain, e := keys.Decrypt(after.Secrets["password"][0])
+	if e != nil || string(plain) != "SCHEDULE_PINNED_VALUE" || after.Revision != before.Revision {
+		t.Fatal("rejected deletion damaged secret/revision", e)
+	}
+}
+
+func TestReplicationPreservesRotationAndScheduleHistory(t *testing.T) {
+	s := schemaTwoStore(t)
+	j := TaskSchedule{Name: "history", Template: UnitTemplate{Source: "app", Command: []string{"app"}}, DueAt: time.Now().Add(time.Second), MaxRuns: 1, MaxAttempts: 2, RetrySeconds: 1}
+	if e := s.CreateTaskSchedule(j); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.DispatchScheduledTask(j.Name, time.Now().Add(time.Minute)); e != nil {
+		t.Fatal(e)
+	}
+	keys := &secrets.Keyring{Active: "two", Keys: map[string][]byte{"two": bytes.Repeat([]byte{2}, 32)}}
+	if _, e := s.RotateSecrets("rotation-history-proof-001", "two", s.Snapshot().Revision, keys); e != nil {
+		t.Fatal(e)
+	}
+	before := s.Snapshot()
+	for _, mutation := range []func(*State){
+		func(a *State) { a.SecretRotations = nil },
+		func(a *State) { a.SecretRotations[0].Target = "other" },
+		func(a *State) { v := a.TaskSchedules[j.Name]; v.RetrySeconds++; a.TaskSchedules[j.Name] = v },
+		func(a *State) { delete(a.TaskSchedules, j.Name) },
+		func(a *State) {
+			id := a.TaskSchedules[j.Name].ActiveTask
+			v := a.Tasks[id]
+			v.UnitID = "changed"
+			a.Tasks[id] = v
+		},
+		func(a *State) { id := a.TaskSchedules[j.Name].ActiveTask; delete(a.Tasks, id) },
+	} {
+		after := cloneState(before)
+		after.Revision++
+		mutation(&after)
+		if ValidateSchemaChange(before, after) == nil {
+			t.Fatal("replication admitted rewritten retained history")
+		}
+	}
+	after := cloneState(before)
+	after.Revision++
+	v := after.TaskSchedules[j.Name]
+	v.Paused = true
+	after.TaskSchedules[j.Name] = v
+	if e := ValidateSchemaChange(before, after); e != nil {
+		t.Fatal("legitimate schedule pause rejected", e)
+	}
+}

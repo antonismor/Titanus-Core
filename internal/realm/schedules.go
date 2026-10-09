@@ -124,7 +124,7 @@ func ValidateOrchestrationState(s State) error {
 		return fmt.Errorf("orchestration journal bounds exceeded")
 	}
 	for name, j := range s.TaskSchedules {
-		if name != j.Name || !secrets.Name.MatchString(name) || j.Run < 1 || j.Run > j.MaxRuns || j.Attempt < 1 || j.Attempt > j.MaxAttempts || j.MaxRuns > 16 || j.MaxAttempts > 4 || j.NextAt.IsZero() {
+		if name != j.Name || !secrets.Name.MatchString(name) || j.Run < 1 || j.Run > j.MaxRuns || j.Attempt < 1 || j.Attempt > j.MaxAttempts || j.MaxRuns > 16 || j.MaxAttempts > 4 || j.NextAt.IsZero() || j.DueAt.IsZero() || j.RetrySeconds < 1 || j.RetrySeconds > 3600 || (j.EverySeconds == 0 && j.MaxRuns != 1) || (j.EverySeconds != 0 && (j.EverySeconds < 10 || j.EverySeconds > 86400)) {
 			return fmt.Errorf("invalid retained Task schedule")
 		}
 		if j.ActiveTask != "" {
@@ -134,10 +134,22 @@ func ValidateOrchestrationState(s State) error {
 			}
 		}
 	}
+	seen := map[string]bool{}
+	previous := uint64(0)
 	for _, r := range s.SecretRotations {
-		if !migrationID.MatchString(r.ID) || !executionID.MatchString(r.Fingerprint) || !secrets.Name.MatchString(r.Target) || r.Revision == 0 || r.Revision > s.Revision {
+		if !migrationID.MatchString(r.ID) || seen[r.ID] || !executionID.MatchString(r.Fingerprint) || !secrets.Name.MatchString(r.Target) || r.Revision <= previous || r.Revision > s.Revision || r.CommittedAt.IsZero() {
 			return fmt.Errorf("invalid durable secret rotation marker")
 		}
+		seen[r.ID] = true
+		previous = r.Revision
 	}
 	return nil
+}
+
+func schedulePolicy(j TaskSchedule) TaskSchedule {
+	j.Run, j.Attempt = 0, 0
+	j.ActiveTask = ""
+	j.NextAt = time.Time{}
+	j.Done, j.Paused = false, false
+	return j
 }
