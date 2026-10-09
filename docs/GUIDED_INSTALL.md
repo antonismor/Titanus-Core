@@ -96,7 +96,10 @@ verifies both archive architectures (the foreign archive is an explicitly
 cross-built private fixture), installs three independently generated controller
 configurations in staged roots, starts real daemons with separate bind/socket
 paths and proves functional mTLS/admin access, quorum PKI and seeded network
-state. Existing native Ceph and failure suites remain mandatory.
+state. All three generated controllers must answer authenticated consensus
+requests with their exact identities, one common leader and two followers;
+a functioning two-voter quorum alone cannot pass. Existing native Ceph and
+failure suites remain mandatory.
 
 These processes share a disposable runner kernel. Fresh heterogeneous VMs,
 real SSH host application, interface/boot/power behavior, external VIP routing,

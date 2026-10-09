@@ -201,8 +201,63 @@ func TestNativeGuidedInstallation(t *testing.T) {
 	transport := &http.Transport{TLSClientConfig: tls}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: time.Second}
-	var recovered realm.State
+	// A two-voter quorum can answer while the third installed daemon is broken.
+	// Require every generated controller to serve authenticated local consensus
+	// status and agree on one leader before accepting the installation fixture.
+	controllersReady := false
 	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		leaderAPI := ""
+		leaders, followers := 0, 0
+		ready := true
+		for _, node := range plan.Nodes {
+			response, e := client.Get(fmt.Sprintf("https://%s:%d/v1/realm/consensus", node.ManagementIP, api))
+			if e != nil {
+				ready = false
+				break
+			}
+			var status map[string]string
+			e = json.NewDecoder(response.Body).Decode(&status)
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK || e != nil || status["id"] != node.Name || status["realm"] != plan.RealmName || status["leader_api"] == "" {
+				ready = false
+				break
+			}
+			if leaderAPI == "" {
+				leaderAPI = status["leader_api"]
+			}
+			if status["leader_api"] != leaderAPI {
+				ready = false
+				break
+			}
+			switch status["state"] {
+			case "Leader":
+				if leaderAPI != fmt.Sprintf("https://%s:%d", node.ManagementIP, api) {
+					ready = false
+				}
+				leaders++
+			case "Follower":
+				followers++
+			default:
+				ready = false
+			}
+		}
+		if ready && leaders == 1 && followers == 2 {
+			controllersReady = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !controllersReady {
+		for _, n := range installations {
+			data, _ := os.ReadFile(n.log.Name())
+			t.Logf("%s: %s", n.name, data)
+		}
+		t.Fatal("all three generated controllers must serve mTLS consensus with one common leader and two followers")
+	}
+	t.Log("TITANUS_NATIVE_GUIDED_THREE_CONTROLLERS_READY")
+	var recovered realm.State
+	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, node := range plan.Nodes {
 			response, e := client.Get(fmt.Sprintf("https://%s:%d/v1/realm/state", node.ManagementIP, api))

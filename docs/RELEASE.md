@@ -151,6 +151,7 @@ inventory/overwrite rejection and exact-target rollback. The guided test validat
 both archives (its foreign architecture is a private cross-built fixture), installs
 three generated controller configurations in separate roots and starts their real
 native daemons with separate loopback binds and Unix sockets. It requires mTLS
+consensus access to all three identities with one common leader and two followers,
 admin access, functional quorum-backed PKI and preserved seeded network state.
 This shares one disposable runner kernel and does not exercise real SSH host
 application, independent boot/power, heterogeneous VMs or external VIP routing.
