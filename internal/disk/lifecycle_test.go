@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,38 @@ import (
 	"syscall"
 	"testing"
 )
+
+func TestOfflineAttachmentPreservesOwnershipJournalAndExclusion(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if _, e := m.Create(Spec{Name: "data", SizeBytes: 1024}); e != nil {
+		t.Fatal(e)
+	}
+	a, e := m.Acquire("data", "original-unit", "original-run")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = a.Close(); e != nil {
+		t.Fatal(e)
+	}
+	journal := filepath.Join(m.diskDir("data"), "control", "owner.json")
+	before, e := os.ReadFile(journal)
+	if e != nil {
+		t.Fatal(e)
+	}
+	a, e = m.acquireOffline("data", "recovery-verification")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	if other, e := NewManager(m.StateRoot).Acquire("data", "competitor", "new-run"); e == nil {
+		other.Close()
+		t.Fatal("offline attachment did not exclude another writer")
+	}
+	after, e := os.ReadFile(journal)
+	if e != nil || !bytes.Equal(before, after) {
+		t.Fatal("offline operation changed restored ownership journal", e)
+	}
+}
 
 func TestLegacyRemoteRestoreFailsBeforePublication(t *testing.T) {
 	for _, provider := range []Provider{ProviderCephRBD, ProviderCephFS} {

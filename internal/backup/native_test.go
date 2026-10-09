@@ -34,6 +34,17 @@ func TestNativeOfflineQuorumRecovery(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("native recovery requires root")
 	}
+	runNativeOfflineQuorumRecovery(t, false)
+}
+
+func TestNativeClusterRecovery(t *testing.T) {
+	if os.Getenv("TITANUS_BACKUP_NATIVE_TEST") != "1" {
+		t.Skip("opt-in native cluster recovery")
+	}
+	runNativeOfflineQuorumRecovery(t, true)
+}
+
+func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode bool) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "external.key")
 	if e := Keygen(keyPath); e != nil {
@@ -186,6 +197,48 @@ func TestNativeOfflineQuorumRecovery(t *testing.T) {
 		open(i)
 	}
 	l := leader()
+
+	remoteCatalogs := map[string]disk.Catalog{}
+	if clusterMode && os.Getenv("TITANUS_CEPH_TEST") == "1" {
+		dm := disk.NewManager(fixtures[0].plan.StateRoot)
+		confData, e := os.ReadFile(os.Getenv("TITANUS_CEPH_CONF"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		confPath := filepath.Join(fixtures[0].plan.ConfigRoot, "ceph.conf")
+		if e = os.WriteFile(confPath, confData, 0600); e != nil {
+			t.Fatal(e)
+		}
+		if e = dm.ConfigureCeph(disk.CephConfig{Cluster: "ceph", Pool: "titanus", FSName: "cephfs", Client: "client.admin", Conf: confPath}); e != nil {
+			t.Fatal(e)
+		}
+		for _, provider := range []disk.Provider{disk.ProviderCephRBD, disk.ProviderCephFS} {
+			name := "dr-" + string(provider)
+			if _, e = dm.Create(disk.Spec{Name: name, Provider: provider, SizeBytes: 64 << 20}); e != nil {
+				t.Fatal(e)
+			}
+			a, e := dm.Acquire(name, "recovery-fixture", "before-backup")
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = os.WriteFile(filepath.Join(a.Path, "proof"), []byte("CEPH_DR_BYTES_"+name), 0640); e != nil {
+				t.Fatal(e)
+			}
+			a.Close()
+			if e = dm.Detach(name); e != nil {
+				t.Fatal(e)
+			}
+			c, e := dm.Catalog(name)
+			if e != nil {
+				t.Fatal(e)
+			}
+			c.Fleet = "recovery-app"
+			remoteCatalogs[name] = c
+			if e = stores[l].PutDiskCatalog(c); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
 	policy, e := authority.InitialPolicy()
 	if e != nil {
 		t.Fatal(e)
@@ -223,20 +276,135 @@ func TestNativeOfflineQuorumRecovery(t *testing.T) {
 		nodes[i] = nil
 	}
 	actorLock.Close()
-	for i, f := range fixtures {
-		m, e := Create(f.plan, f.archive, keyPath)
-		if e != nil {
+
+	if !clusterMode {
+		for i, f := range fixtures {
+			m, e := Create(f.plan, f.archive, keyPath)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if m.RealmRevision != before.Revision {
+				t.Fatal("stale seed was backed up instead of committed Raft state")
+			}
+			f.attest(t)
+			f.loseRoots(t)
+			os.RemoveAll(filepath.Join(f.dir, "original-source"))
+			if _, e = Restore(f.archive, keyPath, f.fence, f.plan); e != nil {
+				t.Fatalf("restore voter %d: %v", i, e)
+			}
+		}
+
+	} else {
+		plans := []Plan{}
+		for _, f := range fixtures {
+			plans = append(plans, f.plan)
+		}
+		hostsPath := filepath.Join(dir, "hosts.json")
+		durable.WriteJSON(hostsPath, plans, 0600)
+		intentPath := filepath.Join(dir, "intent.json")
+		if _, e = CreateClusterIntent(fixtures[0].plan, hostsPath, keyPath, intentPath); e != nil {
 			t.Fatal(e)
 		}
-		if m.RealmRevision != before.Revision {
-			t.Fatal("stale seed was backed up instead of committed Raft state")
+		storagePath := filepath.Join(dir, "ceph-data")
+		if _, e = ExportStorage(fixtures[0].plan.StateRoot, intentPath, keyPath, storagePath); e != nil {
+			t.Fatal(e)
 		}
-		f.attest(t)
-		f.loseRoots(t)
-		os.RemoveAll(filepath.Join(f.dir, "original-source"))
-		if _, e = Restore(f.archive, keyPath, f.fence, f.plan); e != nil {
-			t.Fatalf("restore voter %d: %v", i, e)
+		setPlan := ClusterSetPlan{Intent: intentPath, Storage: storagePath}
+		for _, f := range fixtures {
+			if _, e = CreateClusterHost(f.plan, f.archive, keyPath, intentPath, storagePath); e != nil {
+				t.Fatal(e)
+			}
+			f.attest(t)
+			setPlan.Hosts = append(setPlan.Hosts, ClusterHost{Plan: f.plan, Archive: f.archive})
 		}
+		setPlanPath := filepath.Join(dir, "set-plan.json")
+		durable.WriteJSON(setPlanPath, setPlan, 0600)
+		setPath := filepath.Join(dir, "recovery-set.json")
+		if _, e = SealClusterSet(setPlanPath, keyPath, setPath); e != nil {
+			t.Fatal(e)
+		}
+		// Reject incomplete and mixed archives before any restored root exists.
+		missing := setPlan
+		missing.Hosts = missing.Hosts[:2]
+		badPath := filepath.Join(dir, "missing.json")
+		durable.WriteJSON(badPath, missing, 0600)
+		if _, e = SealClusterSet(badPath, keyPath, filepath.Join(dir, "must-not-exist")); e == nil {
+			t.Fatal("incomplete voter backup accepted")
+		}
+		for _, f := range fixtures {
+			f.loseRoots(t)
+			os.RemoveAll(filepath.Join(f.dir, "original-source"))
+			if _, e = Restore(f.archive, keyPath, f.fence, f.plan); e == nil {
+				t.Fatal("cluster backup restored without set gate")
+			}
+		}
+		proofs := []string{}
+		for _, f := range fixtures {
+			if _, e = RestoreClusterHost(setPath, keyPath, f.plan.Node, f.fence); e != nil {
+				t.Fatal(e)
+			}
+			if e = offline.CheckStartup(f.plan.StateRoot); e == nil {
+				t.Fatal("partial cluster restore permits startup")
+			}
+			proof := filepath.Join(f.dir, "host-proof.json")
+			if e = ProveClusterHost(setPath, keyPath, f.plan.Node, proof); e != nil {
+				t.Fatal(e)
+			}
+			proofs = append(proofs, proof)
+		}
+		dm := disk.NewManager(fixtures[0].plan.StateRoot)
+		// Destroy backend DATA while preserving exact native image/subvolume IDs.
+		// A fresh FSID or replacement object is intentionally a different profile.
+		for name, c := range remoteCatalogs {
+			if e = dm.WithOfflineData(c, func(path string) error { return os.Remove(filepath.Join(path, "proof")) }); e != nil {
+				t.Fatal(e)
+			}
+			_ = name
+		}
+		recordPath := filepath.Join(dir, "storage-exclusion.json")
+		durable.WriteJSON(recordPath, FenceRecord{"NATIVE-DR", "storage", true, true, true, "All disposable native actors stopped; original Ceph IDs retained and old external writers excluded."}, 0600)
+		storageFence := filepath.Join(dir, "storage-fence.json")
+		if e = AttestStorageFence(setPath, keyPath, recordPath, storageFence); e != nil {
+			t.Fatal(e)
+		}
+		storageProof := filepath.Join(dir, "storage-proof.json")
+		if e = ImportStorage(fixtures[0].plan.StateRoot, setPath, keyPath, storageFence, storageProof); e != nil {
+			t.Fatal(e)
+		}
+		completionPath := filepath.Join(dir, "completion.json")
+		proofPaths := filepath.Join(dir, "proof-paths.json")
+		durable.WriteJSON(proofPaths, proofs, 0600)
+		if e = CompleteClusterRecovery(setPath, keyPath, proofPaths, completionPath); e == nil {
+			t.Fatal("missing storage completion accepted")
+		}
+		proofs = append(proofs, storageProof)
+		durable.WriteJSON(proofPaths, proofs, 0600)
+		if e = CompleteClusterRecovery(setPath, keyPath, proofPaths, completionPath); e != nil {
+			t.Fatal(e)
+		}
+		for _, f := range fixtures {
+			if e = FinalizeClusterHost(setPath, keyPath, f.plan.Node, completionPath); e != nil {
+				t.Fatal(e)
+			}
+			if e = offline.CheckStartup(f.plan.StateRoot); e != nil {
+				t.Fatal(e)
+			}
+		}
+		for name, c := range remoteCatalogs {
+			if e = dm.WithOfflineData(c, func(path string) error {
+				data, e := os.ReadFile(filepath.Join(path, "proof"))
+				if e != nil {
+					return e
+				}
+				if string(data) != "CEPH_DR_BYTES_"+name {
+					return fmt.Errorf("Ceph restore lost actual bytes")
+				}
+				return nil
+			}); e != nil {
+				t.Fatal(e)
+			}
+		}
+		t.Log("TITANUS_NATIVE_COORDINATED_CLUSTER_RECOVERY_OK", len(remoteCatalogs))
 	}
 	if e = os.RemoveAll(authority.Dir); e != nil {
 		t.Fatal(e)

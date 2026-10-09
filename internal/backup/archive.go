@@ -26,10 +26,12 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
-func inventory(p Plan) ([]Entry, error) {
+func inventory(p Plan) ([]Entry, error) { return inventoryRoots(p.roots()) }
+
+func inventoryRoots(roots map[string]string) ([]Entry, error) {
 	entries := []Entry{}
 	var total int64
-	for prefix, root := range p.roots() {
+	for prefix, root := range roots {
 		e := filepath.WalkDir(root, func(file string, d fs.DirEntry, e error) error {
 			if e != nil {
 				return e
@@ -104,6 +106,11 @@ func (m Manifest) validate() error {
 	if m.Format != Format || !hashPattern.MatchString(m.ID) || !hashPattern.MatchString(m.RealmSHA256) || m.CreatedAt.IsZero() || m.Build.OS != "linux" || m.Build.StateProfile != version.StateProfile || (m.Build.Arch != "amd64" && m.Build.Arch != "arm64") {
 		return fmt.Errorf("unsupported backup format/profile/identity")
 	}
+	if m.Cluster != nil {
+		if e := m.Cluster.validate(); e != nil {
+			return e
+		}
+	}
 	if e := m.Plan.Validate(); e != nil {
 		return e
 	}
@@ -170,7 +177,11 @@ func Create(p Plan, archive, keyPath string) (Manifest, error) {
 	return create(p, archive, keyPath)
 }
 
-func create(p Plan, archive, keyPath string) (result Manifest, err error) {
+func create(p Plan, archive, keyPath string) (Manifest, error) {
+	return createBound(p, archive, keyPath, nil)
+}
+
+func createBound(p Plan, archive, keyPath string, binding *ClusterBinding) (result Manifest, err error) {
 	if err = p.Validate(); err != nil {
 		return
 	}
@@ -201,7 +212,7 @@ func create(p Plan, archive, keyPath string) (result Manifest, err error) {
 			f.Close()
 		}
 	}()
-	state, e := validateHost(p)
+	state, e := validateHostBound(p, p.roots(), binding)
 	if e != nil {
 		return result, e
 	}
@@ -218,6 +229,12 @@ func create(p Plan, archive, keyPath string) (result Manifest, err error) {
 		return result, e
 	}
 	result = Manifest{Format: Format, ID: hex.EncodeToString(id), CreatedAt: time.Now().UTC(), Build: version.Info(), Plan: p, RealmRevision: state.Revision, RealmSHA256: fmt.Sprintf("%x", sha256.Sum256(stateBytes)), Entries: entries}
+	result.Cluster = binding
+	if binding != nil {
+		if e := binding.checkState(state); e != nil {
+			return result, e
+		}
+	}
 	if err = result.validate(); err != nil {
 		return
 	}

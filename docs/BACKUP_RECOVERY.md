@@ -185,3 +185,101 @@ rebinding, coordinated complete multi-host/controller recovery sets, measured
 stale-writer exclusion and full controller/storage disaster recovery from
 independent backups. M5–M7 remain independent milestones. All user VM/physical
 host acceptance remains deferred to the central large laboratory server.
+
+## Coordinated recovery sets (rc.6)
+
+The `titanus-cluster-set/v1` profile binds every original voter and registered
+Realm node to one exact committed Realm revision/digest, preserved membership,
+host archive ID/hash and authenticated Ceph data inventory. A backup from a
+cluster intent cannot be restored by the standalone command. All referenced
+archives and the storage directory must be available at the signed absolute
+paths on every recovery host (for example a private, offline recovery share).
+Plan paths identify original host-local destinations, not SSH targets. Commands
+never contact or start Titanus hosts.
+
+Quiesce assignments and terminalize Tasks first, withdraw Gateways, stop all
+writers/agents and gracefully close all voters. List *all* host plans in
+`hosts.json`. Create one intent from a stopped original controller, export data
+with an original configured Disk manager, then create each host archive and seal
+the complete set. Example operation order (all paths are placeholders):
+
+```sh
+sudo titanus backup cluster-intent --plan /backup/controller1-plan.json \
+  --hosts /backup/hosts.json --key /backup/recovery.key --output /backup/intent.json
+sudo titanus backup ceph-export --state-dir /var/lib/titanus \
+  --intent /backup/intent.json --key /backup/recovery.key --output /backup/ceph-data
+sudo titanus backup cluster-create-host --plan /backup/controller1-plan.json \
+  --intent /backup/intent.json --storage /backup/ceph-data \
+  --key /backup/recovery.key --archive /backup/controller1.tar.gz
+# Repeat cluster-create-host for every original host, then prepare set-plan.json.
+sudo titanus backup cluster-seal --plan /backup/set-plan.json \
+  --key /backup/recovery.key --output /backup/set.json
+sudo titanus backup cluster-verify --set /backup/set.json --key /backup/recovery.key
+```
+
+`set-plan.json` has `intent`, `storage`, and `hosts` (each has the full host `plan`
+and `archive` path). Sealing fills immutable host backup IDs and archive hashes;
+missing/duplicate hosts, stale/mixed state, changed payloads and incomplete
+storage fail closed. The intent is not a fencing device or a cross-host lock:
+operators must retain the common quiescent point until sealing. Supported native
+attachment locks reject live cooperative writers during export/import.
+
+**Ceph data profile:** RBD exports a full image diff with no base snapshot and
+also hashes a streamed full raw image under the same lifecycle guard. Import
+verifies the entire authenticated set before writes, retains the exact original
+FSID/pool/native image ID, and checks every restored raw byte. CephFS exports the
+complete `data` tree with numeric ownership/modes/times, verifies every payload
+hash, restores only into an empty data directory and verifies the complete tree.
+The `.titanus-control` ownership inode is not replaced. All external catalogs
+must be covered. Ceph config/credentials used by a backed-up host must reside
+inside its configuration root. Ceph credentials are private backup material.
+
+This identity-preserving profile supports data loss with the original native
+backend objects retained. It **refuses replaced objects, a new Ceph FSID, retained
+Ceph snapshot histories, and unsupported CephFS filesystem metadata** rather than
+claim incomplete recovery. Ceph monitor/OSD/MDS reconstruction or rebinding to a
+fresh backend is a separate unsupported migration procedure; this is not a Ceph
+cluster-image backup. RBD imports deliberately replace the signed original
+image's data under independently established fencing; CephFS never overwrites
+nonempty data. External direct writers that bypass Titanus locks must be excluded
+by the operator. Operation guards and native commands have bounded timeouts;
+timeouts may leave an abandoned native guard requiring measured fencing before
+manual cleanup. No automatic lock breaking is provided.
+
+After independently fencing every old actor and preparing absent host roots:
+
+1. Generate each archive-bound `attest-fence` record immediately before that
+   host's `cluster-restore-host --set ... --node ... --fence ...` operation.
+2. Each restored host retains both the legacy `.recovery-pending` startup blocker
+   and a set-bound cluster blocker. Even rc.5 startup refuses the legacy blocker.
+3. Run `cluster-prove-host --set ... --node ... --key ... --output ...` on each
+   host. It revalidates installed identities/permissions, complete inventories,
+   private keys, Sources, ledgers and committed state against the exact archive.
+4. Generate `ceph-attest-fence --set ... --record ... --key ... --output ...` with
+   `node: "storage"` and actual independent exclusion evidence. Its set-bound
+   signed record expires after two hours. Import via `ceph-import --state-dir ...
+   --set ... --fence ... --key ... --output /backup/storage-proof.json` using the
+   recovered manager. It leaves a legacy startup blocker and durable progress
+   receipt on interruption and cannot silently replay a prior import.
+5. Collect the signed host proof paths and storage proof path in a JSON array.
+   `cluster-complete --set ... --proofs ... --key ... --output ...` refuses any
+   missing, duplicate, mixed or unverified participant.
+6. Present the resulting signed completion to every host using
+   `cluster-finalize-host --set ... --node ... --completion ... --key ...`.
+   Finalization rechecks that host's installed data before removing its blockers.
+   Only then independently authorize normal voter/agent/Gateway startup.
+
+Attestations record operator evidence; Titanus does not measure power fencing.
+Copying a signing key grants equivalent proof/signing authority. The recovery
+set and archives are unencrypted. An interrupted import/publication remains
+blocked; inspect the retained progress and independently fence before any manual
+cleanup or reattempt. No destructive rollback or automatic ambiguous replay is
+performed. A completion proves successful offline reconstruction at the stated
+point, not future storage durability or the correctness of external fencing.
+
+Both native runtime architecture jobs prove the full host-set protocol and
+three-voter functionality. Native Ceph jobs additionally remove the actual RBD
+and CephFS payload files, recover from the authenticated exported bytes, complete
+all-host proof gating and prove functional quorum writes/secret decryption.
+These are disposable shared-kernel/one-OSD fixtures. Independent total-host loss,
+real storage partitions/power and sustained integrity remain final lab acceptance.

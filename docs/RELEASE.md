@@ -1,6 +1,6 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.5**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.6**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
@@ -33,7 +33,7 @@ operator acceptance work. Failure results are never inferred from a cross-build.
 Published release candidates come only from successful **main push** runs of
 Titanus Core CI. The publication workflow downloads that run's native packages,
 checks archive SHA-256 and manifest version/revision/architecture/profile, and
-creates an immutable version tag/release at the tested main SHA. Existing tags
+creates a preserved version tag/release at the tested main SHA. Existing tags
 or releases with a different revision are rejected. No PR-run artifact is
 published. Archives contain no user state, PKI, encryption keys or Source payloads.
 The SHA files provide integrity; no external signing identity or KMS is claimed.
@@ -50,9 +50,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.5-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.5-linux-amd64.tar.gz
-./titanus-0.4.0-rc.5-linux-amd64/bin/titanus setup
+sha256sum -c titanus-0.4.0-rc.6-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.6-linux-amd64.tar.gz
+./titanus-0.4.0-rc.6-linux-amd64/bin/titanus setup
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -200,3 +200,8 @@ Packaging and publication compare every binary/archive against that exact
 declaration and state profile. A custom `make VERSION=...` build is not a
 publishable release; the native installer fixture alone explicitly permits its
 `.install-test` version during staging. Published tags are never moved.
+
+The rc.6 recovery set binds all hosts to authenticated external Ceph payloads and
+requires signed all-host plus storage completion before startup. Backend object
+identity must be retained; a new Ceph FSID and Ceph snapshot-history migration
+are unsupported and refused. See BACKUP_RECOVERY.md for the complete procedure.
