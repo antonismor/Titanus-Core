@@ -391,6 +391,14 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 				t.Fatal("actual schema-one legacy binary required")
 			}
 			for i := range roots {
+				floor, e := offline.ReadSchemaFloor(roots[i])
+				if e != nil || floor.Schema != 2 {
+					t.Fatal("schema-two rollback floor absent", e)
+				}
+				loginfo, e := os.Stat(logs[i])
+				if e != nil {
+					t.Fatal(e)
+				}
 				binaries[i] = schemaOne
 				start(i)
 				proc := processes[i]
@@ -399,7 +407,7 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 				}
 				processes[i] = nil
 				logdata, e := os.ReadFile(logs[i])
-				if e != nil || !strings.Contains(string(logdata), "unsupported schema rollback floor") {
+				if e != nil || int64(len(logdata)) < loginfo.Size() || !strings.Contains(string(logdata[loginfo.Size():]), "unfinished offline maintenance blocks startup") {
 					t.Fatal("schema-one binary refused for an unrelated reason", e, string(logdata))
 				}
 				binaries[i] = binary
