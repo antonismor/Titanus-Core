@@ -323,8 +323,29 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			if _, e = clients[current].TransitionSchemaTo("native-schema-two-proof-001", state.Revision, 2); e != nil {
-				t.Fatal("schema-two quorum transition", e)
+			// The live reconciler can commit between inspection and the guarded
+			// transition. Resolve the same migration ID before retrying with a
+			// fresh inspected revision; never weaken the production CAS gate.
+			migrationID := "native-schema-two-proof-001"
+			migrationDeadline := time.Now().Add(20 * time.Second)
+			for {
+				state, e = clients[current].RealmState()
+				if e != nil {
+					t.Fatal(e)
+				}
+				if state.SchemaVersion == 2 {
+					if state.Migrations[len(state.Migrations)-1].ID != migrationID {
+						t.Fatal("unexpected schema-two migration")
+					}
+					break
+				}
+				if _, e = clients[current].TransitionSchemaTo(migrationID, state.Revision, 2); e == nil {
+					break
+				}
+				if time.Now().After(migrationDeadline) {
+					t.Fatal("schema-two quorum transition", e)
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
 			if _, e = clients[current].Orchestration(http.MethodPut, "/v1/realm/secrets/rotation-proof", map[string][]byte{"value": []byte("NATIVE_ROTATED_VALUE")}); e != nil {
 				t.Fatal(e)
