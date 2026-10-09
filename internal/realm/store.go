@@ -20,6 +20,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/fabric"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
@@ -914,6 +915,11 @@ func (s *Store) load(realmName string) error {
 	}
 	if e := ValidateSchema(s.data); e != nil {
 		return e
+	}
+	if s.data.SchemaVersion > 0 {
+		if e := offline.CheckCommittedFloor(s.stateRoot, s.data.Name, s.data.SchemaMigrations[0].ID, s.data.SchemaVersion); e != nil {
+			return e
+		}
 	}
 	if s.data.Nodes == nil {
 		s.data.Nodes = map[string]Node{}

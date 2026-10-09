@@ -37,3 +37,16 @@ func TestSchemaFloorSurvivesRecoveryAndFailsClosed(t *testing.T) {
 		t.Fatal("missing legacy-binary blocker admitted")
 	}
 }
+
+func TestCommittedFloorRejectsDifferentMigrationOrRealm(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	f := NewSchemaFloor("LAB", "floor-committed-proof-001", 1)
+	if e := PrepareSchemaFloor(root, f); e != nil {
+		t.Fatal(e)
+	}
+	for _, pair := range [][2]string{{"OTHER", f.MigrationID}, {f.Realm, "different-migration-001"}} {
+		if CheckCommittedFloor(root, pair[0], pair[1], 1) == nil {
+			t.Fatal("unrelated floor admitted")
+		}
+	}
+}

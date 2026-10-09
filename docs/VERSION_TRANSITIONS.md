@@ -78,6 +78,11 @@ AMD64/ARM64 CI builds the actual immutable tested rc.5 source at
 `d85d76626f72a9f642363a2eaa34a853a792573d`, rolls three real processes to the current
 binary while writing schema-zero state, prepares/commits schema one, kills the
 leader, rejects startup of that actual old binary and reconstructs a writable
-schema-one quorum. Disposable native CI shares a host kernel/network. Actual
+schema-one quorum. Separate native tests destroy and restore all three migrated
+voter roots, verify archived floors and unchanged UNKNOWN execution identity,
+and commit new writes. The installer is exercised with actual verified legacy
+and current bundles: pre-migration rollback succeeds, post-preparation rollback
+and legacy reinstall are refused before selection changes. Local floor checks
+are bound to the exact committed Realm and migration. Disposable native CI shares a host kernel/network. Actual
 mixed-version independent-host rolling upgrades remain pending on the central
 large server. No user server is operated by this change.

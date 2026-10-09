@@ -339,13 +339,13 @@ func (m *machine) Apply(log *raft.Log) any {
 	if next.Nodes == nil || next.Fleets == nil || next.Assignments == nil || next.Routes == nil || next.Policies == nil {
 		return fmt.Errorf("incomplete replicated Realm")
 	}
-	if next.SchemaVersion > 0 {
-		if e := offline.CheckSchemaFloor(m.root); e != nil {
-			return e
-		}
-	}
 	if e := realm.ValidateSchemaChange(m.data, next); e != nil {
 		return e
+	}
+	if next.SchemaVersion > 0 {
+		if e := offline.CheckCommittedFloor(m.root, next.Name, next.SchemaMigrations[0].ID, next.SchemaVersion); e != nil {
+			return e
+		}
 	}
 	m.data = next
 	return nil
@@ -366,13 +366,13 @@ func (m *machine) Restore(r io.ReadCloser) error {
 	if s.Name != m.data.Name || s.Nodes == nil || s.Fleets == nil || s.Assignments == nil || s.Routes == nil || s.Policies == nil {
 		return fmt.Errorf("snapshot Realm identity/state mismatch")
 	}
-	if s.SchemaVersion > 0 {
-		if e := offline.CheckSchemaFloor(m.root); e != nil {
-			return e
-		}
-	}
 	if e := realm.ValidateSchema(s); e != nil {
 		return e
+	}
+	if s.SchemaVersion > 0 {
+		if e := offline.CheckCommittedFloor(m.root, s.Name, s.SchemaMigrations[0].ID, s.SchemaVersion); e != nil {
+			return e
+		}
 	}
 	m.data = s
 	return nil

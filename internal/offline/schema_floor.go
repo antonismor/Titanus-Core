@@ -128,3 +128,19 @@ func SchemaMaintenance() (*os.File, error) {
 }
 
 func ReadSchemaFloor(root string) (SchemaFloor, error) { return readFloor(floorPath(root)) }
+
+// CheckCommittedFloor binds the local rollback guard to the committed data,
+// rather than merely accepting two mutually agreeing documents for another Realm.
+func CheckCommittedFloor(root, realm, migration string, schema int) error {
+	if e := CheckSchemaFloor(root); e != nil {
+		return e
+	}
+	f, e := ReadSchemaFloor(root)
+	if e != nil {
+		return e
+	}
+	if f.Realm != realm || f.MigrationID != migration || f.Schema != schema {
+		return fmt.Errorf("schema floor differs from committed Realm migration")
+	}
+	return nil
+}
