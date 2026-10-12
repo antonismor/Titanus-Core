@@ -28,17 +28,29 @@ def verify(archive, revision, version):
         members = tar.getmembers()
         if len(members) > 64 or sum(m.size for m in members) > 128 << 20:
             raise ValueError('archive bounds exceeded')
-        files, roots = {}, set()
+        files, roots, directories, seen = {}, set(), set(), set()
         for member in members:
             parts = pathlib.PurePosixPath(member.name).parts
-            if not parts or member.name.startswith('/') or '..' in parts or member.issym() or member.islnk():
-                raise ValueError('unsafe archive member')
+            if (not parts or member.name.startswith('/') or '..' in parts
+                    or member.name != '/'.join(parts) or member.name in seen
+                    or member.issym() or member.islnk()):
+                raise ValueError('unsafe or duplicate archive member')
+            seen.add(member.name)
             roots.add(parts[0])
+            if (member.uid != 0 or member.gid != 0
+                    or member.uname != 'root' or member.gname != 'root'):
+                raise ValueError('unexpected archive owner')
             if member.isdir():
+                if member.mode != 0o755 or member.size:
+                    raise ValueError('unsafe archive directory permissions')
+                directories.add(member.name)
                 continue
             if not member.isfile() or len(parts) < 2:
                 raise ValueError('unsupported archive member')
             relative = '/'.join(parts[1:])
+            expected_mode = 0o755 if relative.startswith('bin/') or relative.endswith('.sh') else 0o644
+            if member.mode != expected_mode:
+                raise ValueError('unsafe archive file permissions: ' + relative)
             if relative in files:
                 raise ValueError('duplicate member')
             files[relative] = tar.extractfile(member).read()
@@ -63,8 +75,10 @@ def verify(archive, revision, version):
         if arch not in ('amd64', 'arm64'):
             raise ValueError('unsupported architecture')
         stem = f'titanus-{version}-linux-{arch}'
-        if roots != {stem} or archive.name != stem + '.tar.gz':
-            raise ValueError('archive root/name identity mismatch')
+        expected_directories = {stem, *(stem + '/' + name for name in ('bin', 'docs', 'scripts', 'systemd'))}
+        if (roots != {stem} or archive.name != stem + '.tar.gz'
+                or directories != expected_directories):
+            raise ValueError('archive root/name/directory identity mismatch')
         for path in sorted(INVENTORY):
             if not path.startswith('bin/'):
                 continue
