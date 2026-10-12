@@ -1,6 +1,6 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.9**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.10**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
@@ -38,6 +38,11 @@ or releases with a different revision are rejected. No PR-run artifact is
 published. Archives contain no user state, PKI, encryption keys or Source payloads.
 The SHA files provide integrity; no external signing identity or KMS is claimed.
 
+The release verifier also requires canonical archive paths, the exact directory
+layout, root UID/GID and root names, and expected 0755/0644 file/directory
+modes. A valid payload checksum alone never overrides these metadata gates.
+
+
 ## Guided preparation and fresh install
 
 On a dedicated supported Linux host, install prerequisites: cgroups v2, OverlayFS,
@@ -50,9 +55,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.9-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.9-linux-amd64.tar.gz
-./titanus-0.4.0-rc.9-linux-amd64/bin/titanus setup
+sha256sum -c titanus-0.4.0-rc.10-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.10-linux-amd64.tar.gz
+./titanus-0.4.0-rc.10-linux-amd64/bin/titanus setup
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -137,7 +142,7 @@ to pre-isolation/pre-storage ownership versions is unsupported.
 Candidate 2 adds opt-in replicated Disk catalogs, exact native writer identities,
 durable automatic remote fencing/transfer, node quarantine and cluster-owned
 UID/GID mappings. See STORAGE_FAILOVER.md. rc.1 uses v1, rc.2 uses v2, and
-rc.3 through rc.7 use v3. The versioned installer deliberately rejects cross-profile activation/rollback,
+rc.3 through rc.10 use v3. The versioned installer deliberately rejects cross-profile activation/rollback,
 including rc.1 to rc.2 and rc.2 to rc.3. Those older profile transitions remain
 unsupported; M5 schema migration operates within the existing v3 profile;
 do not run old controller binaries against catalogs or new mapping state.
@@ -216,5 +221,5 @@ Phase-2 M6 schema-two orchestration, central structured collection/alerts, refer
 
 See [ACCEPTANCE.md](ACCEPTANCE.md) for bounded native load/failure/lifecycle evidence,
 independent VM prerequisites, explicit fault cleanup, machine-readable reports and
-the central-server runbook. rc.9 retains the M4/M5/M6 scope limits. Publication
+the central-server runbook. rc.10 retains the M4/M5/M6 scope limits. Publication
 checks the complete internal inventory and all four ELF architectures per package.
