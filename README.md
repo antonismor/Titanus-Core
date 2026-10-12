@@ -1,5 +1,7 @@
 # TITANUS Core
 
+**Development And Design by [antonios.mortos@outlook.com](mailto:antonios.mortos@outlook.com)**
+
 > **A new Linux-native application, container, cluster and distributed-storage platform designed around simplicity, automation and a unified user experience.**
 
 Titanus is an independent infrastructure platform being built from first principles. Its goal is to combine application isolation, multi-node orchestration, cluster networking, persistent storage, recovery, scheduling and guided deployment in one coherent ecosystem.
@@ -161,7 +163,7 @@ deferred to final laboratory acceptance.
 
 ## Current repository stage
 
-**Titanus Core implements a native Linux runtime and clustered control plane.**
+**Titanus Core M1-M7 are implemented and native-CI verified. The current published release candidate is `v0.4.0-rc.10`.**
 
 The repository includes OverlayFS Units, cgroups v2, mapped Linux namespaces,
 mandatory device/proc/Landlock isolation, bridge/veth/VXLAN/nftables Fabric,
@@ -170,12 +172,23 @@ probes, readiness-aware rolling updates/rollback, native Ceph storage lifecycle,
 authenticated observations, CPU autoscaling, durable Tasks, encrypted versioned
 secrets and an authenticated Command Center.
 
-Each subsystem has explicit operational limits in `docs/`; native AMD64/ARM64
-runtime and real Ceph failure tests are required in CI. Issue #8 records exact
-verified commits. Versioned release candidates and multi-node/install-upgrade-rollback verification
-are described in [Release and recovery](docs/RELEASE.md); repository CI does not
-imply installation on user servers. The project should not yet be treated as a
-production replacement for mature container or orchestration platforms.
+All Phase-2 milestones **M1 through M7** are complete within their documented,
+bounded implemented/native profiles. Native AMD64/ARM64 runtime and real Ceph
+failure-path validation have passed the required five-job CI gates through
+`v0.4.0-rc.10`.
+
+The only remaining Phase-2 acceptance work is the **independent VM/physical-host
+laboratory matrix** tracked in [issue #20](https://github.com/antonismor/Titanus-Core/issues/20):
+kernel/clock/network/boot/power failures, stale-writer and storage partitions,
+external Gateway/VIP failover, fresh install and mixed-version upgrade/rollback,
+whole-quorum plus RBD/CephFS disaster recovery, sustained load/alerts/secret
+rotation/autoscaling/Tasks, benchmarks and retained raw evidence.
+
+These independent-host tests are intentionally separate from repository CI and
+have not been claimed as complete. No repository CI result implies installation
+or changes on user servers. Until that laboratory acceptance is complete,
+Titanus should not be treated as a production replacement for mature container
+or orchestration platforms.
 
 ## Build
 
@@ -247,7 +260,8 @@ Web UI, topology, metrics, nodes, Fleets, storage, logs/events and guided cluste
 
 ```text
 Project: Titanus Core
-Status:  Early development
+Status:  M1-M7 implemented/native complete; independent lab acceptance pending
+Release: v0.4.0-rc.10
 Target:  Linux / Debian first
 Core:    Go
 License: To be decided
@@ -256,6 +270,8 @@ License: To be decided
 ---
 
 **Titanus — one Realm, one control experience, from a single Unit to a distributed infrastructure platform.**
+
+**Development And Design by antonios.mortos@outlook.com**
 
 ## Runtime and API production work
 
@@ -348,9 +364,10 @@ Pulse expiry and lease fencing. These nodes share a runner kernel; physical host
 reboot, site networking and hardware acceptance are not implied. See
 [Release and recovery](docs/RELEASE.md) for prerequisites, migration, key/state
 backups and the distinction between binary rollback and data/schema rollback.
-The current candidate line is `0.4.0-rc.9`; published `rc.1`, `rc.2`, `rc.3`, `rc.4`, `rc.5` and `rc.6`
-remain unchanged checkpoints. Phase 2 is tracked in issue #20. Code/CI validation is
-separate from pending independent-VM and physical-host acceptance.
+The current candidate line is `0.4.0-rc.10`; published `rc.1` through `rc.10`
+remain preserved project checkpoints. Phase 2 is tracked in issue #20. All M1-M7
+implemented/native milestones are complete; code/CI validation remains separate
+from pending independent-VM and physical-host acceptance.
 
 Phase-2 HA adds quorum-committed PKI policy/signing sequence, verified controller
 Source replication/recovery, and fenced Gateway VIP epochs. See
