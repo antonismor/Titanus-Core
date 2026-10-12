@@ -15,7 +15,7 @@ spec.loader.exec_module(verifier)
 
 class ReleaseIntegrity(unittest.TestCase):
     def package(self, directory, change=None, member_change=None):
-        revision, version = '2' * 40, '0.4.0-rc.9'
+        revision, version = '2' * 40, '0.4.0-rc.10'
         elf = bytearray(64); elf[:7] = b'\x7fELF\x02\x01\x01'; struct.pack_into('<H', elf, 18, 62)
         files = {p: bytes(elf) + revision.encode() if p.startswith('bin/') else b'fixture' for p in verifier.INVENTORY}
         files['manifest.json'] = json.dumps({'version': version, 'revision': revision, 'os': 'linux', 'arch': 'amd64', 'state_profile': 'titanus-state/v3'}).encode()
