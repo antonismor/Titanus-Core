@@ -72,8 +72,8 @@ candidate and reviewing plans. Keep this lab separate from your current services
    checkout of that same tag, verify without executing foreign binaries:
 
    ```sh
-   python3 scripts/verify-release.py --revision EXACT_MAIN_SHA --version 0.4.0-rc.9 \
-     titanus-0.4.0-rc.9-linux-amd64.tar.gz titanus-0.4.0-rc.9-linux-arm64.tar.gz
+   python3 scripts/verify-release.py --revision EXACT_MAIN_SHA --version 0.4.0-rc.10 \
+     titanus-0.4.0-rc.10-linux-amd64.tar.gz titanus-0.4.0-rc.10-linux-arm64.tar.gz
    ```
 
    The verifier checks outer hashes, all 11 inventory files, manifest identity,
