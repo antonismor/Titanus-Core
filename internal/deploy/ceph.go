@@ -505,7 +505,7 @@ func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes [
 		"$SUDO ceph auth get-or-create client.titanus -o " + remoteKeyring + "; " +
 		"$SUDO ceph auth caps client.titanus mon 'allow r' mgr 'allow rw' osd 'allow rwx' mds 'allow rw'; " +
 		"$SUDO ceph auth get-or-create client.titanus-fence -o " + remoteFenceKeyring + "; " +
-		"$SUDO ceph auth caps client.titanus-fence mon 'profile simple-rados-client-with-blocklist' osd 'allow *' mds 'allow *'"
+		"$SUDO ceph auth caps client.titanus-fence mon 'allow r, allow command \"osd blocklist\" with blocklistop=add' osd 'allow *' mds 'allow *'"
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("create Titanus CephX identities: %w", err)
 	}
