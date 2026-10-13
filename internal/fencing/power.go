@@ -92,166 +92,8 @@ func Load(path string) (*Power, error) {
 			uri, e := url.Parse(target.Address)
 			valid := e == nil && uri != nil && uri.Scheme == "https" && uri.Host != "" &&
 				uri.User == nil && uri.RawQuery == "" && uri.Fragment == "" &&
-				regexp.MustCompile(`^/api2/json/nodes/[A-Za-z0-9_.-]+/qemu/[1-9][0-9]*// Package fencing provides explicit out-of-band, identity-bound power fences.
-// No deadline or failed application API is accepted as a successful fence.
-package fencing
-
-import (
-	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
-	"os"
-	"os/exec"
-	"regexp"
-	"strings"
-	"syscall"
-	"time"
-)
-
-type Target struct {
-	Provider       string `json:"provider"`
-	UUID           string `json:"uuid"`
-	Address        string `json:"address"`
-	User           string `json:"user,omitempty"`
-	CredentialFile string `json:"credential_file,omitempty"`
-	CAFile         string `json:"ca_file,omitempty"`
-}
-type Power struct {
-	Targets map[string]Target
-	run     func(string, ...string) (string, error)
-	request func(Target, string, string) (json.RawMessage, error)
-}
-
-func privateFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || st.Uid != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("fencing configuration/credentials require root-owned private regular files")
-	}
-	return nil
-}
-func Load(path string) (*Power, error) {
-	if err := privateFile(path); err != nil {
-		return nil, err
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var targets map[string]Target
-	decoder := json.NewDecoder(f)
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&targets); err != nil {
-		return nil, err
-	}
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("no power fencing targets")
-	}
-	uuids := map[string]bool{}
-	for node, target := range targets {
-		if node == "" || !regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`).MatchString(target.UUID) || uuids[strings.ToLower(target.UUID)] {
-			return nil, fmt.Errorf("invalid/duplicate power target identity")
-		}
-		uuids[strings.ToLower(target.UUID)] = true
-		switch target.Provider {
-		case "ipmi":
-			if net.ParseIP(target.Address) == nil || target.User == "" {
-				return nil, fmt.Errorf("IPMI requires literal BMC address and user")
-			}
-			if err = privateFile(target.CredentialFile); err != nil {
-				return nil, err
-			}
-).MatchString(uri.Path) &&
-				regexp.MustCompile(`^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+![A-Za-z0-9_.-]+// Package fencing provides explicit out-of-band, identity-bound power fences.
-// No deadline or failed application API is accepted as a successful fence.
-package fencing
-
-import (
-	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
-	"os"
-	"os/exec"
-	"regexp"
-	"strings"
-	"syscall"
-	"time"
-)
-
-type Target struct {
-	Provider       string `json:"provider"`
-	UUID           string `json:"uuid"`
-	Address        string `json:"address"`
-	User           string `json:"user,omitempty"`
-	CredentialFile string `json:"credential_file,omitempty"`
-	CAFile         string `json:"ca_file,omitempty"`
-}
-type Power struct {
-	Targets map[string]Target
-	run     func(string, ...string) (string, error)
-	request func(Target, string, string) (json.RawMessage, error)
-}
-
-func privateFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || st.Uid != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("fencing configuration/credentials require root-owned private regular files")
-	}
-	return nil
-}
-func Load(path string) (*Power, error) {
-	if err := privateFile(path); err != nil {
-		return nil, err
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var targets map[string]Target
-	decoder := json.NewDecoder(f)
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&targets); err != nil {
-		return nil, err
-	}
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("no power fencing targets")
-	}
-	uuids := map[string]bool{}
-	for node, target := range targets {
-		if node == "" || !regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`).MatchString(target.UUID) || uuids[strings.ToLower(target.UUID)] {
-			return nil, fmt.Errorf("invalid/duplicate power target identity")
-		}
-		uuids[strings.ToLower(target.UUID)] = true
-		switch target.Provider {
-		case "ipmi":
-			if net.ParseIP(target.Address) == nil || target.User == "" {
-				return nil, fmt.Errorf("IPMI requires literal BMC address and user")
-			}
-			if err = privateFile(target.CredentialFile); err != nil {
-				return nil, err
-			}
-).MatchString(target.User)
+				regexp.MustCompile(`^/api2/json/nodes/[A-Za-z0-9_.-]+/qemu/[1-9][0-9]*$`).MatchString(uri.Path) &&
+				regexp.MustCompile(`^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+![A-Za-z0-9_.-]+$`).MatchString(target.User)
 			if !valid {
 				return nil, fmt.Errorf("Proxmox requires an HTTPS VM API URL and API token identity")
 			}
@@ -280,7 +122,6 @@ func (p *Power) command(binary string, args ...string) (string, error) {
 	}
 	return strings.TrimSpace(string(data)), nil
 }
-
 func (p *Power) proxmoxRequest(target Target, method, suffix string) (json.RawMessage, error) {
 	if p.request != nil {
 		return p.request(target, method, suffix)
@@ -328,7 +169,7 @@ func (p *Power) proxmoxRequest(target Target, method, suffix string) (json.RawMe
 		return nil, fmt.Errorf("Proxmox fence API %s returned HTTP %d", suffix, resp.StatusCode)
 	}
 	var envelope struct {
-		Data json.RawMessage \`json:"data"\`
+		Data json.RawMessage `json:"data"`
 	}
 	if err = json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("invalid Proxmox API response: %w", err)
@@ -338,12 +179,12 @@ func (p *Power) proxmoxRequest(target Target, method, suffix string) (json.RawMe
 
 func proxmoxVMUUID(data json.RawMessage) (string, error) {
 	var config struct {
-		SMBIOS1 string \`json:"smbios1"\`
+		SMBIOS1 string `json:"smbios1"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return "", err
 	}
-	match := regexp.MustCompile(\`(?:^|,)uuid=([0-9a-fA-F-]{36})(?:,|$)\`).FindStringSubmatch(config.SMBIOS1)
+	match := regexp.MustCompile(`(?:^|,)uuid=([0-9a-fA-F-]{36})(?:,|$)`).FindStringSubmatch(config.SMBIOS1)
 	if len(match) != 2 {
 		return "", fmt.Errorf("Proxmox VM configuration has no exact SMBIOS UUID")
 	}
@@ -371,7 +212,7 @@ func (p *Power) fenceProxmox(target Target, check func() error) error {
 			return false, err
 		}
 		var status struct {
-			Status string \`json:"status"\`
+			Status string `json:"status"`
 		}
 		if err = json.Unmarshal(data, &status); err != nil {
 			return false, err
