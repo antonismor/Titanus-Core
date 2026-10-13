@@ -45,12 +45,14 @@ type Mount struct {
 }
 
 type CephConfig struct {
-	Cluster string `json:"cluster"`
-	Pool    string `json:"rbd_pool"`
-	FSName  string `json:"cephfs_name"`
-	Client  string `json:"client"`
-	Conf    string `json:"conf"`
-	Keyring string `json:"keyring,omitempty"`
+	Cluster      string `json:"cluster"`
+	Pool         string `json:"rbd_pool"`
+	FSName       string `json:"cephfs_name"`
+	Client       string `json:"client"`
+	Conf         string `json:"conf"`
+	Keyring      string `json:"keyring,omitempty"`
+	FenceClient  string `json:"fence_client,omitempty"`
+	FenceKeyring string `json:"fence_keyring,omitempty"`
 }
 
 type Manager struct {
@@ -79,6 +81,12 @@ func (m *Manager) ConfigureCeph(cfg CephConfig) error {
 	}
 	if cfg.Conf == "" {
 		cfg.Conf = "/etc/ceph/ceph.conf"
+	}
+	if cfg.FenceClient == "" {
+		cfg.FenceClient = cfg.Client
+	}
+	if cfg.FenceKeyring == "" {
+		cfg.FenceKeyring = cfg.Keyring
 	}
 	if err := os.MkdirAll(m.storageDir(), 0750); err != nil {
 		return err
@@ -542,9 +550,11 @@ func (m *Manager) attachCephFS(spec Spec) (string, error) {
 	options := []string{"name=" + client, "fs=" + cfg.FSName, "conf=" + cfg.Conf, "noshare", "recover_session=no"}
 	if cfg.Keyring != "" {
 		options = append(options, "secretfile="+m.cephSecretPath())
-		if out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "auth", "get-key", cfg.Client)...); err != nil {
-			return "", fmt.Errorf("get CephFS mount secret: %w", err)
-		} else if err := os.WriteFile(m.cephSecretPath(), []byte(out), 0600); err != nil {
+		secret, err := cephKeyringSecret(cfg.Keyring, cfg.Client)
+		if err != nil {
+			return "", fmt.Errorf("read CephFS mount secret: %w", err)
+		}
+		if err := os.WriteFile(m.cephSecretPath(), []byte(secret), 0600); err != nil {
 			return "", err
 		}
 	}
@@ -569,6 +579,50 @@ func (m *Manager) cephBaseArgs(cfg CephConfig) []string {
 		args = append(args, "--keyring", cfg.Keyring)
 	}
 	return args
+}
+
+func (m *Manager) cephFenceArgs(cfg CephConfig) []string {
+	client := cfg.FenceClient
+	if client == "" {
+		client = cfg.Client
+	}
+	keyring := cfg.FenceKeyring
+	if keyring == "" {
+		keyring = cfg.Keyring
+	}
+	args := []string{"--cluster", cfg.Cluster, "--id", strings.TrimPrefix(client, "client."), "--conf", cfg.Conf}
+	if keyring != "" {
+		args = append(args, "--keyring", keyring)
+	}
+	return args
+}
+
+func cephKeyringSecret(path, entity string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	section := ""
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+			continue
+		}
+		if section != entity {
+			continue
+		}
+		if key, ok := strings.CutPrefix(line, "key"); ok {
+			key = strings.TrimSpace(key)
+			if strings.HasPrefix(key, "=") {
+				key = strings.TrimSpace(strings.TrimPrefix(key, "="))
+				if key != "" {
+					return key, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("Ceph key for %s not found in %s", entity, path)
 }
 
 func ValidateMounts(mounts []Mount) error {
