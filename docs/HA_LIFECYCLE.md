@@ -101,10 +101,17 @@ uses `/usr/bin/ipmitool` LANPlus/cipher 17, verifies the BMC system GUID before
 power-off and again after two confirmed off observations. `libvirt` uses
 `/usr/bin/virsh` with an explicit `qemu+ssh://.../system` or `qemu:///system`
 hypervisor URI, verifies domain UUID, destroys that exact domain if running, and
-confirms `shut off` twice. Quorum authority is checked before mutation and during
-verification. Target responses/errors never log credentials. Missing config,
-wrong UUID, unreachable management path or ambiguous status denies transfer.
-These providers are opt-in code; no user's host is contacted by preparing it.
+confirms `shut off` twice. `proxmox` uses an exact HTTPS VM API base such as
+`https://pve.example:8006/api2/json/nodes/pve/qemu/1003`, an API-token identity
+in `user`, a root-only token secret in `credential_file`, and a root-only pinned
+Proxmox CA in `ca_file`. It reads VM configuration to match the exact SMBIOS UUID,
+reads the current VM power state, requests `status/stop` only for that bound VM
+when required, and requires two subsequent `stopped` observations. A dedicated
+token should be limited to `VM.Audit` and `VM.PowerMgmt` on only the fenced VMs.
+Quorum authority is checked before mutation and during verification. Target
+responses/errors never log credentials. Missing config, wrong UUID, unreachable
+management path or ambiguous status denies transfer. These providers are opt-in
+code; no user's host is contacted by preparing it.
 
 After a power fence, the entire old node is quarantined; Pulse and
 re-registration cannot clear it. Re-enable only after offline reconciliation,
