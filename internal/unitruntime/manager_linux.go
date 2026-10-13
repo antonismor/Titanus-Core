@@ -780,10 +780,19 @@ func (m *Manager) prepareCgroup(spec Spec) error {
 	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err != nil {
 		return fmt.Errorf("cgroups v2 is required")
 	}
+	required := []string{"cpu", "memory", "pids"}
+	parent := filepath.Dir(m.cfg.CgroupRoot)
+	if parent != m.cfg.CgroupRoot {
+		if _, err := os.Stat(filepath.Join(parent, "cgroup.controllers")); err == nil {
+			if err := enableControllers(parent, required); err != nil {
+				return fmt.Errorf("delegate cgroup controllers from %s: %w", parent, err)
+			}
+		}
+	}
 	if err := os.MkdirAll(m.cfg.CgroupRoot, 0755); err != nil {
 		return err
 	}
-	if err := enableControllers(m.cfg.CgroupRoot, []string{"cpu", "memory", "pids"}); err != nil {
+	if err := enableControllers(m.cfg.CgroupRoot, required); err != nil {
 		return err
 	}
 
