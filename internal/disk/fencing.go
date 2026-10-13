@@ -58,7 +58,7 @@ func appliedOSDBlocklist(output string) (map[string]bool, error) {
 // Check each live daemon's actual applied blocklist before exposing writable data.
 // This first profile fails closed if any registered OSD is down/unreachable.
 func (m *Manager) waitCephFSBlocklists(cfg CephConfig, fenced string) error {
-	out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "dump", "--format", "json")...)
+	out, err := commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "dump", "--format", "json")...)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (m *Manager) waitCephFSBlocklists(cfg CephConfig, fenced string) error {
 	for {
 		complete := true
 		for _, osd := range state.OSDs {
-			out, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "osd."+strconv.Itoa(osd.ID), "dump_blocklist", "--format", "json")...)
+			out, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "tell", "osd."+strconv.Itoa(osd.ID), "dump_blocklist", "--format", "json")...)
 			if err != nil {
 				return fmt.Errorf("cannot confirm OSD %d fence: %w", osd.ID, err)
 			}
@@ -114,7 +114,7 @@ func (m *Manager) waitCephFSBlocklists(cfg CephConfig, fenced string) error {
 		if complete {
 			// Confirm the complete registered topology did not change while
 			// collecting per-OSD evidence; a partial old topology is not a fence.
-			final, e := commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "dump", "--format", "json")...)
+			final, e := commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "dump", "--format", "json")...)
 			if e != nil {
 				return e
 			}
@@ -159,7 +159,7 @@ func (m *Manager) waitCephFSBlocklists(cfg CephConfig, fenced string) error {
 }
 
 func (m *Manager) verifyCephFSFencing(cfg CephConfig) error {
-	out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "fs", "get", cfg.FSName, "--format", "json")...)
+	out, err := commandOutput("ceph", append(m.cephFenceArgs(cfg), "fs", "get", cfg.FSName, "--format", "json")...)
 	var fs struct {
 		MDSMap struct {
 			MaxMDS int `json:"max_mds"`
@@ -170,7 +170,7 @@ func (m *Manager) verifyCephFSFencing(cfg CephConfig) error {
 	}
 	for _, option := range []string{"mds_session_blocklist_on_evict", "mds_session_blocklist_on_timeout"} {
 		// Ask the active daemon: monitor defaults omit local and runtime overrides.
-		out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "mds."+cfg.FSName+":0", "config", "get", option, "--format", "json")...)
+		out, err := commandOutput("ceph", append(m.cephFenceArgs(cfg), "tell", "mds."+cfg.FSName+":0", "config", "get", option, "--format", "json")...)
 		var values map[string]json.RawMessage
 		if err != nil || json.Unmarshal([]byte(out), &values) != nil || (string(values[option]) != "true" && string(values[option]) != `"true"`) {
 			return fmt.Errorf("CephFS requires active %s=true (query failure also denies attachment): %v: %s", option, err, out)
@@ -198,7 +198,7 @@ func (m *Manager) FenceCephFS(name string, session uint64, address string) error
 	if err = m.verifyCephFSFencing(cfg); err != nil {
 		return err
 	}
-	out, err := commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "ls", "--format", "json")...)
+	out, err := commandOutput("ceph", append(m.cephFenceArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "ls", "--format", "json")...)
 	if err != nil {
 		return err
 	}
@@ -215,7 +215,7 @@ func (m *Manager) FenceCephFS(name string, session uint64, address string) error
 	if !match {
 		return fmt.Errorf("fencing session/address/subvolume no longer match; inspect current clients")
 	}
-	_, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "evict", "id="+strconv.FormatUint(session, 10))...)
+	_, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "evict", "id="+strconv.FormatUint(session, 10))...)
 	if err != nil {
 		return err
 	}
