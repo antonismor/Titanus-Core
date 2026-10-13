@@ -520,8 +520,8 @@ func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes [
 	adapter := map[string]string{
 		"cluster": "ceph", "rbd_pool": "titanus", "cephfs_name": "titanusfs",
 		"client": "client.titanus", "conf": "/etc/ceph/ceph.conf",
-		"keyring": "/etc/ceph/ceph.client.titanus.keyring",
-		"fence_client": "client.titanus-fence",
+		"keyring":       "/etc/ceph/ceph.client.titanus.keyring",
+		"fence_client":  "client.titanus-fence",
 		"fence_keyring": "/etc/ceph/ceph.client.titanus-fence.keyring",
 	}
 	configData, err := json.MarshalIndent(adapter, "", "  ")
