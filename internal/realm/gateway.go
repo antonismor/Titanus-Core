@@ -128,13 +128,10 @@ func (s *Store) CompleteGatewayTransfer(intent GatewayTransfer, powerFenced bool
 	g := intent.Gateway
 	oldOwner := g.Owner
 	g.Owner = intent.Destination
-	// A clean handoff keeps the previous owner as the next standby so a
-	// successful transfer does not silently remove Gateway redundancy.
-	// A power-fenced owner is intentionally not advertised as a standby:
-	// it is quarantined below and requires reviewed offline recovery.
-	if powerFenced {
-		g.Standby = ""
-	} else {
+	g.Standby = ""
+	// Verified withdrawal keeps a ready peer eligible for the next transfer.
+	// A fenced or unhealthy former owner must never become a standby.
+	if !powerFenced && gatewayNode(s.data, oldOwner) {
 		g.Standby = oldOwner
 	}
 	g.Epoch++
