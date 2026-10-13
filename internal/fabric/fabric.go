@@ -921,6 +921,14 @@ func renderNATRules(cfg Config, st state, services []Service) string {
 			fmt.Fprintf(&b, "  ct status dnat ct original ip daddr %s meta l4proto %s ct original proto-dst %d fib saddr type local masquerade comment \"Titanus node Service return path\"\n", service.Address, service.Protocol, service.Port)
 		}
 	}
+	// Same-node workload Service traffic needs a forced return through conntrack.
+	// Without SNAT, the backend replies directly over the bridge and bypasses
+	// reverse DNAT, so clients wait forever for the Service VIP response.
+	for _, service := range services {
+		if len(service.Backends) > 0 {
+			fmt.Fprintf(&b, "  ct status dnat ct original ip daddr %s meta l4proto %s ct original proto-dst %d ip saddr %s ip daddr %s masquerade comment \"Titanus workload Service hairpin return path\"\n", service.Address, service.Protocol, service.Port, cfg.CIDR, cfg.CIDR)
+		}
+	}
 	fmt.Fprintf(&b, "  ip saddr %s oifname != \"%s\" masquerade comment \"Titanus Fabric NAT\"\n", cfg.CIDR, cfg.Bridge)
 	b.WriteString(" }\n")
 	b.WriteString("}\n")
