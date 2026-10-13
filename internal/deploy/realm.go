@@ -490,7 +490,7 @@ const realmAgentService = "[Unit]\n" +
 	"NoNewPrivileges=true\n" +
 	"ProtectSystem=strict\n" +
 	"ProtectHome=true\n" +
-	"ReadWritePaths=/var/lib/titanus /var/log/titanus /etc/titanus/pki\n" +
+	"ReadWritePaths=/run /var/lib/titanus /var/log/titanus /etc/titanus/pki\n" +
 	"PrivateTmp=true\n\n" +
 	"[Install]\n" +
 	"WantedBy=multi-user.target\n"

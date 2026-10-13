@@ -14,6 +14,9 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/remote"
 )
 
+// Each provisioning command must stop on the first failed bootstrap step.
+const cephSudoPrefix = "set -e; " + remoteSudoPrefix
+
 type CephDeployResult struct {
 	FSID        string
 	Monitors    int
@@ -137,7 +140,7 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	if err := d.configureTitanusClient(primary, plan.Nodes, tempDir); err != nil {
 		return CephDeployResult{}, err
 	}
-	if _, err := d.SSH.Run(primary, remoteSudoPrefix+"; $SUDO install -d -m 0755 /var/lib/titanus/ceph; echo "+shellQuote(fsid)+" | $SUDO tee /var/lib/titanus/ceph/provisioned >/dev/null"); err != nil {
+	if _, err := d.SSH.Run(primary, cephSudoPrefix+"; $SUDO install -d -m 0755 /var/lib/titanus/ceph; echo "+shellQuote(fsid)+" | $SUDO tee /var/lib/titanus/ceph/provisioned >/dev/null"); err != nil {
 		return CephDeployResult{}, err
 	}
 
@@ -156,7 +159,7 @@ func (d *CephDeployer) validateDevices(nodes []model.NodeSpec) (uint64, int, err
 			return 0, 0, fmt.Errorf("storage node %s has no selected Ceph devices", node.Name)
 		}
 		for _, device := range node.CephDevices {
-			cmd := remoteSudoPrefix + "; " +
+			cmd := cephSudoPrefix + "; " +
 				"test -b " + shellQuote(device) + "; " +
 				"test -z \"$(lsblk -n -o MOUNTPOINT " + shellQuote(device) + " | tr -d '[:space:]')\"; " +
 				"blockdev --getsize64 " + shellQuote(device)
@@ -195,7 +198,7 @@ func (d *CephDeployer) installPackages(plan model.RealmPlan) error {
 				packages = append(packages, "radosgw")
 			}
 		}
-		cmd := remoteSudoPrefix + "; " +
+		cmd := cephSudoPrefix + "; " +
 			"$SUDO apt-get update -qq; " +
 			"$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y " + strings.Join(packages, " ")
 		if _, err := d.SSH.Run(node, cmd); err != nil {
@@ -206,7 +209,7 @@ func (d *CephDeployer) installPackages(plan model.RealmPlan) error {
 }
 
 func (d *CephDeployer) ensureFSID(primary model.NodeSpec) (string, error) {
-	read, err := d.SSH.Run(primary, remoteSudoPrefix+"; $SUDO test -r /var/lib/titanus/ceph/fsid && $SUDO cat /var/lib/titanus/ceph/fsid || true")
+	read, err := d.SSH.Run(primary, cephSudoPrefix+"; $SUDO test -r /var/lib/titanus/ceph/fsid && $SUDO cat /var/lib/titanus/ceph/fsid || true")
 	if err == nil {
 		if value := strings.TrimSpace(read.Stdout); value != "" {
 			return value, nil
@@ -216,7 +219,7 @@ func (d *CephDeployer) ensureFSID(primary model.NodeSpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd := remoteSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; echo " +
+	cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; echo " +
 		shellQuote(fsid) + " | $SUDO tee /var/lib/titanus/ceph/fsid >/dev/null"
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return "", err
@@ -229,7 +232,7 @@ func (d *CephDeployer) distributeConfig(nodes []model.NodeSpec, local string) er
 		if err := d.SSH.CopyFile(node, local, "/tmp/titanus-ceph.conf"); err != nil {
 			return err
 		}
-		cmd := remoteSudoPrefix + "; $SUDO install -d -m 0755 /etc/ceph; " +
+		cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /etc/ceph; " +
 			"$SUDO install -m 0644 /tmp/titanus-ceph.conf /etc/ceph/ceph.conf; rm -f /tmp/titanus-ceph.conf"
 		if _, err := d.SSH.Run(node, cmd); err != nil {
 			return fmt.Errorf("install ceph.conf on %s: %w", node.Name, err)
@@ -243,7 +246,7 @@ func (d *CephDeployer) ensureBootstrapArtifacts(primary model.NodeSpec, monitors
 	for _, node := range monitors {
 		fmt.Fprintf(&monmapArgs, " --add %s %s", shellQuote(node.Name), shellQuote(node.CephPublicIP))
 	}
-	cmd := remoteSudoPrefix + "; " +
+	cmd := cephSudoPrefix + "; " +
 		"$SUDO install -d -m 0700 /var/lib/titanus/ceph/bootstrap /var/lib/ceph/bootstrap-osd; " +
 		"if [ ! -s /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring ]; then " +
 		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --gen-key -n mon.; fi; " +
@@ -267,7 +270,7 @@ func (d *CephDeployer) distributeBootstrap(nodes []model.NodeSpec, artifacts map
 				return err
 			}
 		}
-		cmd := remoteSudoPrefix + "; " +
+		cmd := cephSudoPrefix + "; " +
 			"$SUDO install -d -m 0755 /var/lib/ceph/bootstrap-osd /etc/ceph; " +
 			"$SUDO install -m 0600 /tmp/titanus-ceph-admin /etc/ceph/ceph.client.admin.keyring; " +
 			"$SUDO install -m 0600 /tmp/titanus-ceph-bootstrap /var/lib/ceph/bootstrap-osd/ceph.keyring; " +
@@ -284,12 +287,7 @@ func (d *CephDeployer) distributeBootstrap(nodes []model.NodeSpec, artifacts map
 
 func (d *CephDeployer) startMonitors(nodes []model.NodeSpec) error {
 	for _, node := range nodes {
-		cmd := remoteSudoPrefix + "; " +
-			"$SUDO install -d -o ceph -g ceph -m 0750 /var/lib/ceph/mon/ceph-" + shellQuote(node.Name) + "; " +
-			"if [ ! -s /var/lib/ceph/mon/ceph-" + shellQuote(node.Name) + "/keyring ]; then " +
-			"$SUDO -u ceph ceph-mon --mkfs -i " + shellQuote(node.Name) +
-			" --monmap /var/lib/titanus-ceph-monmap --keyring /var/lib/titanus-ceph-mon.keyring; fi; " +
-			"$SUDO systemctl enable --now ceph-mon@" + shellQuote(node.Name)
+		cmd := cephMonitorCommand(node)
 		if _, err := d.SSH.Run(node, cmd); err != nil {
 			return fmt.Errorf("start Ceph monitor %s: %w", node.Name, err)
 		}
@@ -297,10 +295,19 @@ func (d *CephDeployer) startMonitors(nodes []model.NodeSpec) error {
 	return nil
 }
 
+func cephMonitorCommand(node model.NodeSpec) string {
+	return cephSudoPrefix + "; " +
+		"$SUDO install -d -o ceph -g ceph -m 0750 /var/lib/ceph/mon/ceph-" + shellQuote(node.Name) + "; " +
+		"if [ ! -s /var/lib/ceph/mon/ceph-" + shellQuote(node.Name) + "/keyring ]; then " +
+		"$SUDO runuser -u ceph -- ceph-mon --mkfs -i " + shellQuote(node.Name) +
+		" --monmap /var/lib/titanus-ceph-monmap --keyring /var/lib/titanus-ceph-mon.keyring; fi; " +
+		"$SUDO systemctl enable --now ceph-mon@" + shellQuote(node.Name)
+}
+
 func (d *CephDeployer) waitForQuorum(primary model.NodeSpec) error {
-	cmd := remoteSudoPrefix + "; " +
-		"for i in $(seq 1 60); do if $SUDO ceph -s >/dev/null 2>&1; then exit 0; fi; sleep 2; done; " +
-		"$SUDO ceph -s; exit 1"
+	cmd := cephSudoPrefix + "; " +
+		"for i in $(seq 1 60); do if $SUDO timeout 10s ceph -s >/dev/null 2>&1; then exit 0; fi; sleep 2; done; " +
+		"$SUDO timeout 10s ceph -s; exit 1"
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("Ceph monitor quorum did not become healthy: %w", err)
 	}
@@ -313,7 +320,7 @@ func (d *CephDeployer) startManagers(nodes []model.NodeSpec) error {
 		limit = 2
 	}
 	for _, node := range nodes[:limit] {
-		cmd := remoteSudoPrefix + "; " +
+		cmd := cephSudoPrefix + "; " +
 			"$SUDO install -d -o ceph -g ceph -m 0750 /var/lib/ceph/mgr/ceph-" + shellQuote(node.Name) + "; " +
 			"$SUDO ceph auth get-or-create mgr." + shellQuote(node.Name) +
 			" mon 'allow profile mgr' osd 'allow *' mds 'allow *' -o /var/lib/ceph/mgr/ceph-" + shellQuote(node.Name) + "/keyring; " +
@@ -330,7 +337,7 @@ func (d *CephDeployer) provisionOSDs(nodes []model.NodeSpec) error {
 	for _, node := range nodes {
 		for _, device := range node.CephDevices {
 			marker := "/var/lib/titanus/ceph/osd-" + sanitizeDevice(device)
-			cmd := remoteSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " +
+			cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " +
 				"if [ -f " + shellQuote(marker) + " ]; then exit 0; fi; " +
 				"if $SUDO pvs --noheadings -o vg_name " + shellQuote(device) + " 2>/dev/null | grep -q 'ceph-'; then " +
 				"echo existing > /tmp/titanus-osd-state; " +
@@ -348,7 +355,7 @@ func (d *CephDeployer) provisionOSDs(nodes []model.NodeSpec) error {
 }
 
 func (d *CephDeployer) configurePools(primary model.NodeSpec, plan model.RealmPlan) error {
-	commands := []string{remoteSudoPrefix}
+	commands := []string{cephSudoPrefix}
 	rep := strconv.Itoa(plan.Ceph.Replication)
 	if plan.Ceph.EnableRBD {
 		commands = append(commands,
@@ -378,7 +385,7 @@ func (d *CephDeployer) startMDS(nodes []model.NodeSpec) error {
 		limit = 2
 	}
 	for _, node := range nodes[:limit] {
-		cmd := remoteSudoPrefix + "; " +
+		cmd := cephSudoPrefix + "; " +
 			"$SUDO install -d -o ceph -g ceph -m 0750 /var/lib/ceph/mds/ceph-" + shellQuote(node.Name) + "; " +
 			"$SUDO ceph auth get-or-create mds." + shellQuote(node.Name) +
 			" mon 'profile mds' mgr 'profile mds' mds 'allow *' osd 'allow rw tag cephfs *=*' -o /var/lib/ceph/mds/ceph-" + shellQuote(node.Name) + "/keyring; " +
@@ -393,7 +400,7 @@ func (d *CephDeployer) startMDS(nodes []model.NodeSpec) error {
 
 func (d *CephDeployer) startRGW(node model.NodeSpec) error {
 	id := "rgw." + node.Name
-	cmd := remoteSudoPrefix + "; " +
+	cmd := cephSudoPrefix + "; " +
 		"$SUDO install -d -o ceph -g ceph -m 0750 /var/lib/ceph/radosgw/ceph-" + shellQuote(id) + "; " +
 		"$SUDO ceph auth get-or-create client." + shellQuote(id) +
 		" mon 'allow rw' osd 'allow rwx' -o /var/lib/ceph/radosgw/ceph-" + shellQuote(id) + "/keyring; " +
@@ -408,7 +415,7 @@ func (d *CephDeployer) startRGW(node model.NodeSpec) error {
 
 func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes []model.NodeSpec, tempDir string) error {
 	remoteKeyring := "/var/lib/titanus/ceph/ceph.client.titanus.keyring"
-	cmd := remoteSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " +
+	cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " +
 		"$SUDO ceph auth get-or-create client.titanus mon 'allow r' mgr 'allow rw' osd 'allow rwx' mds 'allow rw' -o " + remoteKeyring
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("create client.titanus CephX identity: %w", err)
@@ -421,7 +428,7 @@ func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes [
 		if err := d.SSH.CopyFile(node, localKeyring, "/tmp/ceph.client.titanus.keyring"); err != nil {
 			return err
 		}
-		cmd := remoteSudoPrefix + "; " +
+		cmd := cephSudoPrefix + "; " +
 			"$SUDO install -m 0600 /tmp/ceph.client.titanus.keyring /etc/ceph/ceph.client.titanus.keyring; " +
 			"rm -f /tmp/ceph.client.titanus.keyring; " +
 			"$SUDO /usr/local/bin/titanus disk ceph-config --cluster ceph --pool titanus --fs titanusfs --client client.titanus --conf /etc/ceph/ceph.conf --keyring /etc/ceph/ceph.client.titanus.keyring"
