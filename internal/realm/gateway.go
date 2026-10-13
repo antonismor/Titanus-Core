@@ -126,8 +126,17 @@ func (s *Store) CompleteGatewayTransfer(intent GatewayTransfer, powerFenced bool
 		return fmt.Errorf("Gateway destination no longer eligible")
 	}
 	g := intent.Gateway
+	oldOwner := g.Owner
 	g.Owner = intent.Destination
-	g.Standby = ""
+	// A clean handoff keeps the previous owner as the next standby so a
+	// successful transfer does not silently remove Gateway redundancy.
+	// A power-fenced owner is intentionally not advertised as a standby:
+	// it is quarantined below and requires reviewed offline recovery.
+	if powerFenced {
+		g.Standby = ""
+	} else {
+		g.Standby = oldOwner
+	}
 	g.Epoch++
 	if powerFenced {
 		n := s.data.Nodes[intent.Gateway.Owner]
