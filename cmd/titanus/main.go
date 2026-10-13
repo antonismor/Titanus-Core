@@ -130,7 +130,10 @@ func dispatch(args []string) error {
 		if len(args) >= 2 && args[1] == "realm" {
 			return runRealmDeploy(args[2:])
 		}
-		return fmt.Errorf("usage: titanus deploy <bootstrap|realm> ...")
+		if len(args) >= 2 && args[1] == "ceph" {
+			return runCephDeploy(args[2:])
+		}
+		return fmt.Errorf("usage: titanus deploy <bootstrap|realm|ceph|release> ...")
 	case "help", "--help", "-h":
 		printHelp()
 		return nil
@@ -1907,6 +1910,26 @@ func stateRoot() string {
 		return filepath.Clean(value)
 	}
 	return "/var/lib/titanus"
+}
+
+func runCephDeploy(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: titanus deploy ceph PLAN")
+	}
+	plan, err := model.LoadPlan(args[0])
+	if err != nil {
+		return err
+	}
+	result, err := deploy.NewCephDeployer().Deploy(plan)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
 }
 
 func runRealmDeploy(args []string) error {
