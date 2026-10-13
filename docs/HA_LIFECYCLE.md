@@ -89,7 +89,10 @@ absence before acknowledgement. Only then does a quorum commit change owner
 and increment epoch. Failed/uncertain publication can retry the same withdrawal.
 
 POST `/v1/realm/gateways/NAME/transfer` with `destination` performs a controlled
-handoff. An unreachable owner with configured `standby` triggers reconciliation.
+handoff. A clean handoff makes the previous owner the new standby, preserving
+redundancy for a subsequent failback. A power-fenced owner is not retained as a
+standby because the whole node is quarantined until reviewed offline recovery.
+An unreachable owner with configured `standby` triggers reconciliation.
 An API timeout, scheduling lease or missing daemon is **never** exclusion proof.
 If ordinary withdrawal is unavailable, handoff stays pending unless an explicitly
 configured out-of-band power fence confirms the old physical/VM node is off.
