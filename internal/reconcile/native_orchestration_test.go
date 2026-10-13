@@ -169,6 +169,20 @@ func TestNativeOrchestration(t *testing.T) {
 	}
 	state := reopened.Snapshot()
 	if !state.TaskSchedules[j.Name].Done {
+		schedule := state.TaskSchedules[j.Name]
+		t.Logf("retry schedule name=%s attempt=%d active=%s done=%t", j.Name, schedule.Attempt, schedule.ActiveTask, schedule.Done)
+		for name, task := range state.Tasks {
+			var exit any
+			if task.ExitCode != nil { exit = *task.ExitCode }
+			t.Logf("task %s phase=%s node=%s unit=%s run=%s exit=%v", name, task.Phase, task.NodeID, task.UnitID, task.RunID, exit)
+		}
+		local, inspectErr := m.List()
+		t.Logf("local inspection error: %v", inspectErr)
+		for _, unit := range local {
+			var exit any
+			if unit.ExitCode != nil { exit = *unit.ExitCode }
+			t.Logf("unit %s status=%s run=%s exit=%v error=%s", unit.ID, unit.Status, unit.RunID, exit, unit.LastError)
+		}
 		t.Fatal("native acknowledged retry did not complete")
 	}
 	units := map[string]bool{}
