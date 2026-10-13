@@ -3,12 +3,16 @@ package localclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -164,6 +168,12 @@ func (c *Client) do(method, path string, requestBody, response any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if method == http.MethodGet && strings.HasPrefix(path, "/v1/realm/") &&
+			strings.Contains(string(data), "Realm quorum/leader unavailable") {
+			if e := c.leaderRead(path, response); e == nil {
+				return nil
+			}
+		}
 		return fmt.Errorf("%s %s: %s", method, path, string(data))
 	}
 	if response != nil {
@@ -216,4 +226,97 @@ func (c *Client) TransitionSchemaTo(id string, expected uint64, target int) (rea
 	var m realm.SchemaMigration
 	e := c.do(http.MethodPost, "/v1/realm/schema", controlapi.SchemaRequest{ID: id, ExpectedRevision: expected, Target: target}, &m)
 	return m, e
+}
+
+func (c *Client) leaderRead(path string, result any) error {
+	configPath := os.Getenv("TITANUS_HA_CONFIG")
+	if configPath == "" {
+		configPath = "/etc/titanus/ha.json"
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	var conf struct {
+		Peers []struct {
+			ID  string
+			API string
+		}
+	}
+	if err = json.Unmarshal(raw, &conf); err != nil {
+		return err
+	}
+	caPath, certPath, keyPath := os.Getenv("TITANUS_CA"), os.Getenv("TITANUS_CERT"), os.Getenv("TITANUS_KEY")
+	if caPath == "" {
+		caPath = "/etc/titanus/pki/ca.crt"
+	}
+	if certPath == "" {
+		certPath = "/etc/titanus/pki/node.crt"
+	}
+	if keyPath == "" {
+		keyPath = "/etc/titanus/pki/node.key"
+	}
+	pem, err := os.ReadFile(caPath)
+	if err != nil {
+		return err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		return fmt.Errorf("invalid Titanus Realm CA")
+	}
+	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return err
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs: roots, Certificates: []tls.Certificate{clientCert}, MinVersion: tls.VersionTLS13,
+	}}
+	defer transport.CloseIdleConnections()
+	remote := &http.Client{Transport: transport, Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	diagnostics, e := c.ConsensusStatus()
+	leader := ""
+	if e == nil {
+		leader = diagnostics["leader_api"]
+	}
+	sort.SliceStable(conf.Peers, func(i, j int) bool { return conf.Peers[i].API == leader && conf.Peers[j].API != leader })
+	var lastErr error
+	for _, peer := range conf.Peers {
+		origin, e := url.Parse(peer.API)
+		if e != nil || origin.Scheme != "https" || origin.Host == "" ||
+			origin.User != nil || origin.Path != "" || origin.RawQuery != "" {
+			continue
+		}
+		req, e := http.NewRequest(http.MethodGet, peer.API+path, nil)
+		if e != nil {
+			lastErr = e
+			continue
+		}
+		resp, e := remote.Do(req)
+		if e != nil {
+			lastErr = e
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			lastErr = fmt.Errorf("controller %s not leader", peer.ID)
+			continue
+		}
+		if resp.StatusCode/100 != 2 {
+			return fmt.Errorf("leader GET %s: HTTP %d: %s", path, resp.StatusCode, string(data))
+		}
+		if result != nil {
+			return json.Unmarshal(data, result)
+		}
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no valid controllers configured")
+	}
+	return lastErr
 }
