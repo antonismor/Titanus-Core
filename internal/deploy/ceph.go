@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -65,6 +66,9 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	}
 
 	if err := d.installPackages(plan); err != nil {
+		return CephDeployResult{}, err
+	}
+	if err := d.ensurePublicIPs(storage, plan.Ceph.PublicCIDR); err != nil {
 		return CephDeployResult{}, err
 	}
 	primary := storage[0]
@@ -203,6 +207,85 @@ func (d *CephDeployer) installPackages(plan model.RealmPlan) error {
 			"$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y " + strings.Join(packages, " ")
 		if _, err := d.SSH.Run(node, cmd); err != nil {
 			return fmt.Errorf("install Ceph packages on %s: %w", node.Name, err)
+		}
+	}
+	return nil
+}
+
+func (d *CephDeployer) ensurePublicIPs(nodes []model.NodeSpec, publicCIDR string) error {
+	_, network, err := net.ParseCIDR(publicCIDR)
+	if err != nil {
+		return fmt.Errorf("invalid Ceph public CIDR %q: %w", publicCIDR, err)
+	}
+	prefix, _ := network.Mask.Size()
+	for _, node := range nodes {
+		if node.CephPublicIP == "" || node.CephPublicIP == node.ManagementIP {
+			continue
+		}
+		ip := net.ParseIP(node.CephPublicIP)
+		if ip == nil || !network.Contains(ip) {
+			return fmt.Errorf("Ceph public IP %q for %s is outside %s", node.CephPublicIP, node.Name, publicCIDR)
+		}
+		result, err := d.SSH.Run(node, "ip -4 -o addr show")
+		if err != nil {
+			return fmt.Errorf("discover management interface on %s: %w", node.Name, err)
+		}
+		device := ""
+		for _, line := range strings.Split(result.Stdout, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 4 {
+				continue
+			}
+			address := strings.SplitN(fields[3], "/", 2)[0]
+			if address == node.ManagementIP {
+				device = strings.TrimSuffix(fields[1], ":")
+				break
+			}
+		}
+		if device == "" {
+			return fmt.Errorf("cannot find interface carrying management IP %s on %s", node.ManagementIP, node.Name)
+		}
+		unit := fmt.Sprintf(`[Unit]
+Description=Titanus Ceph public IP %s
+Wants=network-online.target
+After=network-online.target
+Before=ceph-mon@%s.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ip address replace %s/%d dev %s
+ExecStop=-/usr/sbin/ip address del %s/%d dev %s
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+`, node.CephPublicIP, node.Name, node.CephPublicIP, prefix, device, node.CephPublicIP, prefix, device)
+		local, err := os.CreateTemp("", "titanus-ceph-public-ip-*.service")
+		if err != nil {
+			return err
+		}
+		localPath := local.Name()
+		if _, err = local.WriteString(unit); err != nil {
+			local.Close()
+			os.Remove(localPath)
+			return err
+		}
+		if err = local.Close(); err != nil {
+			os.Remove(localPath)
+			return err
+		}
+		if err = d.SSH.CopyFile(node, localPath, "/tmp/titanus-ceph-public-ip.service"); err != nil {
+			os.Remove(localPath)
+			return fmt.Errorf("stage Ceph public IP service on %s: %w", node.Name, err)
+		}
+		os.Remove(localPath)
+		cmd := cephSudoPrefix + "; " +
+			"$SUDO install -m 0644 /tmp/titanus-ceph-public-ip.service /etc/systemd/system/titanus-ceph-public-ip.service; " +
+			"rm -f /tmp/titanus-ceph-public-ip.service; " +
+			"$SUDO systemctl daemon-reload; " +
+			"$SUDO systemctl enable --now titanus-ceph-public-ip.service"
+		if _, err = d.SSH.Run(node, cmd); err != nil {
+			return fmt.Errorf("configure persistent Ceph public IP on %s: %w", node.Name, err)
 		}
 	}
 	return nil
@@ -415,23 +498,37 @@ func (d *CephDeployer) startRGW(node model.NodeSpec) error {
 
 func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes []model.NodeSpec, tempDir string) error {
 	remoteKeyring := "/var/lib/titanus/ceph/ceph.client.titanus.keyring"
+	remoteFenceKeyring := "/var/lib/titanus/ceph/ceph.client.titanus-fence.keyring"
 	cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " +
-		"$SUDO ceph auth get-or-create client.titanus mon 'allow r' mgr 'allow rw' osd 'allow rwx' mds 'allow rw' -o " + remoteKeyring
+		"$SUDO ceph auth get-or-create client.titanus -o " + remoteKeyring + "; " +
+		"$SUDO ceph auth caps client.titanus mon 'allow r' mgr 'allow rw' osd 'allow rwx' mds 'allow rw'; " +
+		"$SUDO ceph auth get-or-create client.titanus-fence -o " + remoteFenceKeyring + "; " +
+		"$SUDO ceph auth caps client.titanus-fence mon 'profile simple-rados-client-with-blocklist' osd 'allow *' mds 'allow *'"
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
-		return fmt.Errorf("create client.titanus CephX identity: %w", err)
+		return fmt.Errorf("create Titanus CephX identities: %w", err)
 	}
 	localKeyring := filepath.Join(tempDir, "ceph.client.titanus.keyring")
 	if err := d.SSH.FetchFile(primary, remoteKeyring, localKeyring); err != nil {
+		return err
+	}
+	localFenceKeyring := filepath.Join(tempDir, "ceph.client.titanus-fence.keyring")
+	if err := d.SSH.FetchFile(primary, remoteFenceKeyring, localFenceKeyring); err != nil {
 		return err
 	}
 	for _, node := range allNodes {
 		if err := d.SSH.CopyFile(node, localKeyring, "/tmp/ceph.client.titanus.keyring"); err != nil {
 			return err
 		}
+		if err := d.SSH.CopyFile(node, localFenceKeyring, "/tmp/ceph.client.titanus-fence.keyring"); err != nil {
+			return err
+		}
 		cmd := cephSudoPrefix + "; " +
 			"$SUDO install -m 0600 /tmp/ceph.client.titanus.keyring /etc/ceph/ceph.client.titanus.keyring; " +
-			"rm -f /tmp/ceph.client.titanus.keyring; " +
-			"$SUDO /usr/local/bin/titanus disk ceph-config --cluster ceph --pool titanus --fs titanusfs --client client.titanus --conf /etc/ceph/ceph.conf --keyring /etc/ceph/ceph.client.titanus.keyring"
+			"$SUDO install -m 0600 /tmp/ceph.client.titanus-fence.keyring /etc/ceph/ceph.client.titanus-fence.keyring; " +
+			"rm -f /tmp/ceph.client.titanus.keyring /tmp/ceph.client.titanus-fence.keyring; " +
+			"$SUDO /usr/local/bin/titanus disk ceph-config --cluster ceph --pool titanus --fs titanusfs " +
+			"--client client.titanus --conf /etc/ceph/ceph.conf --keyring /etc/ceph/ceph.client.titanus.keyring " +
+			"--fence-client client.titanus-fence --fence-keyring /etc/ceph/ceph.client.titanus-fence.keyring"
 		if _, err := d.SSH.Run(node, cmd); err != nil {
 			return fmt.Errorf("configure Titanus Ceph adapter on %s: %w", node.Name, err)
 		}
