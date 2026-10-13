@@ -126,8 +126,14 @@ func (s *Store) CompleteGatewayTransfer(intent GatewayTransfer, powerFenced bool
 		return fmt.Errorf("Gateway destination no longer eligible")
 	}
 	g := intent.Gateway
+	oldOwner := g.Owner
 	g.Owner = intent.Destination
 	g.Standby = ""
+	// Verified withdrawal keeps a ready peer eligible for the next transfer.
+	// A fenced or unhealthy former owner must never become a standby.
+	if !powerFenced && gatewayNode(s.data, oldOwner) {
+		g.Standby = oldOwner
+	}
 	g.Epoch++
 	if powerFenced {
 		n := s.data.Nodes[intent.Gateway.Owner]
