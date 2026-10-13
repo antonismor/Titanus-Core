@@ -339,7 +339,8 @@ func (d *CephDeployer) ensureBootstrapArtifacts(primary model.NodeSpec, monitors
 		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'; fi; " +
 		"$SUDO ceph-authtool /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --import-keyring /var/lib/titanus/ceph/bootstrap/ceph.client.admin.keyring; " +
 		"$SUDO ceph-authtool /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --import-keyring /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring; " +
-		"$SUDO monmaptool --create" + monmapArgs.String() + " --fsid " + shellQuote(fsid) + " /var/lib/titanus/ceph/bootstrap/monmap"
+		"if [ ! -s /var/lib/titanus/ceph/bootstrap/monmap ]; then " +
+		"$SUDO monmaptool --create" + monmapArgs.String() + " --fsid " + shellQuote(fsid) + " /var/lib/titanus/ceph/bootstrap/monmap; fi"
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("create Ceph bootstrap artifacts on %s: %w", primary.Name, err)
 	}
