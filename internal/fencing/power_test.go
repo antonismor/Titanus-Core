@@ -78,23 +78,23 @@ func TestPowerFenceProxmoxVerifiesUUIDAndConfirmedOff(t *testing.T) {
 			if method != http.MethodGet {
 				t.Fatalf("unexpected config method %s", method)
 			}
-			return json.RawMessage(\`{"smbios1":"uuid=01234567-89ab-cdef-0123-456789abcdef,manufacturer=Titanus"}\`), nil
+			return json.RawMessage("{\"smbios1\":\"uuid=01234567-89ab-cdef-0123-456789abcdef,manufacturer=Titanus\"}"), nil
 		case "/status/current":
 			if method != http.MethodGet {
 				t.Fatalf("unexpected status method %s", method)
 			}
 			observations++
 			if off {
-				return json.RawMessage(\`{"status":"stopped"}\`), nil
+				return json.RawMessage("{\"status\":\"stopped\"}"), nil
 			}
-			return json.RawMessage(\`{"status":"running"}\`), nil
+			return json.RawMessage("{\"status\":\"running\"}"), nil
 		case "/status/stop":
 			if method != http.MethodPost {
 				t.Fatalf("unexpected stop method %s", method)
 			}
 			stops++
 			off = true
-			return json.RawMessage(\`"UPID:pve:stop"\`), nil
+			return json.RawMessage("\"UPID:pve:stop\""), nil
 		default:
 			return nil, errors.New("unexpected Proxmox API path")
 		}
@@ -116,9 +116,9 @@ func TestPowerFenceProxmoxVerifiesUUIDAndConfirmedOff(t *testing.T) {
 			t.Fatal("acted before Proxmox UUID validation")
 		}
 		if suffix == "/config" {
-			return json.RawMessage(\`{"smbios1":"uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}\`), nil
+			return json.RawMessage("{\"smbios1\":\"uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\"}"), nil
 		}
-		return json.RawMessage(\`{"status":"running"}\`), nil
+		return json.RawMessage("{\"status\":\"running\"}"), nil
 	}
 	if err := p.Fence("old", func() error { return nil }); err == nil {
 		t.Fatal("wrong Proxmox VM fenced")
