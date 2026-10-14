@@ -357,6 +357,35 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 				return false
 			}
 		}
+		// Exercise Service connections from actual Unit network namespaces,
+		// including same-node hairpin and remote VXLAN backends. Node-originated
+		// probes alone miss replies bridged around reverse DNAT.
+		for node := 3; node < 5; node++ {
+			m := unitruntime.NewManager(unitruntime.Config{StateRoot: roots[node], CgroupRoot: fmt.Sprintf("/sys/fs/cgroup/titanus-multi-%d", node), InitBinary: filepath.Join(bin, "titanus-init")})
+			units, err := m.List()
+			if err != nil {
+				serviceFailure = err.Error()
+				return false
+			}
+			active := 0
+			for _, u := range units {
+				if u.Status != unitruntime.StatusActive || u.NetworkAddress == "" {
+					continue
+				}
+				active++
+				for attempt := 0; attempt < 4; attempt++ {
+					out, err := exec.Command("nsenter", "-t", fmt.Sprint(u.PID), "-n", "--", "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
+					serviceFailure = fmt.Sprintf("Unit %s Service expected %s: %q (%v)", u.ID, version, out, err)
+					if err != nil || string(out) != version {
+						return false
+					}
+				}
+			}
+			if active == 0 {
+				serviceFailure = fmt.Sprintf("node %d has no active Unit probe", node)
+				return false
+			}
+		}
 		return true
 	}
 	t.Cleanup(func() {

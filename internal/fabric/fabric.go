@@ -912,13 +912,14 @@ func renderNATRules(cfg Config, st state, services []Service) string {
 	}
 	b.WriteString(" }\n")
 	b.WriteString(" chain postrouting { type nat hook postrouting priority srcnat; policy accept;\n")
-	// Host-originated Service connections initially select an underlay source.
-	// Remote backends must reply through this node's Fabric/conntrack path,
-	// rather than bypassing it via the underlay. Preserve workload source IPs:
-	// fib type local matches addresses owned by the node, not routed Units.
+	// Service replies must return through the node that performed DNAT.
+	// A workload-to-workload reply can otherwise be bridged directly to its
+	// destination veth (including across VXLAN), bypassing reverse conntrack
+	// translation. Scope SNAT to the original Service tuple; direct workload
+	// connections retain their source addresses.
 	for _, service := range services {
 		if len(service.Backends) > 0 {
-			fmt.Fprintf(&b, "  ct status dnat ct original ip daddr %s meta l4proto %s ct original proto-dst %d fib saddr type local masquerade comment \"Titanus node Service return path\"\n", service.Address, service.Protocol, service.Port)
+			fmt.Fprintf(&b, "  ct status dnat ct original ip daddr %s meta l4proto %s ct original proto-dst %d masquerade comment \"Titanus Service return path\"\n", service.Address, service.Protocol, service.Port)
 		}
 	}
 	fmt.Fprintf(&b, "  ip saddr %s oifname != \"%s\" masquerade comment \"Titanus Fabric NAT\"\n", cfg.CIDR, cfg.Bridge)
