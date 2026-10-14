@@ -223,3 +223,33 @@ See [ACCEPTANCE.md](ACCEPTANCE.md) for bounded native load/failure/lifecycle evi
 independent VM prerequisites, explicit fault cleanup, machine-readable reports and
 the central-server runbook. rc.10 retains the M4/M5/M6 scope limits. Publication
 checks the complete internal inventory and all four ELF architectures per package.
+
+### Recoverable maintenance and catalog recovery
+
+Controllers now retry verified metadata-only adoption of committed remote Disk
+catalogs after startup/recovery. Matching managed identities are left untouched;
+conflicting local identities are logged and refused. No remote object is created,
+formatted, mounted or deleted. The CLI combines local and replicated catalogs,
+including partially realized catalogs, and reports identity conflicts.
+
+The release includes `scripts/maintenance_transaction.py`. Supply authenticated
+leader-discovering state/scale/Fleet callbacks and deployment-specific service
+start/stop callbacks. Use `Maintenance.run(fleet_names, offline_action)`, which
+always resumes in `finally`; do not split production maintenance into independent
+scale-zero and backup commands. The private durable journal is saved before any
+scale operation. STOPPED assignments still count as outstanding until official
+release and deletion have completed. Resume restores instance counts and
+minimum_available, then waits for ACTIVE assignments and the supplied readiness/
+data-integrity verifier. Ambiguous POST failures are not replayed automatically.
+
+Run `recover_if_orphaned()` from an independent host-level watchdog timer with an
+exclusive deployment lock. It checks the journal owner's PID and process start
+identity, allowing recovery after termination or SIGKILL without racing a live
+maintenance process. Keep the watchdog available when Titanus daemons are stopped.
+An unreachable quorum or failed storage release remains a visible recovery failure;
+the journal must not be erased or overwritten.
+
+A Ceph export host needs privately provisioned Ceph credentials and verified local
+metadata for every bound catalog. Prepare missing metadata through the official
+storage adoption API before stopping actors. Use a new output directory and intent
+for each recovery set; signed outputs intentionally refuse replacement.

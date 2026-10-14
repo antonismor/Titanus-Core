@@ -104,6 +104,18 @@ class ReleaseIntegrity(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'architecture'):
                 verifier.verify(*args)
 
+    def test_hashed_maintenance_helper_and_legacy_inventory(self):
+        def helper(files):
+            files['scripts/maintenance_transaction.py'] = b'maintenance fixture'
+            path = 'scripts/maintenance_transaction.py'
+            files['SHA256SUMS'] += (hashlib.sha256(files[path]).hexdigest() + '  ' + path + '\n').encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self.package(pathlib.Path(tmp), change=helper)
+            self.assertEqual(verifier.verify(*args)['inventory_files_verified'], 12)
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self.package(pathlib.Path(tmp))
+            self.assertEqual(verifier.verify(*args)['inventory_files_verified'], 11)
+
 
 if __name__ == '__main__':
     unittest.main()
