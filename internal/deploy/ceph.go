@@ -420,23 +420,33 @@ func (d *CephDeployer) startRGW(node model.NodeSpec) error {
 
 func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes []model.NodeSpec, tempDir string) error {
 	remoteKeyring := "/var/lib/titanus/ceph/ceph.client.titanus.keyring"
+	remoteFenceKeyring := "/var/lib/titanus/ceph/ceph.client.titanus-fence.keyring"
 	cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " +
-		"$SUDO ceph auth get-or-create client.titanus mon 'allow r' mgr 'allow rw' osd 'allow rwx' mds 'allow rw' -o " + remoteKeyring
+		"$SUDO ceph auth get-or-create client.titanus mon 'allow r' mgr 'allow rw' osd 'allow rwx' mds 'allow rw' -o " + remoteKeyring + "; " +
+		"$SUDO ceph auth get-or-create client.titanus-fence mon 'allow r, allow command \"osd blocklist\" with blocklistop=add' osd 'allow *' mds 'allow *' -o " + remoteFenceKeyring
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
-		return fmt.Errorf("create client.titanus CephX identity: %w", err)
+		return fmt.Errorf("create Titanus CephX identities: %w", err)
 	}
 	localKeyring := filepath.Join(tempDir, "ceph.client.titanus.keyring")
+	localFenceKeyring := filepath.Join(tempDir, "ceph.client.titanus-fence.keyring")
 	if err := d.SSH.FetchFile(primary, remoteKeyring, localKeyring); err != nil {
+		return err
+	}
+	if err := d.SSH.FetchFile(primary, remoteFenceKeyring, localFenceKeyring); err != nil {
 		return err
 	}
 	for _, node := range allNodes {
 		if err := d.SSH.CopyFile(node, localKeyring, "/tmp/ceph.client.titanus.keyring"); err != nil {
 			return err
 		}
+		if err := d.SSH.CopyFile(node, localFenceKeyring, "/tmp/ceph.client.titanus-fence.keyring"); err != nil {
+			return err
+		}
 		cmd := cephSudoPrefix + "; " +
 			"$SUDO install -m 0600 /tmp/ceph.client.titanus.keyring /etc/ceph/ceph.client.titanus.keyring; " +
-			"rm -f /tmp/ceph.client.titanus.keyring; " +
-			"$SUDO /usr/local/bin/titanus disk ceph-config --cluster ceph --pool titanus --fs titanusfs --client client.titanus --conf /etc/ceph/ceph.conf --keyring /etc/ceph/ceph.client.titanus.keyring"
+			"$SUDO install -m 0600 /tmp/ceph.client.titanus-fence.keyring /etc/ceph/ceph.client.titanus-fence.keyring; " +
+			"rm -f /tmp/ceph.client.titanus.keyring /tmp/ceph.client.titanus-fence.keyring; " +
+			"$SUDO /usr/local/bin/titanus disk ceph-config --cluster ceph --pool titanus --fs titanusfs --client client.titanus --conf /etc/ceph/ceph.conf --keyring /etc/ceph/ceph.client.titanus.keyring --fence-client client.titanus-fence --fence-keyring /etc/ceph/ceph.client.titanus-fence.keyring"
 		if _, err := d.SSH.Run(node, cmd); err != nil {
 			return fmt.Errorf("configure Titanus Ceph adapter on %s: %w", node.Name, err)
 		}
