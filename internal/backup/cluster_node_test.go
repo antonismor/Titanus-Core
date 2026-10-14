@@ -61,7 +61,7 @@ func TestSignedOfflineNonVoterCheckpointStaging(t *testing.T) {
 		t.Fatal(e)
 	}
 	previous := filepath.Join(f.dir, "previous.json")
-	if e := StageClusterNode(f.plan, path, f.key, previous); e != nil {
+	if e := stageClusterNode(f.plan, path, f.key, previous); e != nil {
 		t.Fatal(e)
 	}
 	var state realm.State
@@ -98,7 +98,7 @@ func TestNodeStagingRefusesVotersAndMissingSourcesWithoutMutation(t *testing.T) 
 			case "bad-signature":
 				os.WriteFile(path, []byte("{}"), 0600)
 			}
-			if e := StageClusterNode(f.plan, path, f.key, filepath.Join(f.dir, "previous.json")); e == nil {
+			if e := stageClusterNode(f.plan, path, f.key, filepath.Join(f.dir, "previous.json")); e == nil {
 				t.Fatal("unsafe stage accepted")
 			}
 			after, _ := os.ReadFile(statePath)
@@ -106,5 +106,14 @@ func TestNodeStagingRefusesVotersAndMissingSourcesWithoutMutation(t *testing.T) 
 				t.Fatal("rejected stage changed local cache")
 			}
 		})
+	}
+}
+
+func TestPublicNodeStagingRequiresRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root runner")
+	}
+	if err := StageClusterNode(Plan{}, "", "", ""); err == nil || !strings.Contains(err.Error(), "requires root") {
+		t.Fatal(err)
 	}
 }

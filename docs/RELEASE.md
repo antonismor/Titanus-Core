@@ -253,3 +253,17 @@ A Ceph export host needs privately provisioned Ceph credentials and verified loc
 metadata for every bound catalog. Prepare missing metadata through the official
 storage adoption API before stopping actors. Use a new output directory and intent
 for each recovery set; signed outputs intentionally refuse replacement.
+
+Offline non-voters retain a cache rather than a Raft checkpoint. Before
+`cluster-create-host`, align that cache using `backup cluster-stage-node --plan
+HOST_PLAN --intent SIGNED_INTENT --key KEY --output NEW_PREIMAGE`. This command
+requires root with all Titanus actors stopped, verifies the signed host identity
+and retained local assets, saves a signed preimage, and refuses every voter or
+consensus directory. It never rewrites replicated controller state. Missing
+Sources must first be transferred and verified through the official node Source
+API. Obsolete stopped stateless Units should be cleaned through the Unit API;
+unsupported overlay xattrs must not be stripped to bypass backup validation.
+
+Move Ceph export payloads using a PAX archive that preserves numeric UID/GID,
+permissions and nanosecond mtimes. Ordinary recursive SCP and GNU tar without
+PAX can change the signed inventory. The verifier must remain strict.

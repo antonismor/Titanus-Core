@@ -20,6 +20,11 @@ func StageClusterNode(p Plan, intentPath, keyPath, previousPath string) error {
 	if err = rejectRunningActors(); err != nil {
 		return err
 	}
+	return stageClusterNode(p, intentPath, keyPath, previousPath)
+}
+
+func stageClusterNode(p Plan, intentPath, keyPath, previousPath string) error {
+	var err error
 	if err = p.Validate(); err != nil {
 		return err
 	}
