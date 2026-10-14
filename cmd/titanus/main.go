@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -523,9 +524,26 @@ func runDisk(args []string) error {
 		if err != nil {
 			return err
 		}
+		catalogOnly := false
+		if len(items) == 0 {
+			if state, realmErr := localclient.New(os.Getenv("TITANUS_SOCKET")).RealmState(); realmErr == nil && len(state.Disks) > 0 {
+				names := make([]string, 0, len(state.Disks))
+				for name := range state.Disks {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for _, name := range names {
+					items = append(items, state.Disks[name].Spec)
+				}
+				catalogOnly = true
+			}
+		}
 		if len(items) == 0 {
 			fmt.Println("No Titanus Disks.")
 			return nil
+		}
+		if catalogOnly {
+			fmt.Println("Realm Disk catalog (not locally realized on this node):")
 		}
 		fmt.Printf("%-24s %-12s %-14s %-12s\n", "DISK", "PROVIDER", "SIZE-BYTES", "INITIALIZED")
 		for _, item := range items {
@@ -617,15 +635,18 @@ func runDisk(args []string) error {
 		cluster := fs.String("cluster", "ceph", "Ceph cluster name")
 		pool := fs.String("pool", "titanus", "RBD pool")
 		fsName := fs.String("fs", "cephfs", "CephFS filesystem name")
-		client := fs.String("client", "client.titanus", "Ceph client identity")
+		client := fs.String("client", "client.titanus", "Ceph data client identity")
 		conf := fs.String("conf", "/etc/ceph/ceph.conf", "Ceph configuration file")
-		keyring := fs.String("keyring", "", "optional Ceph keyring")
+		keyring := fs.String("keyring", "", "optional Ceph data keyring")
+		fenceClient := fs.String("fence-client", "", "optional Ceph fencing client identity")
+		fenceKeyring := fs.String("fence-keyring", "", "optional Ceph fencing keyring")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		cfg := disk.CephConfig{
 			Cluster: *cluster, Pool: *pool, FSName: *fsName,
 			Client: *client, Conf: *conf, Keyring: *keyring,
+			FenceClient: *fenceClient, FenceKeyring: *fenceKeyring,
 		}
 		if err := manager.ConfigureCeph(cfg); err != nil {
 			return err
