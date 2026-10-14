@@ -20,7 +20,7 @@ for binary in ['titanusd','titanus-agent','titanus-init']:
 name=f"titanus-{meta['version']}-linux-{meta['arch']}"
 with tempfile.TemporaryDirectory(prefix='titanus-package-') as tmp:
  root=pathlib.Path(tmp)/name;root.mkdir()
- for p in ['bin/titanus','bin/titanusd','bin/titanus-agent','bin/titanus-init','systemd/titanusd.service','systemd/titanus-agent.service','scripts/install-release.py','scripts/install-release.sh','docs/RELEASE.md','LICENSE']:
+ for p in ['bin/titanus','bin/titanusd','bin/titanus-agent','bin/titanus-init','systemd/titanusd.service','systemd/titanus-agent.service','scripts/maintenance_transaction.py','scripts/install-release.py','scripts/install-release.sh','docs/RELEASE.md','LICENSE']:
   src=pathlib.Path(p);dst=root/p;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dst);dst.chmod(0o755 if p.startswith('bin/') or p.endswith('.sh') else 0o644)
  (root/'manifest.json').write_text(json.dumps(meta,sort_keys=True)+'\n')
  files=sorted(p for p in root.rglob('*') if p.is_file())

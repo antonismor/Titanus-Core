@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -525,17 +524,10 @@ func runDisk(args []string) error {
 			return err
 		}
 		catalogOnly := false
-		if len(items) == 0 {
-			if state, realmErr := localclient.New(os.Getenv("TITANUS_SOCKET")).RealmState(); realmErr == nil && len(state.Disks) > 0 {
-				names := make([]string, 0, len(state.Disks))
-				for name := range state.Disks {
-					names = append(names, name)
-				}
-				sort.Strings(names)
-				for _, name := range names {
-					items = append(items, state.Disks[name].Spec)
-				}
-				catalogOnly = true
+		if state, realmErr := localclient.New(os.Getenv("TITANUS_SOCKET")).RealmState(); realmErr == nil {
+			items, catalogOnly, err = mergeDiskViews(items, state.Disks)
+			if err != nil {
+				return err
 			}
 		}
 		if len(items) == 0 {
@@ -543,7 +535,7 @@ func runDisk(args []string) error {
 			return nil
 		}
 		if catalogOnly {
-			fmt.Println("Realm Disk catalog (not locally realized on this node):")
+			fmt.Println("Includes Realm Disk catalog entries not locally realized on this node:")
 		}
 		fmt.Printf("%-24s %-12s %-14s %-12s\n", "DISK", "PROVIDER", "SIZE-BYTES", "INITIALIZED")
 		for _, item := range items {
