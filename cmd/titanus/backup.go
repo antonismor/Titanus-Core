@@ -57,6 +57,12 @@ func runBackup(args []string) error {
 			return e
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"recovery_set_id": m.Binding.ID, "verified": true})
+	case "cluster-stage-node":
+		p, e := backup.LoadPlan(*planPath)
+		if e != nil {
+			return e
+		}
+		return backup.StageClusterNode(p, *intent, *key, *output)
 	case "cluster-create-host":
 		p, e := backup.LoadPlan(*planPath)
 		if e != nil {
