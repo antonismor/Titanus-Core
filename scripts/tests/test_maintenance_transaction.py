@@ -10,11 +10,14 @@ class MaintenanceFailureTests(unittest.TestCase):
     def fixture(self, root, stuck=False, ambiguous=False):
         state = {"fleets": {"web": {"name": "web", "instances": 2, "minimum_available": 1},
                             "db": {"name": "db", "instances": 1, "minimum_available": 0}},
-                 "assignments": {}}
+                 "assignments": {n+str(i): {"fleet": n, "state": "ACTIVE"}
+                                 for n,f in {"web":{"instances":2},"db":{"instances":1}}.items()
+                                 for i in range(f["instances"])}}
         stops = []
         def scale(name, count):
             state["fleets"][name]["instances"] = count
             state["fleets"][name]["minimum_available"] = min(count, state["fleets"][name]["minimum_available"])
+            state["assignments"] = {key:a for key,a in state["assignments"].items() if a["fleet"] != name}
             if ambiguous:
                 raise TimeoutError("response lost after commit")
             if stuck:
@@ -77,3 +80,23 @@ class MaintenanceFailureTests(unittest.TestCase):
             m.save(j)
             self.assertTrue(m.recover_if_orphaned())
             self.assertEqual(s["fleets"]["web"]["instances"],2)
+
+    def test_resume_retry_does_not_start_another_rollout(self):
+        with tempfile.TemporaryDirectory() as root:
+            m,s,_ = self.fixture(root)
+            calls = []
+            put = m.put_fleet
+            def counted(f):
+                calls.append(f["name"])
+                put(f)
+            m.put_fleet = counted
+            m.quiesce(["web","db"])
+            def unavailable():
+                raise RuntimeError("not ready yet")
+            m.verify = unavailable
+            with self.assertRaisesRegex(RuntimeError, "not ready"):
+                m.resume()
+            self.assertEqual(calls, ["web","db"])
+            m.verify = lambda: None
+            m.resume()
+            self.assertEqual(calls, ["web","db"])

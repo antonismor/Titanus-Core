@@ -85,10 +85,11 @@ class Maintenance:
         # Restore both counts and availability policy: ScaleFleet clamps the
         # minimum to zero, so scaling back alone would silently weaken policy.
         for name, saved in journal["fleets"].items():
-            current = copy.deepcopy(self.state()["fleets"][name])
+            old = self.state()["fleets"][name]
+            current = copy.deepcopy(old)
             current["instances"] = saved["instances"]
             current["minimum_available"] = saved["minimum_available"]
-            if saved["instances"] or current != self.state()["fleets"][name]:
+            if (old["instances"], old.get("minimum_available", 0)) != (saved["instances"], saved["minimum_available"]):
                 self.put_fleet(current)
         def active(s):
             for name, saved in journal["fleets"].items():

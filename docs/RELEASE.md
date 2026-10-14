@@ -267,3 +267,11 @@ unsupported overlay xattrs must not be stripped to bypass backup validation.
 Move Ceph export payloads using a PAX archive that preserves numeric UID/GID,
 permissions and nanosecond mtimes. Ordinary recursive SCP and GNU tar without
 PAX can change the signed inventory. The verifier must remain strict.
+
+The rc.11 service unit declares `Delegate=cpu memory pids`. Systemd activates
+these controllers through the parent hierarchy at each boot, so the runtime's
+global cgroup subtree retains CPU, memory and PID enforcement after restart.
+The lab's controlled worker reboot found the missing CPU delegation; it must
+not be worked around by dropping CPU limits. Maintenance resume retries update
+Fleets only when counts or minimum_available actually differ, avoiding repeated
+rollouts while readiness is still converging.

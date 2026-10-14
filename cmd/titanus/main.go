@@ -529,6 +529,8 @@ func runDisk(args []string) error {
 			if err != nil {
 				return err
 			}
+		} else if len(items) == 0 {
+			return fmt.Errorf("local Disk catalog is empty; Realm catalog unavailable: %w", realmErr)
 		}
 		if len(items) == 0 {
 			fmt.Println("No Titanus Disks.")
