@@ -347,6 +347,7 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		t.Fatal(e)
 	}
 	var serviceFailure string
+	unitProbeNodes := map[int]bool{}
 	service := func(version string) bool {
 		// Require successive fresh connections so a local backend cannot hide
 		// a broken remote Service return path under round-robin selection.
@@ -360,19 +361,23 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		// Exercise Service connections from actual Unit network namespaces,
 		// including same-node hairpin and remote VXLAN backends. Node-originated
 		// probes alone miss replies bridged around reverse DNAT.
+		activeTotal := 0
+		current := snapshot()
 		for node := 3; node < 5; node++ {
+			if current.Nodes[fmt.Sprintf("node-%d", node)].State != realm.NodeReady {
+				continue
+			}
 			m := unitruntime.NewManager(unitruntime.Config{StateRoot: roots[node], CgroupRoot: fmt.Sprintf("/sys/fs/cgroup/titanus-multi-%d", node), InitBinary: filepath.Join(bin, "titanus-init")})
 			units, err := m.List()
 			if err != nil {
 				serviceFailure = err.Error()
 				return false
 			}
-			active := 0
 			for _, u := range units {
 				if u.Status != unitruntime.StatusActive || u.NetworkAddress == "" {
 					continue
 				}
-				active++
+				activeTotal++
 				for attempt := 0; attempt < 4; attempt++ {
 					out, err := exec.Command("nsenter", "-t", fmt.Sprint(u.PID), "-n", "--", "curl", "-f", "-s", "--max-time", "2", "http://"+stored.ServiceIP+":18080/ready").CombinedOutput()
 					serviceFailure = fmt.Sprintf("Unit %s Service expected %s: %q (%v)", u.ID, version, out, err)
@@ -380,11 +385,12 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 						return false
 					}
 				}
+				unitProbeNodes[node] = true
 			}
-			if active == 0 {
-				serviceFailure = fmt.Sprintf("node %d has no active Unit probe", node)
-				return false
-			}
+		}
+		if activeTotal == 0 {
+			serviceFailure = "no ready active Unit caller"
+			return false
 		}
 		return true
 	}
@@ -394,6 +400,9 @@ func TestNativeMultiNodeFailure(t *testing.T) {
 		}
 	})
 	wait(20*time.Second, func() bool { return service("v1") })
+	if len(unitProbeNodes) != 2 {
+		t.Fatal("initial Unit callers did not cover both execution nodes")
+	}
 	fleet.Template.Command = []string{"/bin/rollout-app", "v2"}
 	if e = request(leader, "POST", "/v1/realm/fleets", fleet, nil); e != nil {
 		t.Fatal(e)
