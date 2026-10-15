@@ -120,7 +120,7 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	}
 	// Ceph Squid 19.2.6+ introduces aes256k for CephX. Prefer it
 	// before any new OSD, MGR, MDS or client credentials are created.
-	if _, err := d.SSH.Run(primary, cephSudoPrefix+"; $SUDO ceph mon set auth_preferred_cipher aes256k"); err != nil {
+	if _, err := d.SSH.Run(primary, cephSudoPrefix+"; if $SUDO ceph config help auth_preferred_cipher >/dev/null 2>&1; then $SUDO ceph config set mon auth_preferred_cipher aes256k; fi"); err != nil {
 		return CephDeployResult{}, fmt.Errorf("set secure CephX cipher before provisioning: %w", err)
 	}
 	if err := d.startManagers(storage); err != nil {
@@ -249,16 +249,17 @@ func (d *CephDeployer) distributeConfig(nodes []model.NodeSpec, local string) er
 func (d *CephDeployer) ensureBootstrapArtifacts(primary model.NodeSpec, monitors []model.NodeSpec, fsid string) error {
 	var monmapArgs strings.Builder
 	for _, node := range monitors {
-		fmt.Fprintf(&monmapArgs, " --add %s %s", shellQuote(node.Name), shellQuote(node.CephPublicIP))
+		fmt.Fprintf(&monmapArgs, " --add %s %s", shellQuote(node.Name), shellQuote(cephPublicIP(node)))
 	}
 	cmd := cephSudoPrefix + "; " +
 		"$SUDO install -d -m 0700 /var/lib/titanus/ceph/bootstrap /var/lib/ceph/bootstrap-osd; " +
+		"keyType=''; if $SUDO ceph-authtool --help 2>&1 | grep -q -- '--key-type'; then keyType='--key-type aes256k'; fi; " +
 		"if [ ! -s /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring ]; then " +
-		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --key-type aes256k --gen-key -n mon.; fi; " +
+		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring $keyType --gen-key -n mon.; fi; " +
 		"if [ ! -s /var/lib/titanus/ceph/bootstrap/ceph.client.admin.keyring ]; then " +
-		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.client.admin.keyring --key-type aes256k --gen-key -n client.admin --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *'; fi; " +
+		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.client.admin.keyring $keyType --gen-key -n client.admin --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *'; fi; " +
 		"if [ ! -s /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring ]; then " +
-		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring --key-type aes256k --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'; fi; " +
+		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring $keyType --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'; fi; " +
 		"$SUDO ceph-authtool /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --import-keyring /var/lib/titanus/ceph/bootstrap/ceph.client.admin.keyring; " +
 		"$SUDO ceph-authtool /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --import-keyring /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring; " +
 		"$SUDO monmaptool --create" + monmapArgs.String() + " --fsid " + shellQuote(fsid) + " /var/lib/titanus/ceph/bootstrap/monmap"
@@ -454,13 +455,22 @@ func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes [
 	return nil
 }
 
+// When Ceph uses the management network, the optional dedicated Ceph IP
+// may be omitted.  Monitor addresses must nevertheless be explicit.
+func cephPublicIP(node model.NodeSpec) string {
+	if node.CephPublicIP != "" {
+		return node.CephPublicIP
+	}
+	return node.ManagementIP
+}
+
 func buildCephConfig(plan model.RealmPlan, fsid string) string {
 	storage := plan.StorageNodes()
 	names := make([]string, 0, len(storage))
 	hosts := make([]string, 0, len(storage))
 	for _, node := range storage {
 		names = append(names, node.Name)
-		hosts = append(hosts, node.CephPublicIP)
+		hosts = append(hosts, cephPublicIP(node))
 	}
 	return fmt.Sprintf(
 		"[global]\nfsid = %s\nmon_initial_members = %s\nmon_host = %s\npublic_network = %s\ncluster_network = %s\nauth_cluster_required = cephx\nauth_service_required = cephx\nauth_client_required = cephx\nosd_pool_default_size = %d\nmon_allow_pool_delete = false\n\n",
