@@ -57,11 +57,18 @@ def authenticated(cookie):
     )
     try:
         with pve_client.open(req, timeout=5) as resp:
-            info = json.load(resp).get("data",{})
+            payload = json.load(resp)
+            info = payload.get("data", {}) if isinstance(payload, dict) else {}
+            if not isinstance(info, dict):
+                print("Titanus WebUI auth: unexpected Proxmox permissions payload", flush=True)
+                return False
             # Require elevated host-level rights, not merely a valid ticket.
             perms = info.get("/", {})
+            if not isinstance(perms, dict):
+                return False
             return bool(perms.get("Sys.Modify") or perms.get("Permissions.Modify"))
-    except (ValueError, urllib.error.URLError, TimeoutError):
+    except (ValueError, urllib.error.URLError, TimeoutError, TypeError, AttributeError) as exc:
+        print("Titanus WebUI auth validation failed: %s" % type(exc).__name__, flush=True)
         return False
 
 def leader_url():
