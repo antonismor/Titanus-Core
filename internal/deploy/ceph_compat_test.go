@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -45,5 +46,10 @@ func TestDebian13ReefManagerCompatibilityIsNarrowAndIdempotent(t *testing.T) {
 	}
 	if strings.Contains(cmd, "apt-get install") || strings.Contains(cmd, "pip install") {
 		t.Fatalf("compatibility shim must not replace distribution Python packages: %s", cmd)
+	}
+	shell := exec.Command("bash", "-n")
+	shell.Stdin = strings.NewReader(cmd)
+	if output, err := shell.CombinedOutput(); err != nil {
+		t.Fatalf("compatibility command is not valid shell: %v: %s", err, output)
 	}
 }
