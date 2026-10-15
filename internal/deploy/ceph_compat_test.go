@@ -53,3 +53,13 @@ func TestDebian13ReefManagerCompatibilityIsNarrowAndIdempotent(t *testing.T) {
 		t.Fatalf("compatibility command is not valid shell: %v: %s", err, output)
 	}
 }
+
+func TestCephBootstrapMonmapCreationIsRerunnable(t *testing.T) {
+	cmd := cephMonmapCreateCommand(" --add storage-a 10.11.101.15", "4df38c4a-1c25-4017-90d7-b548ee8eac01")
+	if !strings.Contains(cmd, "monmaptool --create --clobber") {
+		t.Fatalf("Ceph bootstrap monmap must be replaceable during idempotent deploy: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--fsid") || !strings.Contains(cmd, "4df38c4a-1c25-4017-90d7-b548ee8eac01") {
+		t.Fatalf("Ceph bootstrap monmap must preserve the cluster FSID: %s", cmd)
+	}
+}
