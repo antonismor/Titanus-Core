@@ -83,7 +83,7 @@ Fresh preparation generates private role-scoped PKI, `/etc/titanus/daemon.env`
 and `agent.env`, per-voter membership and identical network seeds. Only the first
 voter bootstraps. Admin credentials stay in the preparation's local `operator/`
 directory (`ca.crt`, `ca.crl`, `admin.crt`, `admin.key`); workers receive only their
-node identity. Keep these files private and renew the initial 24-hour certificates
+node identity. Keep these files private and renew the default 30-day certificates
 through the authenticated lifecycle. Ceph credentials and secret keyrings require
 separate protected provisioning. Host prerequisites/interfaces are not installed
 or configured by preparation; managed VIP ownership requires separate registration

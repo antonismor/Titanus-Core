@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"math/big"
-	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/identity"
 )
@@ -19,7 +18,7 @@ func runIdentity(args []string) error {
 	id := fs.String("id", "", "identity ID")
 	role := fs.String("role", "node", "node, controller or admin")
 	address := fs.String("address", "", "server address SAN")
-	ttl := fs.Duration("ttl", 24*time.Hour, "certificate lifetime (1h to 30d)")
+	ttl := fs.Duration("ttl", identity.DefaultLeafLifetime, "certificate lifetime (1h to 30d)")
 	serialText := fs.String("serial", "", "certificate serial in hexadecimal")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err

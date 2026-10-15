@@ -746,7 +746,7 @@ func runRealm(args []string) error {
 		if err != nil {
 			return err
 		}
-		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.RoleController, 24*time.Hour)
+		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.RoleController, identity.DefaultLeafLifetime)
 		if err != nil {
 			return err
 		}
@@ -854,7 +854,7 @@ func runRealm(args []string) error {
 		if err != nil {
 			return err
 		}
-		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.Role(*role), 24*time.Hour)
+		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.Role(*role), identity.DefaultLeafLifetime)
 		if err != nil {
 			return err
 		}

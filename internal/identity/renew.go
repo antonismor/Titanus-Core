@@ -56,7 +56,7 @@ func (a Authority) RenewCSRWithSerial(current *x509.Certificate, request []byte,
 		return nil, err
 	}
 	now := time.Now().UTC()
-	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: principal.ID, Organization: []string{"Titanus", a.Realm}, OrganizationalUnit: []string{string(principal.Role)}}, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: append([]x509.ExtKeyUsage(nil), current.ExtKeyUsage...), DNSNames: append([]string(nil), current.DNSNames...), IPAddresses: current.IPAddresses}
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: principal.ID, Organization: []string{"Titanus", a.Realm}, OrganizationalUnit: []string{string(principal.Role)}}, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(DefaultLeafLifetime), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: append([]x509.ExtKeyUsage(nil), current.ExtKeyUsage...), DNSNames: append([]string(nil), current.DNSNames...), IPAddresses: current.IPAddresses}
 	if template.NotAfter.After(ca.NotAfter) {
 		template.NotAfter = ca.NotAfter
 	}
@@ -80,7 +80,7 @@ func loadPair(certPath, keyPath string) (tls.Certificate, error) {
 	return tls.LoadX509KeyPair(cert, filepath.Join(filepath.Dir(cert), filepath.Base(keyPath)))
 }
 
-// RenewIfNeeded rotates the leaf/key when less than eight hours remain. Flat
+// RenewIfNeeded rotates the leaf/key when less than seven days remain. Flat
 // installations migrate once to a versioned bundle; subsequent rotation swaps
 // only its shared current pointer. In-flight authenticated requests complete.
 func RenewIfNeeded(client *http.Client, endpoint, caPath, certPath, keyPath string) error {
@@ -88,7 +88,7 @@ func RenewIfNeeded(client *http.Client, endpoint, caPath, certPath, keyPath stri
 	if err != nil {
 		return err
 	}
-	if time.Until(current.NotAfter) > 8*time.Hour {
+	if time.Until(current.NotAfter) > RenewBefore {
 		return nil
 	}
 	if discovery, ok := client.Transport.(interface {

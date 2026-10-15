@@ -24,6 +24,11 @@ type Authority struct {
 	KeyPath  string
 }
 
+const (
+	DefaultLeafLifetime = 30 * 24 * time.Hour
+	RenewBefore         = 7 * 24 * time.Hour
+)
+
 func InitAuthority(dir, realmName string) (Authority, error) {
 	if realmName == "" {
 		return Authority{}, fmt.Errorf("Realm name is required")
@@ -109,7 +114,7 @@ func InitAuthority(dir, realmName string) (Authority, error) {
 }
 
 func (a Authority) IssueNode(nodeID string, addresses []string) (certPath, keyPath string, err error) {
-	return a.Issue(nodeID, addresses, RoleNode, 24*time.Hour)
+	return a.Issue(nodeID, addresses, RoleNode, DefaultLeafLifetime)
 }
 
 func (a Authority) Issue(nodeID string, addresses []string, role Role, ttl time.Duration) (certPath, keyPath string, err error) {
