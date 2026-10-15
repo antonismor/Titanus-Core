@@ -28,7 +28,7 @@ func (p *PlacementEngine) Rank(state State, fleet Fleet, existing []Assignment) 
 			continue
 		}
 		countsByNode[assignment.NodeID]++
-		if fleet.SpreadLabel != "" {
+		if fleet.SpreadLabel != "" && assignment.Generation == fleet.Generation {
 			if node, ok := state.Nodes[assignment.NodeID]; ok {
 				spreadCounts[node.Labels[fleet.SpreadLabel]]++
 			}

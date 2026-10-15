@@ -39,6 +39,9 @@ func fixture(t *testing.T, mutation string) (string, string) {
 	for _, n := range []string{"systemd/titanusd.service", "systemd/titanus-agent.service", "scripts/install-release.py", "scripts/install-release.sh", "docs/RELEASE.md", "LICENSE"} {
 		files[n] = []byte("fixture")
 	}
+	if mutation == "maintenance" || mutation == "maintenance-corrupt" {
+		files["scripts/maintenance_transaction.py"] = []byte("fixture")
+	}
 	sums := ""
 	names := []string{}
 	for n := range files {
@@ -50,6 +53,9 @@ func fixture(t *testing.T, mutation string) (string, string) {
 		sums += hex.EncodeToString(sum[:]) + "  " + n + "\n"
 	}
 	files["SHA256SUMS"] = []byte(sums)
+	if mutation == "maintenance-corrupt" {
+		files["scripts/maintenance_transaction.py"] = []byte("changed")
+	}
 	if mutation == "checksum" {
 		files["LICENSE"] = []byte("changed")
 	}
@@ -106,5 +112,15 @@ func TestArchiveInventoryAndArchitecture(t *testing.T) {
 				t.Fatal("untrusted archive accepted")
 			}
 		})
+	}
+}
+
+func TestMaintenanceBundleCompatibility(t *testing.T) {
+	for _, mutation := range []string{"", "maintenance", "maintenance-corrupt"} {
+		file, sum := fixture(t, mutation)
+		_, err := Verify(file, sum, "0.4.0-rc.4", strings.Repeat("a", 40), runtime.GOARCH)
+		if (err != nil) != (mutation == "maintenance-corrupt") {
+			t.Fatal(mutation, err)
+		}
 	}
 }

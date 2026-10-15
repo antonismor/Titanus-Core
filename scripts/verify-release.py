@@ -15,6 +15,8 @@ INVENTORY = {
     'docs/RELEASE.md', 'LICENSE', 'manifest.json',
 }
 
+OPTIONAL_INVENTORY = {'scripts/maintenance_transaction.py'}
+
 
 def verify(archive, revision, version):
     archive = pathlib.Path(archive)
@@ -54,15 +56,16 @@ def verify(archive, revision, version):
             if relative in files:
                 raise ValueError('duplicate member')
             files[relative] = tar.extractfile(member).read()
-        if len(roots) != 1 or set(files) != INVENTORY | {'SHA256SUMS'}:
+        expected_inventory = INVENTORY | (set(files) & OPTIONAL_INVENTORY)
+        if len(roots) != 1 or set(files) != expected_inventory | {'SHA256SUMS'}:
             raise ValueError('incomplete or unexpected package inventory')
         inventory = {}
         for line in files['SHA256SUMS'].decode().splitlines():
             sha, path = line.split('  ')
-            if path in inventory or path not in INVENTORY or not re.fullmatch('[0-9a-f]{64}', sha):
+            if path in inventory or path not in expected_inventory or not re.fullmatch('[0-9a-f]{64}', sha):
                 raise ValueError('invalid internal checksum inventory')
             inventory[path] = sha
-        if set(inventory) != INVENTORY:
+        if set(inventory) != expected_inventory:
             raise ValueError('missing internal checksum')
         for path, sha in inventory.items():
             if hashlib.sha256(files[path]).hexdigest() != sha:

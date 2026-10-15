@@ -49,6 +49,10 @@ func validateHostAt(p Plan, roots map[string]string) (realm.State, error) {
 }
 
 func validateHostBound(p Plan, roots map[string]string, binding *ClusterBinding) (realm.State, error) {
+	return validateHostBoundState(p, roots, binding, nil)
+}
+
+func validateHostBoundState(p Plan, roots map[string]string, binding *ClusterBinding, override *realm.State) (realm.State, error) {
 	var state realm.State
 	for name, root := range roots {
 		st, e := os.Lstat(root)
@@ -93,6 +97,12 @@ func validateHostBound(p Plan, roots map[string]string, binding *ClusterBinding)
 		}
 	} else if !os.IsNotExist(e) {
 		return state, e
+	}
+	if override != nil {
+		if p.Role != "node" || state.Name != override.Name {
+			return state, fmt.Errorf("non-voter cache Realm mismatch")
+		}
+		state = *override
 	}
 	if state.Name != p.Realm || state.Nodes == nil || state.Fleets == nil || state.Assignments == nil || state.Routes == nil || state.Policies == nil {
 		return state, fmt.Errorf("Realm identity/state mismatch")

@@ -31,14 +31,17 @@ titanus identity issue --pki-dir /etc/titanus/pki --realm LAB --id operator --ro
 ```
 
 Configure the returned certificate/key paths together; they must share a bundle
-directory. Leaf lifetime defaults to 24 hours (accepted issuance range 1h–30d).
+directory. Leaf lifetime defaults to 30 days (accepted issuance range 1h–30d).
 New leaf issuance uses a fresh key and serial in an immutable directory, with
 an atomic current pointer. Admin leaves have only client-auth EKU. Reissuing a
 leaf does not silently revoke its previous serial before replacement deployment.
+The longer default tolerates planned maintenance and powered-down lab windows
+without weakening expiry checks: an expired certificate still fails closed and
+requires operator re-enrollment.
 
 ## Renewal and revocation
 
-Agents renew with less than eight hours remaining. The agent generates its
+Agents renew with less than seven days remaining. The agent generates its
 replacement private key locally and submits a signed CSR to the controller's
 `POST /v1/identity/renew`. The controller copies identity, role and SANs from the
 authenticated current certificate, ignoring expanded CSR claims. Certificate

@@ -95,6 +95,9 @@ func Verify(filename, digest, wantVersion, revision, arch string) (version.Build
 	for _, n := range []string{"bin/titanus", "bin/titanusd", "bin/titanus-agent", "bin/titanus-init", "systemd/titanusd.service", "systemd/titanus-agent.service", "scripts/install-release.py", "scripts/install-release.sh", "docs/RELEASE.md", "LICENSE", "manifest.json"} {
 		expected[n] = true
 	}
+	if _, present := files["scripts/maintenance_transaction.py"]; present {
+		expected["scripts/maintenance_transaction.py"] = true
+	}
 	lines := strings.Split(strings.TrimSpace(string(files["SHA256SUMS"])), "\n")
 	seen = map[string]bool{}
 	for _, line := range lines {

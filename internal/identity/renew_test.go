@@ -15,6 +15,18 @@ import (
 	"time"
 )
 
+func TestProductionLeafLifetimeWindow(t *testing.T) {
+	if DefaultLeafLifetime != 30*24*time.Hour {
+		t.Fatalf("unexpected default leaf lifetime: %s", DefaultLeafLifetime)
+	}
+	if RenewBefore != 7*24*time.Hour {
+		t.Fatalf("unexpected renewal window: %s", RenewBefore)
+	}
+	if RenewBefore >= DefaultLeafLifetime {
+		t.Fatal("renewal window must be shorter than leaf lifetime")
+	}
+}
+
 func TestAgentRenewalRotatesKeyAndPreservesPermissions(t *testing.T) {
 	auth, err := InitAuthority(t.TempDir(), "test")
 	if err != nil {
@@ -92,8 +104,8 @@ func TestAgentRenewalRotatesKeyAndPreservesPermissions(t *testing.T) {
 	if principal, err := CertificatePrincipal(leaf); err != nil || principal.Role != RoleNode || principal.ID != "worker" {
 		t.Fatal("renewal expanded identity")
 	}
-	if time.Until(leaf.NotAfter) < 23*time.Hour {
-		t.Fatal("renewal did not extend lifetime")
+	if time.Until(leaf.NotAfter) < 29*24*time.Hour {
+		t.Fatal("renewal did not restore the default lifetime")
 	}
 	if _, err := loadPair(certPath, keyPath); err != nil {
 		t.Fatal(err)

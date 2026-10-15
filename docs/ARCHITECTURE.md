@@ -157,3 +157,13 @@ These are explicitly declared libraries; no external orchestrator is used.
 Only quorum-committed state is exposed as the live HA Realm, with leader barriers
 for API access. See [Control-plane HA](CONTROL_PLANE_HA.md) for its operational
 bounds and the state/assets that are outside this replicated FSM.
+
+
+### Service return paths
+Service-IP connections use source NAT scoped to the original Service address,
+protocol and port, for both node and Unit callers. This forces return traffic
+through the DNAT node even when the backend can bridge directly to the caller
+over VXLAN. Backends observe the gateway address for Service connections.
+Direct Unit-to-Unit connections retain their source addresses. Native multinode
+tests exercise repeated Service connections from both node and active Unit
+network namespaces before/after rollout and controller loss.

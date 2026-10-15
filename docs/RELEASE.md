@@ -83,7 +83,7 @@ Fresh preparation generates private role-scoped PKI, `/etc/titanus/daemon.env`
 and `agent.env`, per-voter membership and identical network seeds. Only the first
 voter bootstraps. Admin credentials stay in the preparation's local `operator/`
 directory (`ca.crt`, `ca.crl`, `admin.crt`, `admin.key`); workers receive only their
-node identity. Keep these files private and renew the initial 24-hour certificates
+node identity. Keep these files private and renew the default 30-day certificates
 through the authenticated lifecycle. Ceph credentials and secret keyrings require
 separate protected provisioning. Host prerequisites/interfaces are not installed
 or configured by preparation; managed VIP ownership requires separate registration
@@ -223,3 +223,55 @@ See [ACCEPTANCE.md](ACCEPTANCE.md) for bounded native load/failure/lifecycle evi
 independent VM prerequisites, explicit fault cleanup, machine-readable reports and
 the central-server runbook. rc.10 retains the M4/M5/M6 scope limits. Publication
 checks the complete internal inventory and all four ELF architectures per package.
+
+### Recoverable maintenance and catalog recovery
+
+Controllers now retry verified metadata-only adoption of committed remote Disk
+catalogs after startup/recovery. Matching managed identities are left untouched;
+conflicting local identities are logged and refused. No remote object is created,
+formatted, mounted or deleted. The CLI combines local and replicated catalogs,
+including partially realized catalogs, and reports identity conflicts.
+
+The release includes `scripts/maintenance_transaction.py`. Supply authenticated
+leader-discovering state/scale/Fleet callbacks and deployment-specific service
+start/stop callbacks. Use `Maintenance.run(fleet_names, offline_action)`, which
+always resumes in `finally`; do not split production maintenance into independent
+scale-zero and backup commands. The private durable journal is saved before any
+scale operation. STOPPED assignments still count as outstanding until official
+release and deletion have completed. Resume restores instance counts and
+minimum_available, then waits for ACTIVE assignments and the supplied readiness/
+data-integrity verifier. Ambiguous POST failures are not replayed automatically.
+
+Run `recover_if_orphaned()` from an independent host-level watchdog timer with an
+exclusive deployment lock. It checks the journal owner's PID and process start
+identity, allowing recovery after termination or SIGKILL without racing a live
+maintenance process. Keep the watchdog available when Titanus daemons are stopped.
+An unreachable quorum or failed storage release remains a visible recovery failure;
+the journal must not be erased or overwritten.
+
+A Ceph export host needs privately provisioned Ceph credentials and verified local
+metadata for every bound catalog. Prepare missing metadata through the official
+storage adoption API before stopping actors. Use a new output directory and intent
+for each recovery set; signed outputs intentionally refuse replacement.
+
+Offline non-voters retain a cache rather than a Raft checkpoint. Before
+`cluster-create-host`, align that cache using `backup cluster-stage-node --plan
+HOST_PLAN --intent SIGNED_INTENT --key KEY --output NEW_PREIMAGE`. This command
+requires root with all Titanus actors stopped, verifies the signed host identity
+and retained local assets, saves a signed preimage, and refuses every voter or
+consensus directory. It never rewrites replicated controller state. Missing
+Sources must first be transferred and verified through the official node Source
+API. Obsolete stopped stateless Units should be cleaned through the Unit API;
+unsupported overlay xattrs must not be stripped to bypass backup validation.
+
+Move Ceph export payloads using a PAX archive that preserves numeric UID/GID,
+permissions and nanosecond mtimes. Ordinary recursive SCP and GNU tar without
+PAX can change the signed inventory. The verifier must remain strict.
+
+The rc.11 service unit declares `Delegate=cpu memory pids`. Systemd activates
+these controllers through the parent hierarchy at each boot, so the runtime's
+global cgroup subtree retains CPU, memory and PID enforcement after restart.
+The lab's controlled worker reboot found the missing CPU delegation; it must
+not be worked around by dropping CPU limits. Maintenance resume retries update
+Fleets only when counts or minimum_available actually differ, avoiding repeated
+rollouts while readiness is still converging.

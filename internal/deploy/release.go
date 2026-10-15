@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/consensus"
 	"github.com/antonismor/Titanus-Core/internal/durable"
@@ -84,7 +83,7 @@ func PrepareRelease(plan model.RealmPlan, output string) (PreparedInstallation, 
 		if err != nil {
 			return result, err
 		}
-		cert, key, e := auth.Issue("operator", nil, identity.RoleAdmin, 24*time.Hour)
+		cert, key, e := auth.Issue("operator", nil, identity.RoleAdmin, identity.DefaultLeafLifetime)
 		if e != nil {
 			return result, e
 		}
@@ -119,7 +118,7 @@ func PrepareRelease(plan model.RealmPlan, output string) (PreparedInstallation, 
 			if controller {
 				role = identity.RoleController
 			}
-			cert, key, e := auth.Issue(node.Name, []string{node.ManagementIP}, role, 24*time.Hour)
+			cert, key, e := auth.Issue(node.Name, []string{node.ManagementIP}, role, identity.DefaultLeafLifetime)
 			if e != nil {
 				return result, e
 			}

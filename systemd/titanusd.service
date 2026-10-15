@@ -12,6 +12,8 @@ Restart=on-failure
 RestartSec=3
 # Workloads and their host monitors outlive the daemon. Unit stop is explicit.
 KillMode=process
+# Activate controllers through systemd on every boot before runtime cgroups.
+Delegate=cpu memory pids
 RuntimeDirectory=titanus
 RuntimeDirectoryMode=0755
 LimitNOFILE=1048576

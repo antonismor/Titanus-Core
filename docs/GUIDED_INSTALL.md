@@ -50,7 +50,7 @@ protected CA key so M2 signing survives leader loss; workers receive only their
 own node leaf/key, CA and CRL. Operator admin credentials stay in the private
 local `operator/` directory. Keep the authority and these directories private;
 all secret files are mode 0600 and preparation directories mode 0700. Leaf/admin
-certificates have a 24-hour initial TTL: apply promptly and renew through the
+certificates have a 30-day default TTL and renew seven days before expiry through the
 existing authenticated PKI lifecycle. The tool does not print key material.
 
 Initial configuration contains digest-bound environments, PKI and per-voter

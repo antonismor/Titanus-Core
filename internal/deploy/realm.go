@@ -175,7 +175,7 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		if hasCapability(node, model.CapabilityControl) {
 			role = identity.RoleController
 		}
-		cert, key, err := auth.Issue(node.Name, []string{node.ManagementIP}, role, 24*time.Hour)
+		cert, key, err := auth.Issue(node.Name, []string{node.ManagementIP}, role, identity.DefaultLeafLifetime)
 		if err != nil {
 			return nil, fmt.Errorf("issue certificate for %s: %w", node.Name, err)
 		}

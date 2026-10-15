@@ -205,6 +205,7 @@ func main() {
 	go runtimeManager.RunHealth(ctx)
 	if envBool("TITANUS_CONTROLLER_MODE") {
 		go api.MaintainPKI(ctx)
+		go maintainDiskCatalogs(ctx, store, api.Disks)
 	}
 
 	controllerMode := envBool("TITANUS_CONTROLLER_MODE")

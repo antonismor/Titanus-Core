@@ -46,7 +46,7 @@ func (m *Manager) writers(spec Spec) ([]Writer, error) {
 		if err = m.verifyCephFSFencing(cfg); err != nil {
 			return nil, err
 		}
-		out, e := commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "ls", "--format", "json")...)
+		out, e := commandOutput("ceph", append(m.cephFenceArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "ls", "--format", "json")...)
 		if e != nil {
 			return nil, e
 		}
@@ -192,7 +192,7 @@ func (m *Manager) Fence(c Catalog, w Writer, check func() error) error {
 	if err = check(); err != nil {
 		return err
 	}
-	if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
+	if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
 		return err
 	}
 	if err = m.waitCephFSBlocklists(cfg, w.Address); err != nil {
@@ -202,7 +202,7 @@ func (m *Manager) Fence(c Catalog, w Writer, check func() error) error {
 		if err = check(); err != nil {
 			return err
 		}
-		if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "evict", "id="+strconv.FormatUint(w.Session, 10))...); err != nil {
+		if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "tell", "mds."+cfg.FSName+":0", "client", "evict", "id="+strconv.FormatUint(w.Session, 10))...); err != nil {
 			return err
 		}
 		// Eviction may install the default shorter expiry; restore the durable
@@ -210,7 +210,7 @@ func (m *Manager) Fence(c Catalog, w Writer, check func() error) error {
 		if err = check(); err != nil {
 			return err
 		}
-		if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
+		if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
 			return err
 		}
 	}
@@ -258,7 +258,7 @@ func (m *Manager) RefreshFence(c Catalog, w Writer, check func() error) error {
 	if err = check(); err != nil {
 		return err
 	}
-	if _, err = commandOutput("ceph", append(m.cephBaseArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
+	if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
 		return err
 	}
 	if err = m.waitCephFSBlocklists(cfg, w.Address); err != nil {

@@ -12,8 +12,11 @@ actual snapshot names. Set `fleet`, `auto_failover`, and `local_node` for local
 Disks, then POST the complete object to `/v1/realm/disks` as an administrator.
 Controllers validate remote identities and snapshot inventory against their own
 privately provisioned Ceph configuration. Registration/refresh is only allowed
-with no assignments for that Fleet. Identity, owning Fleet, local node and
-failover policy are immutable; snapshot inventory may be refreshed offline.
+with no assignments for that Fleet. Identity, owning Fleet and local node are immutable. Snapshot inventory and
+auto_failover policy may be refreshed only offline, with no Fleet assignments.
+A policy change is refused if any retained failover intent references the Disk,
+so existing fence renewal obligations cannot be changed. Local Disks remain
+pinned and never permit auto_failover.
 Remote data is never created/formatted by adoption. Every controller and
 participating node needs matching private Ceph configuration/credentials.
 

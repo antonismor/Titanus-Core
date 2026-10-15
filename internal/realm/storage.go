@@ -58,8 +58,15 @@ func (s *Store) PutDiskCatalog(c disk.Catalog) error {
 		s.data.Disks = map[string]disk.Catalog{}
 	}
 	if old, ok := s.data.Disks[c.Spec.Name]; ok {
-		if old.ID() != c.ID() || old.Fleet != c.Fleet || old.LocalNode != c.LocalNode || old.AutoFailover != c.AutoFailover {
+		if old.ID() != c.ID() || old.Fleet != c.Fleet || old.LocalNode != c.LocalNode {
 			return fmt.Errorf("registered Disk identity/ownership is immutable")
+		}
+		if old.AutoFailover != c.AutoFailover {
+			for _, intent := range s.data.StorageFailovers {
+				if _, retained := intent.Catalogs[c.Spec.Name]; retained {
+					return fmt.Errorf("retained storage fence prevents failover policy changes")
+				}
+			}
 		}
 	}
 	for _, f := range s.data.Fleets {

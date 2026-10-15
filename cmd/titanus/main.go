@@ -523,9 +523,21 @@ func runDisk(args []string) error {
 		if err != nil {
 			return err
 		}
+		catalogOnly := false
+		if state, realmErr := localclient.New(os.Getenv("TITANUS_SOCKET")).RealmState(); realmErr == nil {
+			items, catalogOnly, err = mergeDiskViews(items, state.Disks)
+			if err != nil {
+				return err
+			}
+		} else if len(items) == 0 {
+			return fmt.Errorf("local Disk catalog is empty; Realm catalog unavailable: %w", realmErr)
+		}
 		if len(items) == 0 {
 			fmt.Println("No Titanus Disks.")
 			return nil
+		}
+		if catalogOnly {
+			fmt.Println("Includes Realm Disk catalog entries not locally realized on this node:")
 		}
 		fmt.Printf("%-24s %-12s %-14s %-12s\n", "DISK", "PROVIDER", "SIZE-BYTES", "INITIALIZED")
 		for _, item := range items {
@@ -617,15 +629,18 @@ func runDisk(args []string) error {
 		cluster := fs.String("cluster", "ceph", "Ceph cluster name")
 		pool := fs.String("pool", "titanus", "RBD pool")
 		fsName := fs.String("fs", "cephfs", "CephFS filesystem name")
-		client := fs.String("client", "client.titanus", "Ceph client identity")
+		client := fs.String("client", "client.titanus", "Ceph data client identity")
 		conf := fs.String("conf", "/etc/ceph/ceph.conf", "Ceph configuration file")
-		keyring := fs.String("keyring", "", "optional Ceph keyring")
+		keyring := fs.String("keyring", "", "optional Ceph data keyring")
+		fenceClient := fs.String("fence-client", "", "optional Ceph fencing client identity")
+		fenceKeyring := fs.String("fence-keyring", "", "optional Ceph fencing keyring")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		cfg := disk.CephConfig{
 			Cluster: *cluster, Pool: *pool, FSName: *fsName,
 			Client: *client, Conf: *conf, Keyring: *keyring,
+			FenceClient: *fenceClient, FenceKeyring: *fenceKeyring,
 		}
 		if err := manager.ConfigureCeph(cfg); err != nil {
 			return err
@@ -731,7 +746,7 @@ func runRealm(args []string) error {
 		if err != nil {
 			return err
 		}
-		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.RoleController, 24*time.Hour)
+		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.RoleController, identity.DefaultLeafLifetime)
 		if err != nil {
 			return err
 		}
@@ -839,7 +854,7 @@ func runRealm(args []string) error {
 		if err != nil {
 			return err
 		}
-		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.Role(*role), 24*time.Hour)
+		cert, key, err := auth.Issue(*nodeID, []string{*address}, identity.Role(*role), identity.DefaultLeafLifetime)
 		if err != nil {
 			return err
 		}

@@ -47,6 +47,9 @@ def atomiclink(target,path):
  temp.symlink_to(target);os.replace(temp,path);syncdir(path.parent)
 def verified(bundle,inspect_binaries=True,checksum_data=None):
  allowed={'bin/titanus','bin/titanusd','bin/titanus-agent','bin/titanus-init','systemd/titanusd.service','systemd/titanus-agent.service','scripts/install-release.py','scripts/install-release.sh','docs/RELEASE.md','LICENSE','manifest.json'}
+ optional={'scripts/maintenance_transaction.py'}
+ required=allowed.copy()
+ allowed |= optional
  checksum=bundle/'SHA256SUMS'
  if checksum.is_symlink() or not checksum.is_file():raise ValueError('missing regular checksum list')
  seen=set()
@@ -56,7 +59,9 @@ def verified(bundle,inspect_binaries=True,checksum_data=None):
   src=bundle/name
   if src.is_symlink() or not src.is_file() or hashlib.sha256(src.read_bytes()).hexdigest()!=digest:raise ValueError('release checksum mismatch: '+name)
   seen.add(name)
- if seen!=allowed:raise ValueError('incomplete release')
+ if not required.issubset(seen):raise ValueError('incomplete release')
+ for name in optional:
+  if (bundle/name).exists() and name not in seen:raise ValueError('unverified optional release file')
  meta=json.loads((bundle/'manifest.json').read_text())
  if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',meta['version']) or not re.fullmatch('[0-9a-f]{40}',meta['revision']):raise ValueError('invalid release identity')
  arch={'x86_64':'amd64','aarch64':'arm64'}.get(platform.machine())

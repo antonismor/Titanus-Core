@@ -155,3 +155,46 @@ func TestFailedDurableIntentCannotAuthorizeFence(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestCatalogFailoverPolicyRequiresOfflineFleetAndNoRetainedFence(t *testing.T) {
+	s, a, c, root := storageFixture(t)
+	c.AutoFailover = false
+	if err := s.PutDiskCatalog(c); err == nil {
+		t.Fatal("live policy change accepted")
+	}
+	if err := s.SetAssignments(a.Fleet, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutDiskCatalog(c); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root, "LAB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Snapshot().Disks[c.Spec.Name].AutoFailover {
+		t.Fatal("offline policy not durable")
+	}
+	c.AutoFailover = true
+	if err := reopened.PutDiskCatalog(c); err != nil {
+		t.Fatal(err)
+	}
+	altered := c
+	altered.Backend.FSID = "other"
+	if err := reopened.PutDiskCatalog(altered); err == nil {
+		t.Fatal("policy update changed native identity")
+	}
+	if err := reopened.SetAssignments(a.Fleet, []Assignment{a}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.BeginStorageFailover(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.SetAssignments(a.Fleet, nil); err != nil {
+		t.Fatal(err)
+	}
+	c.AutoFailover = false
+	if err := reopened.PutDiskCatalog(c); err == nil {
+		t.Fatal("retained fencing policy changed")
+	}
+}
