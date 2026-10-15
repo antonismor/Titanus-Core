@@ -8,6 +8,7 @@ import (
 	"net"
 	"reflect"
 	"regexp"
+	"strings"
 )
 
 type Gateway struct {
@@ -145,4 +146,68 @@ func (s *Store) CompleteGatewayTransfer(intent GatewayTransfer, powerFenced bool
 	stored.PowerFenced = powerFenced
 	s.data.GatewayTransfers[intent.ID] = stored
 	return s.commitLocked()
+}
+
+// RecoverPowerFencedGatewayNode is an explicit operator recovery, never a Pulse
+// side-effect. Its caller must attest fresh identity and independent stale-writer
+// exclusion. A quorum commit persists the recovery before the node is eligible.
+func (s *Store) RecoverPowerFencedGatewayNode(id, evidence string) error {
+	s.lock()
+	defer s.unlock()
+	n, ok := s.data.Nodes[id]
+	if !ok || (!n.PowerQuarantined && !n.StorageQuarantined) || n.State != NodeReady {
+		return fmt.Errorf("node is not eligible for reviewed fence recovery")
+	}
+	if len(strings.TrimSpace(evidence)) < 48 {
+		return fmt.Errorf("recovery requires detailed operator exclusion evidence")
+	}
+	if n.PowerQuarantined {
+		fenced := false
+		for _, intent := range s.data.GatewayTransfers {
+			if intent.Complete && intent.PowerFenced && intent.Gateway.Owner == id {
+				fenced = true
+			}
+			if !intent.Complete && (intent.Gateway.Owner == id || intent.Destination == id) {
+				return fmt.Errorf("node has a pending Gateway transfer")
+			}
+		}
+		if !fenced {
+			return fmt.Errorf("node has no verified historical power fence")
+		}
+	}
+	if n.StorageQuarantined {
+		completed := false
+		for _, intent := range s.data.StorageFailovers {
+			if intent.Assignment.NodeID != id {
+				continue
+			}
+			if !intent.Completed {
+				return fmt.Errorf("node has a pending storage failover")
+			}
+			completed = true
+		}
+		if !completed {
+			return fmt.Errorf("node has no completed storage fence")
+		}
+	}
+	for _, g := range s.data.Gateways {
+		if g.Owner == id || g.Standby == id {
+			return fmt.Errorf("node still references a Gateway")
+		}
+	}
+	for _, a := range s.data.Assignments {
+		if a.NodeID == id {
+			return fmt.Errorf("node still has a Realm assignment")
+		}
+	}
+	oldPower, oldStorage := n.PowerQuarantined, n.StorageQuarantined
+	n.PowerQuarantined = false
+	n.StorageQuarantined = false
+	s.data.Nodes[id] = n
+	if err := s.commitLocked(); err != nil {
+		n.PowerQuarantined, n.StorageQuarantined = oldPower, oldStorage
+		s.data.Nodes[id] = n
+		return err
+	}
+	return nil
 }

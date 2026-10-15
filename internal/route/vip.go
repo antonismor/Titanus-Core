@@ -60,7 +60,29 @@ func (l LinuxVIP) Add(g realm.Gateway) error {
 		return err
 	}
 	_, err := l.run("address", "add", g.VIP, "dev", g.Device)
-	return err
+	if err != nil {
+		return err
+	}
+	// A floating VIP must advertise the new L2 owner; otherwise clients can
+	// retain the former node MAC until their neighbor cache expires.
+	ip, _, err := net.ParseCIDR(g.VIP)
+	if err != nil {
+		return err
+	}
+	iface, err := net.InterfaceByName(g.Device)
+	if err != nil {
+		return err
+	}
+	if iface.Flags&net.FlagLoopback != 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "busybox", "arping", "-U", "-q", "-c", "3", "-I", g.Device, ip.String()).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("VIP announced but gratuitous ARP failed: %w (%s)", err, out)
+	}
+	return nil
 }
 func (l LinuxVIP) Remove(g realm.Gateway) error {
 	if err := g.Validate(); err != nil {
