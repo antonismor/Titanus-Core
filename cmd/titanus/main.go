@@ -118,6 +118,21 @@ func dispatch(args []string) error {
 		}
 		return runPreflightFile(args[1])
 	case "deploy":
+		if len(args) >= 2 && args[1] == "ceph" {
+			if len(args) != 3 {
+				return fmt.Errorf("usage: titanus deploy ceph PLAN")
+			}
+			plan, err := model.LoadPlan(args[2])
+			if err != nil {
+				return err
+			}
+			result, err := deploy.NewCephDeployer().Deploy(plan)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Titanus Ceph provisioning complete: %d MON, %d OSD, FSID %s\\n", result.Monitors, result.OSDs, result.FSID)
+			return nil
+		}
 		if len(args) >= 2 && args[1] == "release" {
 			return runReleaseDeploy(args[2:])
 		}
