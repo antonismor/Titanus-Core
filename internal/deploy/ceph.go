@@ -132,6 +132,9 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	if err := d.startManagers(storage); err != nil {
 		return CephDeployResult{}, err
 	}
+	if err := d.applyManagerCompatibilityPolicy(primary); err != nil {
+		return CephDeployResult{}, err
+	}
 	if err := d.provisionOSDs(storage); err != nil {
 		return CephDeployResult{}, err
 	}
@@ -349,6 +352,17 @@ func (d *CephDeployer) waitForQuorum(primary model.NodeSpec) error {
 		"$SUDO timeout 10s ceph -s; exit 1"
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("Ceph monitor quorum did not become healthy: %w", err)
+	}
+	return nil
+}
+
+func cephReefManagerPolicyCommand() string {
+	return cephSudoPrefix + `; if { grep -Eq '^VERSION_ID="?13"?$' /etc/os-release && ceph --version | grep -q '^ceph version 18\.2\.7 '; }; then if $SUDO ceph mgr module ls --format json | python3 -c 'import json,sys; sys.exit(0 if "restful" in json.load(sys.stdin).get("enabled_modules", []) else 1)'; then $SUDO ceph mgr module disable restful; fi; fi`
+}
+
+func (d *CephDeployer) applyManagerCompatibilityPolicy(primary model.NodeSpec) error {
+	if _, err := d.SSH.Run(primary, cephReefManagerPolicyCommand()); err != nil {
+		return fmt.Errorf("apply Ceph manager compatibility policy: %w", err)
 	}
 	return nil
 }
