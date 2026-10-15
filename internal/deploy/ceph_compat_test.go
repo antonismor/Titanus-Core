@@ -63,3 +63,32 @@ func TestCephBootstrapMonmapCreationIsRerunnable(t *testing.T) {
 		t.Fatalf("Ceph bootstrap monmap must preserve the cluster FSID: %s", cmd)
 	}
 }
+
+func TestDebian13ReefManagerPolicyDisablesOnlyOptionalBrokenRestful(t *testing.T) {
+	cmd := cephReefManagerPolicyCommand()
+	for _, required := range []string{
+		`VERSION_ID="?13"?`,
+		`ceph version 18\.2\.7`,
+		`enabled_modules`,
+		`"restful"`,
+		`ceph mgr module disable restful`,
+	} {
+		if !strings.Contains(cmd, required) {
+			t.Fatalf("manager compatibility policy missing guard/action %q: %s", required, cmd)
+		}
+	}
+	for _, forbidden := range []string{
+		"module disable volumes",
+		"module disable rbd_support",
+		"module disable status",
+	} {
+		if strings.Contains(cmd, forbidden) {
+			t.Fatalf("manager compatibility policy must not disable required module %q: %s", forbidden, cmd)
+		}
+	}
+	shell := exec.Command("bash", "-n")
+	shell.Stdin = strings.NewReader(cmd)
+	if output, err := shell.CombinedOutput(); err != nil {
+		t.Fatalf("manager compatibility policy is not valid shell: %v: %s", err, output)
+	}
+}
