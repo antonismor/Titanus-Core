@@ -86,6 +86,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/identity/renew", s.authorize(s.certificateRenewal))
 	mux.HandleFunc("/v1/realm/state", s.authorize(s.state))
 	mux.HandleFunc("/v1/realm/nodes", s.authorize(s.nodes))
+	mux.HandleFunc("/v1/realm/nodes/recover-power", s.authorize(s.recoverPowerGatewayNode))
 	mux.HandleFunc("/v1/realm/pulse", s.authorize(s.pulse))
 	mux.HandleFunc("/v1/realm/fleets", s.authorize(s.fleets))
 	mux.HandleFunc("/v1/realm/fleets/", s.authorize(s.fleetObject))
@@ -737,4 +738,33 @@ func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	})
+}
+
+func (s *Server) recoverPowerGatewayNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	p, ok := identity.RequestPrincipal(r)
+	if !ok || p.Role != identity.RoleAdmin {
+		writeError(w, http.StatusForbidden, fmt.Errorf("admin identity required"))
+		return
+	}
+	if err := s.Store.CheckLeader(); err != nil {
+		writeError(w, 503, err)
+		return
+	}
+	var req struct {
+		Node     string `json:"node"`
+		Evidence string `json:"evidence"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	if err := s.Store.RecoverPowerFencedGatewayNode(req.Node, req.Evidence); err != nil {
+		writeError(w, 409, err)
+		return
+	}
+	writeJSON(w, 200, s.Store.Snapshot().Nodes[req.Node])
 }
