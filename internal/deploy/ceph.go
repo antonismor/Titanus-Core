@@ -67,6 +67,9 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	if err := d.installPackages(plan); err != nil {
 		return CephDeployResult{}, err
 	}
+	if err := d.prepareManagerCompatibility(storage); err != nil {
+		return CephDeployResult{}, err
+	}
 	primary := storage[0]
 
 	fsid, err := d.ensureFSID(primary)
@@ -118,6 +121,9 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	if err := d.waitForQuorum(primary); err != nil {
 		return CephDeployResult{}, err
 	}
+	if err := d.hardenMonitors(primary); err != nil {
+		return CephDeployResult{}, err
+	}
 	// Ceph Squid 19.2.6+ introduces aes256k for CephX. Prefer it
 	// before any new OSD, MGR, MDS or client credentials are created.
 	if _, err := d.SSH.Run(primary, cephSudoPrefix+"; if $SUDO ceph config help auth_preferred_cipher >/dev/null 2>&1; then $SUDO ceph config set mon auth_preferred_cipher aes256k; fi"); err != nil {
@@ -134,6 +140,9 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	}
 	if plan.Ceph.EnableCephFS {
 		if err := d.startMDS(storage); err != nil {
+			return CephDeployResult{}, err
+		}
+		if err := d.waitForCephFSVolumeAPI(primary); err != nil {
 			return CephDeployResult{}, err
 		}
 	}
@@ -208,6 +217,26 @@ func (d *CephDeployer) installPackages(plan model.RealmPlan) error {
 			"$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y " + strings.Join(packages, " ")
 		if _, err := d.SSH.Run(node, cmd); err != nil {
 			return fmt.Errorf("install Ceph packages on %s: %w", node.Name, err)
+		}
+	}
+	return nil
+}
+
+func cephReefManagerCompatibilityCommand() string {
+	return cephSudoPrefix + `; mgr=/usr/share/ceph/mgr/mgr_util.py; marker='# Titanus Debian 13 Reef PyO3 compatibility'; changed=0; if { grep -Eq '^VERSION_ID="?13"?$' /etc/os-release && ceph --version | grep -q '^ceph version 18\.2\.7 '; }; then py=$(python3 -c 'import sys; print("%d.%d" % (sys.version_info.major, sys.version_info.minor))'); if [ "$py" != 3.13 ]; then echo 'unexpected Python for guarded Debian 13 Ceph Reef compatibility' >&2; exit 1; fi; if $SUDO grep -qx "$marker" "$mgr"; then :; elif [ "$($SUDO grep -cx '^import bcrypt$' "$mgr")" = 1 ] && [ "$($SUDO grep -c '^def password_hash(' "$mgr")" = 1 ]; then if ! $SUDO test -e "$mgr.titanus-original"; then $SUDO cp -a "$mgr" "$mgr.titanus-original"; fi; $SUDO sed -i 's/^import bcrypt$/# Titanus Debian 13 Reef PyO3 compatibility/' "$mgr"; $SUDO sed -i '/^def password_hash(/a\    import bcrypt' "$mgr"; changed=1; else echo 'refusing unknown Debian 13 Ceph Reef mgr_util.py layout' >&2; exit 1; fi; $SUDO grep -qx "$marker" "$mgr"; $SUDO sed -n '/^def password_hash(/,+2p' "$mgr" | grep -q '^    import bcrypt$'; if [ "$changed" = 1 ]; then for unit in $($SUDO systemctl list-units --type=service --state=running --no-legend 'ceph-mgr@*.service' | awk '{print $1}'); do $SUDO systemctl restart "$unit"; done; fi; fi`
+}
+
+// Debian 13 ships Ceph Reef 18.2.7 with a Python 3.13 bcrypt/PyO3
+// incompatibility: mgr_util imports bcrypt in every ceph-mgr subinterpreter,
+// which prevents required modules such as volumes and rbd_support from loading.
+// Upstream Ceph moved crypto work out of subinterpreters in newer releases.
+// This narrow, idempotent shim keeps bcrypt lazy on the affected package only;
+// unknown layouts are refused rather than modified.
+func (d *CephDeployer) prepareManagerCompatibility(nodes []model.NodeSpec) error {
+	cmd := cephReefManagerCompatibilityCommand()
+	for _, node := range nodes {
+		if _, err := d.SSH.Run(node, cmd); err != nil {
+			return fmt.Errorf("prepare Ceph manager compatibility on %s: %w", node.Name, err)
 		}
 	}
 	return nil
@@ -320,6 +349,16 @@ func (d *CephDeployer) waitForQuorum(primary model.NodeSpec) error {
 	return nil
 }
 
+func (d *CephDeployer) hardenMonitors(primary model.NodeSpec) error {
+	cmd := cephSudoPrefix + "; " +
+		"$SUDO ceph mon enable-msgr2; " +
+		"$SUDO ceph config set mon auth_allow_insecure_global_id_reclaim false"
+	if _, err := d.SSH.Run(primary, cmd); err != nil {
+		return fmt.Errorf("harden Ceph monitor transport/authentication: %w", err)
+	}
+	return nil
+}
+
 func (d *CephDeployer) startManagers(nodes []model.NodeSpec) error {
 	limit := len(nodes)
 	if limit > 2 {
@@ -400,6 +439,18 @@ func (d *CephDeployer) startMDS(nodes []model.NodeSpec) error {
 		if _, err := d.SSH.Run(node, cmd); err != nil {
 			return fmt.Errorf("start Ceph MDS %s: %w", node.Name, err)
 		}
+	}
+	return nil
+}
+
+func (d *CephDeployer) waitForCephFSVolumeAPI(primary model.NodeSpec) error {
+	cmd := cephSudoPrefix + "; " +
+		"for i in $(seq 1 60); do " +
+		"if $SUDO timeout 10s ceph fs subvolume ls titanusfs --format json >/dev/null 2>&1; then exit 0; fi; " +
+		"sleep 2; done; " +
+		"$SUDO timeout 10s ceph fs subvolume ls titanusfs --format json; exit 1"
+	if _, err := d.SSH.Run(primary, cmd); err != nil {
+		return fmt.Errorf("CephFS volumes manager API did not become available: %w", err)
 	}
 	return nil
 }
