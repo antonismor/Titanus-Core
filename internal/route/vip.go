@@ -69,6 +69,13 @@ func (l LinuxVIP) Add(g realm.Gateway) error {
 	if err != nil {
 		return err
 	}
+	iface, err := net.InterfaceByName(g.Device)
+	if err != nil {
+		return err
+	}
+	if iface.Flags&net.FlagLoopback != 0 {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "busybox", "arping", "-U", "-q", "-c", "3", "-I", g.Device, ip.String()).CombinedOutput()
