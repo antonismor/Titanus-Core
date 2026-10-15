@@ -130,7 +130,7 @@ func dispatch(args []string) error {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Titanus Ceph provisioning complete: %d MON, %d OSD, FSID %s\\n", result.Monitors, result.OSDs, result.FSID)
+			fmt.Printf("Titanus Ceph provisioning complete: %d MON, %d OSD, FSID %s\n", result.Monitors, result.OSDs, result.FSID)
 			return nil
 		}
 		if len(args) >= 2 && args[1] == "release" {
@@ -145,7 +145,7 @@ func dispatch(args []string) error {
 		if len(args) >= 2 && args[1] == "realm" {
 			return runRealmDeploy(args[2:])
 		}
-		return fmt.Errorf("usage: titanus deploy <bootstrap|realm> ...")
+		return fmt.Errorf("usage: titanus deploy <bootstrap|realm|release|ceph> ...")
 	case "help", "--help", "-h":
 		printHelp()
 		return nil
