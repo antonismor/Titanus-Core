@@ -132,6 +132,9 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	if err := d.startManagers(storage); err != nil {
 		return CephDeployResult{}, err
 	}
+	if err := d.applyManagerCompatibilityPolicy(primary); err != nil {
+		return CephDeployResult{}, err
+	}
 	if err := d.provisionOSDs(storage); err != nil {
 		return CephDeployResult{}, err
 	}
@@ -291,11 +294,15 @@ func (d *CephDeployer) ensureBootstrapArtifacts(primary model.NodeSpec, monitors
 		"$SUDO ceph-authtool --create-keyring /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring $keyType --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'; fi; " +
 		"$SUDO ceph-authtool /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --import-keyring /var/lib/titanus/ceph/bootstrap/ceph.client.admin.keyring; " +
 		"$SUDO ceph-authtool /var/lib/titanus/ceph/bootstrap/ceph.mon.keyring --import-keyring /var/lib/titanus/ceph/bootstrap/ceph.bootstrap-osd.keyring; " +
-		"$SUDO monmaptool --create" + monmapArgs.String() + " --fsid " + shellQuote(fsid) + " /var/lib/titanus/ceph/bootstrap/monmap"
+		cephMonmapCreateCommand(monmapArgs.String(), fsid, "/var/lib/titanus/ceph/bootstrap/monmap")
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("create Ceph bootstrap artifacts on %s: %w", primary.Name, err)
 	}
 	return nil
+}
+
+func cephMonmapCreateCommand(monmapArgs, fsid, output string) string {
+	return "$SUDO monmaptool --create --clobber" + monmapArgs + " --fsid " + shellQuote(fsid) + " " + shellQuote(output)
 }
 
 func (d *CephDeployer) distributeBootstrap(nodes []model.NodeSpec, artifacts map[string]string) error {
@@ -345,6 +352,19 @@ func (d *CephDeployer) waitForQuorum(primary model.NodeSpec) error {
 		"$SUDO timeout 10s ceph -s; exit 1"
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("Ceph monitor quorum did not become healthy: %w", err)
+	}
+	return nil
+}
+
+// Reef restful imports another PyO3 extension in a mgr subinterpreter.
+// Titanus does not use this optional API; required always-on modules stay enabled.
+func cephReefManagerPolicyCommand() string {
+	return cephSudoPrefix + `; if { grep -Eq '^VERSION_ID="?13"?$' /etc/os-release && ceph --version | grep -q '^ceph version 18\.2\.7 '; }; then modules=$($SUDO ceph mgr module ls --format json); enabled=$(printf '%s' "$modules" | python3 -c 'import json,sys; print(int("restful" in json.load(sys.stdin).get("enabled_modules", [])))'); if [ "$enabled" = 1 ]; then $SUDO ceph mgr module disable restful; fi; fi`
+}
+
+func (d *CephDeployer) applyManagerCompatibilityPolicy(primary model.NodeSpec) error {
+	if _, err := d.SSH.Run(primary, cephReefManagerPolicyCommand()); err != nil {
+		return fmt.Errorf("apply Ceph manager compatibility policy: %w", err)
 	}
 	return nil
 }
