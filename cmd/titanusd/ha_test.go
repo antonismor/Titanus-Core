@@ -166,6 +166,9 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 		}
 		processes[i] = cmd
 	}
+	// Fixture clients must never fall back to the host's installed HA config.
+	// A not-yet-initialized local daemon must remain unavailable to this test.
+	t.Setenv("TITANUS_HA_CONFIG", filepath.Join(t.TempDir(), "no-host-fallback.json"))
 	clients := [3]*localclient.Client{}
 	for i := 0; i < 3; i++ {
 		clients[i] = localclient.New(sockets[i])
@@ -181,7 +184,9 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 				}
 				status, e := c.ConsensusStatus()
 				if e == nil && status["state"] == "Leader" {
-					if _, e = c.RealmState(); e == nil {
+					// A readable snapshot may still be the empty pre-initialization FSM.
+					// Require committed seed state before restarting any legacy voter.
+					if state, e := c.RealmState(); e == nil && state.Name == "HA-CI" && state.Revision > 0 {
 						return i
 					}
 				}
