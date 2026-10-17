@@ -192,7 +192,7 @@ func (m *Manager) Fence(c Catalog, w Writer, check func() error) error {
 	if err = check(); err != nil {
 		return err
 	}
-	if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
+	if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", blocklistAddress(w.Address), expiry)...); err != nil {
 		return err
 	}
 	if err = m.waitCephFSBlocklists(cfg, w.Address); err != nil {
@@ -210,7 +210,7 @@ func (m *Manager) Fence(c Catalog, w Writer, check func() error) error {
 		if err = check(); err != nil {
 			return err
 		}
-		if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
+		if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", blocklistAddress(w.Address), expiry)...); err != nil {
 			return err
 		}
 	}
@@ -258,7 +258,7 @@ func (m *Manager) RefreshFence(c Catalog, w Writer, check func() error) error {
 	if err = check(); err != nil {
 		return err
 	}
-	if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", w.Address, expiry)...); err != nil {
+	if _, err = commandOutput("ceph", append(m.cephFenceArgs(cfg), "osd", "blocklist", "add", blocklistAddress(w.Address), expiry)...); err != nil {
 		return err
 	}
 	if err = m.waitCephFSBlocklists(cfg, w.Address); err != nil {

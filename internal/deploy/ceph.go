@@ -490,12 +490,21 @@ func (d *CephDeployer) startRGW(node model.NodeSpec) error {
 	return nil
 }
 
+// Preserve existing CephX keys while converging capabilities on a resumed
+// provisioning run. KRBD needs the monitor RBD profile to replace a fenced
+// exclusive-lock owner; plain monitor read access cannot perform that handoff.
+func cephClientIdentityCommand(dataKeyring, fenceKeyring string) string {
+	return cephSudoPrefix + "; " +
+		"$SUDO ceph auth get-or-create client.titanus -o " + shellQuote(dataKeyring) + "; " +
+		"$SUDO ceph auth caps client.titanus mon 'profile rbd' mgr 'allow rw' osd 'allow rwx' mds 'allow rw'; " +
+		"$SUDO ceph auth get-or-create client.titanus-fence -o " + shellQuote(fenceKeyring) + "; " +
+		"$SUDO ceph auth caps client.titanus-fence mon 'allow r, allow command \"osd blocklist\" with blocklistop=add' osd 'allow *' mds 'allow *'"
+}
+
 func (d *CephDeployer) configureTitanusClient(primary model.NodeSpec, allNodes []model.NodeSpec, tempDir string) error {
 	remoteKeyring := "/var/lib/titanus/ceph/ceph.client.titanus.keyring"
 	remoteFenceKeyring := "/var/lib/titanus/ceph/ceph.client.titanus-fence.keyring"
-	cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " +
-		"$SUDO ceph auth get-or-create client.titanus mon 'allow r' mgr 'allow rw' osd 'allow rwx' mds 'allow rw' -o " + remoteKeyring + "; " +
-		"$SUDO ceph auth get-or-create client.titanus-fence mon 'allow r, allow command \"osd blocklist\" with blocklistop=add' osd 'allow *' mds 'allow *' -o " + remoteFenceKeyring
+	cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /var/lib/titanus/ceph; " + cephClientIdentityCommand(remoteKeyring, remoteFenceKeyring)
 	if _, err := d.SSH.Run(primary, cmd); err != nil {
 		return fmt.Errorf("create Titanus CephX identities: %w", err)
 	}
