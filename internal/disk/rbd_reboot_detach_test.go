@@ -14,6 +14,7 @@ func TestDetachStaleRBDMappingAfterRebootFailsClosedOnAmbiguity(t *testing.T) {
 	}{
 		{"absent", "[]", true, false},
 		{"current", `[{"pool":"titanus","name":"data","device":"/dev/rbd0"}]`, true, true},
+		{"current-with-retained-fenced-mapping", `[{"pool":"titanus","name":"data","device":"/dev/rbd1"},{"pool":"titanus","name":"data","device":"/dev/rbd0"}]`, true, true},
 		{"unknown", "null", false, false},
 		{"malformed", "[] diagnostic", false, false},
 		{"foreign-device", `[{"pool":"titanus","name":"other","device":"/dev/rbd0"}]`, false, false},

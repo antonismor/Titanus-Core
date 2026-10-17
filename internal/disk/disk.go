@@ -412,12 +412,13 @@ func (m *Manager) detach(name string) error {
 					return fmt.Errorf("native RBD mapping inventory is unavailable")
 				}
 				matched := false
+				alternate := false
 				for _, mapping := range mappings {
 					if mapping.Device == "" || mapping.Pool == "" || mapping.Name == "" {
 						return fmt.Errorf("invalid native RBD mapping inventory")
 					}
 					if mapping.Pool == cfg.Pool && mapping.Name == name && mapping.Namespace == "" && mapping.Device != device {
-						return fmt.Errorf("Disk is mapped under a different RBD device; reconcile explicitly")
+						alternate = true
 					}
 					if mapping.Device == device {
 						if mapping.Pool != cfg.Pool || mapping.Name != name || mapping.Namespace != "" {
@@ -425,6 +426,12 @@ func (m *Manager) detach(name string) error {
 						}
 						matched = true
 					}
+				}
+				// A retained fenced mapping may coexist with the current mapping.
+				// Detach the exact saved device only when its native identity matches.
+				// An alternate mapping forbids retiring an absent saved marker.
+				if !matched && alternate {
+					return fmt.Errorf("Disk is mapped under a different RBD device; reconcile explicitly")
 				}
 				// After a kernel reboot, the saved device can be absent. A complete
 				// native inventory and the caller's local attachment lock allow
