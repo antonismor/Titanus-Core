@@ -400,31 +400,48 @@ func (m *Manager) detach(name string) error {
 					return e
 				}
 				var mappings []struct {
-					Pool   string `json:"pool"`
-					Name   string `json:"name"`
-					Device string `json:"device"`
+					Pool      string `json:"pool"`
+					Namespace string `json:"namespace"`
+					Name      string `json:"name"`
+					Device    string `json:"device"`
 				}
 				if e = json.Unmarshal([]byte(list), &mappings); e != nil {
 					return e
 				}
+				if mappings == nil {
+					return fmt.Errorf("native RBD mapping inventory is unavailable")
+				}
 				matched := false
 				for _, mapping := range mappings {
+					if mapping.Device == "" || mapping.Pool == "" || mapping.Name == "" {
+						return fmt.Errorf("invalid native RBD mapping inventory")
+					}
+					if mapping.Pool == cfg.Pool && mapping.Name == name && mapping.Namespace == "" && mapping.Device != device {
+						return fmt.Errorf("Disk is mapped under a different RBD device; reconcile explicitly")
+					}
 					if mapping.Device == device {
-						if mapping.Pool != cfg.Pool || mapping.Name != name {
+						if mapping.Pool != cfg.Pool || mapping.Name != name || mapping.Namespace != "" {
 							return fmt.Errorf("saved RBD device belongs to another Disk")
 						}
 						matched = true
 					}
 				}
-				if !matched {
-					return fmt.Errorf("saved RBD mapping is absent; reconcile explicitly")
-				}
-				args := append(m.rbdBaseArgs(cfg), "unmap", device)
-				if out, unmapErr := commandOutput("rbd", args...); unmapErr != nil {
-					return fmt.Errorf("unmap Ceph RBD: %w: %s", unmapErr, out)
+				// After a kernel reboot, the saved device can be absent. A complete
+				// native inventory and the caller's local attachment lock allow
+				// retiring only this stale local marker; never reacquire the Disk.
+				if matched {
+					args := append(m.rbdBaseArgs(cfg), "unmap", device)
+					if out, unmapErr := commandOutput("rbd", args...); unmapErr != nil {
+						return fmt.Errorf("unmap Ceph RBD: %w: %s", unmapErr, out)
+					}
 				}
 			}
-			_ = os.Remove(devicePath)
+			if e := os.Remove(devicePath); e != nil && !os.IsNotExist(e) {
+				return e
+			}
+			if e := syncDirectory(filepath.Dir(devicePath)); e != nil {
+				return e
+			}
 		}
 	}
 	return nil
