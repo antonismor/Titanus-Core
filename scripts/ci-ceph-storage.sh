@@ -21,6 +21,7 @@ cleanup() {
   status=$?
   if (( status != 0 )); then
     timeout 10 ceph -s || true
+    dmesg | tail -n 60 || true
     tail -n 80 "$root"/*.stdout "$root"/*.log || true
   fi
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
@@ -46,9 +47,10 @@ mon host = 127.0.0.1
 monmap = $root/monmap
 public network = 127.0.0.0/8
 cluster network = 127.0.0.0/8
-auth cluster required = none
-auth service required = none
-auth client required = none
+auth cluster required = cephx
+auth service required = cephx
+auth client required = cephx
+keyring = $root/ceph.client.admin.keyring
 mon allow pool delete = true
 mon allow pool size one = true
 osd pool default size = 1
@@ -62,15 +64,24 @@ mds data = $root/mds.\$id
 run dir = $root
 log file = $root/\$name.log
 pid file = $root/\$name.pid
+[mon]
+keyring = $root/mon.keyring
 [osd]
+keyring = $root/osd.\$id/keyring
 osd memory target = 536870912
+[mgr]
+keyring = $root/mgr.\$id/keyring
 [mds]
+keyring = $root/mds.\$id/keyring
 mds session blocklist on evict = true
 mds session blocklist on timeout = true
 CFG
 mkdir -p "$root"/{mon.a,mgr.a,mds.a,osd.0}
 monmaptool --create --add a 127.0.0.1 --fsid "$uuid" "$root/monmap"
-ceph-mon -i a --mkfs --monmap "$root/monmap" -c "$conf"
+ceph-authtool --create-keyring "$root/mon.keyring" --gen-key -n mon. --cap mon 'allow *'
+ceph-authtool --create-keyring "$root/ceph.client.admin.keyring" --gen-key -n client.admin --cap mon 'allow *' --cap mgr 'allow *' --cap osd 'allow *' --cap mds 'allow *'
+ceph-authtool "$root/mon.keyring" --import-keyring "$root/ceph.client.admin.keyring"
+ceph-mon -i a --mkfs --monmap "$root/monmap" --keyring "$root/mon.keyring" -c "$conf"
 ceph-mon -i a -f -c "$conf" >"$root/mon.stdout" 2>&1 & pids+=("$!")
 for attempt in $(seq 1 60); do if timeout 3 ceph -s >/dev/null 2>&1; then break; fi; sleep 1; done
 ceph -s
@@ -78,6 +89,7 @@ actual_fsid=$(ceph fsid)
 if [[ "$actual_fsid" != "$uuid" ]]; then echo 'Native Ceph monitor FSID differs from fixture' >&2; exit 1; fi
 osd_uuid=$(cat /proc/sys/kernel/random/uuid)
 ceph osd new "$osd_uuid"
+ceph auth get-or-create osd.0 mon 'profile osd' mgr 'profile osd' osd 'allow *' -o "$root/osd.0/keyring"
 truncate -s 4G "$root/osd.0/block"
 if ! ceph-osd -i 0 --mkfs --osd-uuid "$osd_uuid" -c "$conf"; then
   lscpu
@@ -90,10 +102,11 @@ if [[ $(cat "$root/osd.0/ceph_fsid") != "$uuid" ]]; then echo 'Native Ceph OSD F
 ceph osd crush add osd.0 1 root=default host=ci
 # MonMap::build_initial can prefer bootstrap-config addresses over the local
 # FSID before the live monmap arrives. Pin this disposable OSD to the generated
-# map and local configuration; an auth-none startup command must never race
+# map and local configuration; an authenticated startup command must never race
 # with discovery using an all-zero cluster identity. Storage assertions below
 # still require an actually up/in OSD, real I/O, fencing and retained data.
 ceph-osd -i 0 -f -c "$conf" --no-mon-config --monmap "$root/monmap" >"$root/osd.stdout" 2>&1 & pids+=("$!")
+ceph auth get-or-create mgr.a mon 'profile mgr' osd 'allow *' mds 'allow *' -o "$root/mgr.a/keyring"
 ceph-mgr -i a -f -c "$conf" >"$root/mgr.stdout" 2>&1 & pids+=("$!")
 mgr_ready=0
 for attempt in $(seq 1 60); do if ceph mgr dump -f json | jq -e '.active_name == "a"' >/dev/null; then mgr_ready=1; break; fi; sleep 1; done
@@ -110,6 +123,7 @@ rbd pool init titanus
 ceph osd pool create cephfs_meta 8
 ceph osd pool create cephfs_data 8
 ceph fs new cephfs cephfs_meta cephfs_data --force
+ceph auth get-or-create mds.a mon 'profile mds' osd 'allow *' mds 'allow' -o "$root/mds.a/keyring"
 ceph-mds -i a -f -c "$conf" >"$root/mds.stdout" 2>&1 & pids+=("$!")
 ceph mgr module enable volumes
 mds_ready=0
@@ -127,6 +141,16 @@ mkdir -p "$root/failover-source/bin"
 cp "$(command -v busybox)" "$root/failover-source/bin/busybox"
 ln -s busybox "$root/failover-source/bin/sh"
 CGO_ENABLED=0 go build -o "$root/titanus-init" ./cmd/titanus-init
+# Exercise the production identity migration against enforced CephX, then use
+# those separate data/fencing identities for the actual stale-writer handoff.
+export TITANUS_CEPHX_PROVISION_TEST=1
+export TITANUS_CEPHX_DATA_KEYRING="$root/ceph.client.titanus.keyring"
+export TITANUS_CEPHX_FENCE_KEYRING="$root/ceph.client.titanus-fence.keyring"
+go test ./internal/deploy -run '^TestNativeCephClientResumePreservesKeys$' -count=1 -v -timeout 90s
+export TITANUS_STORAGE_DATA_CLIENT=client.titanus
+export TITANUS_STORAGE_DATA_KEYRING="$TITANUS_CEPHX_DATA_KEYRING"
+export TITANUS_STORAGE_FENCE_CLIENT=client.titanus-fence
+export TITANUS_STORAGE_FENCE_KEYRING="$TITANUS_CEPHX_FENCE_KEYRING"
 export TITANUS_STORAGE_FAILOVER_TEST=1 TITANUS_INIT_BINARY="$root/titanus-init" TITANUS_FAILOVER_SOURCE="$root/failover-source"
 go test ./internal/reconcile -run '^TestNativeAutomaticStorageFailover$' -count=1 -v -timeout 8m
 

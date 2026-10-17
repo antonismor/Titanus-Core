@@ -71,6 +71,16 @@ func TestNativeAutomaticStorageFailover(t *testing.T) {
 		t.Skip("requires native Ceph, namespaces/cgroups and init")
 	}
 	cfg := disk.CephConfig{Cluster: "ceph", Pool: "titanus", FSName: "cephfs", Client: "client.admin", Conf: os.Getenv("TITANUS_CEPH_CONF")}
+	if client := os.Getenv("TITANUS_STORAGE_DATA_CLIENT"); client != "" {
+		cfg.Client = client
+		cfg.Keyring = os.Getenv("TITANUS_STORAGE_DATA_KEYRING")
+		cfg.FenceClient = os.Getenv("TITANUS_STORAGE_FENCE_CLIENT")
+		cfg.FenceKeyring = os.Getenv("TITANUS_STORAGE_FENCE_KEYRING")
+		if cfg.Keyring == "" || cfg.FenceClient == "" || cfg.FenceKeyring == "" {
+			t.Fatal("authenticated storage test requires separate data/fencing keyrings")
+		}
+	}
+
 	controllerRoot := t.TempDir()
 	for _, provider := range []disk.Provider{disk.ProviderCephRBD, disk.ProviderCephFS} {
 		t.Run(string(provider), func(t *testing.T) {
