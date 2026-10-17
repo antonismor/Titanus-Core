@@ -21,6 +21,7 @@ cleanup() {
   status=$?
   if (( status != 0 )); then
     timeout 10 ceph -s || true
+    dmesg | tail -n 60 || true
     tail -n 80 "$root"/*.stdout "$root"/*.log || true
   fi
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done

@@ -52,7 +52,7 @@ func TestNativeCephClientResumePreservesKeys(t *testing.T) {
 		if e = json.Unmarshal(out, &entries); e != nil {
 			t.Fatal(e)
 		}
-		if len(entries) != 1 || entries[0].Caps["mon"] != "profile rbd" {
+		if len(entries) != 1 || entries[0].Caps["mon"] != "allow r, profile rbd" {
 			t.Fatal("resumed client lacks native RBD lock-takeover authority")
 		}
 	}

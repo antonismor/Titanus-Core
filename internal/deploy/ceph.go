@@ -492,11 +492,12 @@ func (d *CephDeployer) startRGW(node model.NodeSpec) error {
 
 // Preserve existing CephX keys while converging capabilities on a resumed
 // provisioning run. KRBD needs the monitor RBD profile to replace a fenced
-// exclusive-lock owner; plain monitor read access cannot perform that handoff.
+// exclusive-lock owner; retain general monitor reads for the same identity
+// to obtain CephFS maps as well. Neither profile alone covers both backends.
 func cephClientIdentityCommand(dataKeyring, fenceKeyring string) string {
 	return cephSudoPrefix + "; " +
 		"$SUDO ceph auth get-or-create client.titanus -o " + shellQuote(dataKeyring) + "; " +
-		"$SUDO ceph auth caps client.titanus mon 'profile rbd' mgr 'allow rw' osd 'allow rwx' mds 'allow rw'; " +
+		"$SUDO ceph auth caps client.titanus mon 'allow r, profile rbd' mgr 'allow rw' osd 'allow rwx' mds 'allow rw'; " +
 		"$SUDO ceph auth get-or-create client.titanus-fence -o " + shellQuote(fenceKeyring) + "; " +
 		"$SUDO ceph auth caps client.titanus-fence mon 'allow r, allow command \"osd blocklist\" with blocklistop=add' osd 'allow *' mds 'allow *'"
 }
