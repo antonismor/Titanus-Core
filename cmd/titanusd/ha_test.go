@@ -166,6 +166,9 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 		}
 		processes[i] = cmd
 	}
+	// Fixture clients must never fall back to the host's installed HA config.
+	// A not-yet-initialized local daemon must remain unavailable to this test.
+	t.Setenv("TITANUS_HA_CONFIG", filepath.Join(t.TempDir(), "no-host-fallback.json"))
 	clients := [3]*localclient.Client{}
 	for i := 0; i < 3; i++ {
 		clients[i] = localclient.New(sockets[i])
@@ -181,7 +184,9 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 				}
 				status, e := c.ConsensusStatus()
 				if e == nil && status["state"] == "Leader" {
-					if _, e = c.RealmState(); e == nil {
+					// A readable snapshot may still be the empty pre-initialization FSM.
+					// Require committed seed state before restarting any legacy voter.
+					if state, e := c.RealmState(); e == nil && state.Name == "HA-CI" && state.Revision > 0 {
 						return i
 					}
 				}
@@ -265,9 +270,29 @@ func runNativeHADaemon(t *testing.T, transition bool) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		committed, e := clients[current].TransitionSchema(migration, before.Revision)
-		if e != nil {
-			t.Fatal("prepared quorum migration", e)
+		// Background PKI/reconciliation may advance the guarded Realm revision
+		// during all-host floor preparation. Inspect committed state and resume
+		// the same migration ID with a fresh revision, just as for schema two.
+		// Only revision conflicts are retryable; production CAS stays unchanged.
+		var committed realm.SchemaMigration
+		migrationDeadline := time.Now().Add(20 * time.Second)
+		for {
+			before, e = clients[current].RealmState()
+			if e != nil {
+				t.Fatal(e)
+			}
+			committed, e = clients[current].TransitionSchema(migration, before.Revision)
+			if e == nil {
+				break
+			}
+			if !strings.Contains(e.Error(), "schema/revision changed") &&
+				!strings.Contains(e.Error(), "stale revision/host identity") {
+				t.Fatal("prepared quorum migration", e)
+			}
+			if time.Now().After(migrationDeadline) {
+				t.Fatal("prepared quorum migration revision conflict did not settle", e)
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
 		state, e := clients[current].RealmState()
 		if e != nil || state.SchemaVersion != 1 {
