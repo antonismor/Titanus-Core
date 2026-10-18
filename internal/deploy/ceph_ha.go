@@ -122,11 +122,12 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 			} `json:"standbys"`
 		} `json:"mgr"`
 		Pools []struct {
-			Name string `json:"pool_name"`
-			ID   int    `json:"pool"`
-			Size int    `json:"size"`
-			Min  int    `json:"min_size"`
-			Rule int    `json:"crush_rule"`
+			Name     string `json:"pool_name"`
+			ID       *int   `json:"pool_id"`
+			LegacyID *int   `json:"pool"`
+			Size     int    `json:"size"`
+			Min      int    `json:"min_size"`
+			Rule     int    `json:"crush_rule"`
 		} `json:"pools"`
 		Rule struct {
 			ID    int `json:"rule_id"`
@@ -187,7 +188,17 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 	if p.Ceph.EnableCephFS {
 		poolIDs := map[string]int{}
 		for _, pool := range report.Pools {
-			poolIDs[pool.Name] = pool.ID
+			id := pool.ID
+			if id == nil {
+				id = pool.LegacyID
+			}
+			if id == nil {
+				continue
+			}
+			if pool.ID != nil && pool.LegacyID != nil && *pool.ID != *pool.LegacyID {
+				return fmt.Errorf("conflicting Ceph pool identities")
+			}
+			poolIDs[pool.Name] = *id
 		}
 		if e := validateHAMDS(report.FS, p, poolIDs); e != nil {
 			return e
@@ -229,7 +240,7 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 }
 func HACephProbeCommand() string {
 	// Each subprocess is bounded; no cluster settings or data are modified.
-	return `python3 -c 'import json,subprocess,os; base=json.loads(os.environ.get("TITANUS_CEPH_ARGS","[]")); run=lambda *a: json.loads(subprocess.check_output(["ceph",*base,*a,"--format","json"],timeout=15)); print(json.dumps({"status":run("status"),"quorum":run("quorum_status"),"pools":run("osd","pool","ls","detail"),"rule":run("osd","crush","rule","dump","titanus-ha-host"),"tree":run("osd","tree"),"fs":run("fs","dump"),"mgr":run("mgr","dump")}))'`
+	return `python3 -c 'import json,subprocess,os; base=json.loads(os.environ.get("TITANUS_CEPH_ARGS","[]")); run=lambda *a: json.loads(subprocess.check_output(["ceph",*base,*a,"--format","json"],timeout=15)); mgr=run("mgr","dump"); mgr={"active_name":mgr.get("active_name"),"standbys":[{"name":m.get("name")} for m in mgr.get("standbys",[])]}; print(json.dumps({"status":run("status"),"quorum":run("quorum_status"),"pools":run("osd","pool","ls","detail"),"rule":run("osd","crush","rule","dump","titanus-ha-host"),"tree":run("osd","tree"),"fs":run("fs","dump"),"mgr":mgr}))'`
 }
 func (d *CephDeployer) verifyHACeph(primary model.NodeSpec, p model.RealmPlan) error {
 	var last error
@@ -265,6 +276,7 @@ func validateHAMDS(data []byte, p model.RealmPlan, poolIDs map[string]int) error
 		Standbys []struct {
 			Name    string `json:"name"`
 			ForFS   *int   `json:"standby_for_fscid"`
+			JoinFS  *int   `json:"join_fscid"`
 			ForName string `json:"standby_for_name"`
 			ForRank *int   `json:"standby_for_rank"`
 		} `json:"standbys"`
@@ -304,7 +316,7 @@ func validateHAMDS(data []byte, p model.RealmPlan, poolIDs map[string]int) error
 		}
 	}
 	for _, m := range fs.Standbys {
-		if planned[m.Name] && (m.ForFS == nil || *m.ForFS < 0 || *m.ForFS == targetFSID) && (m.ForName == "" || active[m.ForName]) && (m.ForRank == nil || *m.ForRank < 0 || *m.ForRank == 0) {
+		if planned[m.Name] && (m.ForFS == nil || *m.ForFS < 0 || *m.ForFS == targetFSID) && (m.JoinFS == nil || *m.JoinFS < 0 || *m.JoinFS == targetFSID) && (m.ForName == "" || active[m.ForName]) && (m.ForRank == nil || *m.ForRank < 0 || *m.ForRank == 0) {
 			standby[m.Name] = true
 		}
 	}

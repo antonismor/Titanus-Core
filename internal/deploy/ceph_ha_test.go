@@ -2,8 +2,10 @@ package deploy
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"os"
 	"strings"
 	"testing"
 )
@@ -108,6 +110,51 @@ func TestHACephMonitorAddressFormatsBindPlannedIP(t *testing.T) {
 		}
 		if validateHAQuorum([]byte(strings.ReplaceAll(raw, "192.0.2.1", "192.0.2.2")), p) == nil {
 			t.Fatal("wrong monitor IP accepted")
+		}
+	}
+}
+
+// Captured from the isolated ARM64 Squid CI fixture. Keep actual field names:
+// pool_id and join_fscid differ from older Ceph report spellings.
+func TestHACephSquidReportBindsActualPoolIDsAndEligibleStandby(t *testing.T) {
+	data, e := os.ReadFile("testdata/ceph-ha-squid-report.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, p := haReportFixture()
+	p.Ceph.EnableCephFS = true
+	for i := range p.Nodes {
+		p.Nodes[i].ManagementIP = fmt.Sprintf("127.0.0.%d", 51+i)
+	}
+	if e = ValidateHACephReport(data, p); e != nil {
+		t.Fatal(e)
+	}
+	legacy := strings.ReplaceAll(string(data), `"pool_id":`, `"pool":`)
+	if e = ValidateHACephReport([]byte(legacy), p); e != nil {
+		t.Fatal("legacy pool spelling rejected", e)
+	}
+	mutations := []func(map[string]any){
+		func(r map[string]any) { r["pools"].([]any)[1].(map[string]any)["pool"] = 99 },
+		func(r map[string]any) { delete(r["pools"].([]any)[1].(map[string]any), "pool_id") },
+		func(r map[string]any) {
+			r["fs"].(map[string]any)["filesystems"].([]any)[0].(map[string]any)["mdsmap"].(map[string]any)["data_pools"] = []int{1}
+		},
+		func(r map[string]any) {
+			r["fs"].(map[string]any)["standbys"].([]any)[0].(map[string]any)["join_fscid"] = 99
+		},
+	}
+	for i, change := range mutations {
+		var r map[string]any
+		if e = json.Unmarshal(data, &r); e != nil {
+			t.Fatal(e)
+		}
+		change(r)
+		b, e := json.Marshal(r)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if ValidateHACephReport(b, p) == nil {
+			t.Fatalf("unsafe captured-report mutation %d accepted", i)
 		}
 	}
 }
