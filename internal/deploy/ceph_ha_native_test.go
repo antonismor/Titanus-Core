@@ -13,6 +13,7 @@ func TestNativeThreeMonitorHAPolicy(t *testing.T) {
 		t.Skip("isolated native three-monitor storage fixture")
 	}
 	p := model.RealmPlan{Installation: &model.Installation{Profile: model.ProfileNativeHA}, Ceph: model.CephSpec{Enabled: true, Replication: 3, EnableRBD: true}}
+	p.Ceph.EnableCephFS = os.Getenv("TITANUS_CEPH_HA_CEPHFS") == "1"
 	for i, id := range []string{"a", "b", "c"} {
 		p.Nodes = append(p.Nodes, model.NodeSpec{Name: id, ManagementIP: fmt.Sprintf("127.0.0.%d", 51+i), Capabilities: []model.Capability{model.CapabilityStorage}})
 	}

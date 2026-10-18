@@ -54,12 +54,12 @@ func TestHACephEvidenceRejectsUnsafeQuorumPoolsAndDomains(t *testing.T) {
 func TestHACephFSRequiresSeparateActiveAndStandbyMDS(t *testing.T) {
 	_, p := haReportFixture()
 	p.Ceph.EnableCephFS = true
-	good := []byte(`{"filesystems":[{"mdsmap":{"fs_name":"titanusfs","info":{"gid1":{"name":"a","state":"up:active"}}}}],"standbys":[{"name":"b"}]}`)
-	if e := validateHAMDS(good, p); e != nil {
+	good := []byte(`{"filesystems":[{"mdsmap":{"fs_name":"titanusfs","max_mds":1,"metadata_pool":10,"data_pools":[11],"info":{"gid1":{"name":"a","state":"up:active"}}}}],"standbys":[{"name":"b"}]}`)
+	if e := validateHAMDS(good, p, map[string]int{"titanusfs_meta": 10, "titanusfs_data": 11}); e != nil {
 		t.Fatal(e)
 	}
-	for _, bad := range []string{`{}`, strings.Replace(string(good), `"name":"b"`, `"name":"a"`, 1), strings.Replace(string(good), `up:active`, `up:standby`, 1)} {
-		if validateHAMDS([]byte(bad), p) == nil {
+	for _, bad := range []string{`{}`, strings.Replace(string(good), `"name":"b"`, `"name":"a"`, 1), strings.Replace(string(good), `up:active`, `up:standby`, 1), strings.Replace(string(good), `"data_pools":[11]`, `"data_pools":[99]`, 1), strings.Replace(string(good), `"name":"b"`, `"name":"b","standby_for_fscid":99`, 1)} {
+		if validateHAMDS([]byte(bad), p, map[string]int{"titanusfs_meta": 10, "titanusfs_data": 11}) == nil {
 			t.Fatal("missing or same-host MDS standby accepted")
 		}
 	}

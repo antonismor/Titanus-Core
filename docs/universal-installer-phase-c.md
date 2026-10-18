@@ -17,7 +17,8 @@ independent hardware, power or network domains.
 
 An active MGR and a standby must run on distinct planned STORAGE hosts.
 RBD uses the `titanus` pool. CephFS uses `titanusfs_meta` and `titanusfs_data`, and
-requires an active MDS plus a standby on a different planned STORAGE host. RGW HA
+supports one active MDS rank plus an eligible standby on a different planned
+STORAGE host. Its actual metadata/data pool IDs must match the verified HA pools. RGW HA
 is refused until its complete availability policy is implemented. Existing
 Standard/Custom plans retain their earlier monitor and replication behavior.
 
@@ -172,8 +173,8 @@ checks that the genesis revision remains part of its consensus binding.
 
 CI runs the transition on AMD64 and ARM64. The Ceph fixture runs three real
 monitors and three native OSDs on sparse files in an isolated runner, verifies
-host-domain replication, loses one monitor, OSD and MGR together, writes/reads data
-through the remaining quorum/copies, then verifies clean rejoin and retained
+host-domain replication, loses one monitor, OSD, MGR and MDS together, writes/reads data
+through the remaining quorum/copies, checks the surviving MDS and verifies clean rejoin and retained
 bytes. Existing native RBD/CephFS writer-fencing tests remain in the five-job gate.
 These fixtures share a kernel. Independent VM/physical host power loss, management
 fencing, network partitions and site recovery/failback remain final laboratory

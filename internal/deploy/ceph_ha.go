@@ -123,6 +123,7 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 		} `json:"mgr"`
 		Pools []struct {
 			Name string `json:"pool_name"`
+			ID   int    `json:"pool"`
 			Size int    `json:"size"`
 			Min  int    `json:"min_size"`
 			Rule int    `json:"crush_rule"`
@@ -184,7 +185,11 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 		return fmt.Errorf("Native HA requires active and standby MGR on separate planned storage hosts")
 	}
 	if p.Ceph.EnableCephFS {
-		if e := validateHAMDS(report.FS, p); e != nil {
+		poolIDs := map[string]int{}
+		for _, pool := range report.Pools {
+			poolIDs[pool.Name] = pool.ID
+		}
+		if e := validateHAMDS(report.FS, p, poolIDs); e != nil {
 			return e
 		}
 	}
@@ -242,19 +247,26 @@ func (d *CephDeployer) verifyHACeph(primary model.NodeSpec, p model.RealmPlan) e
 	return fmt.Errorf("Native HA storage did not become clean: %w", last)
 }
 
-func validateHAMDS(data []byte, p model.RealmPlan) error {
+func validateHAMDS(data []byte, p model.RealmPlan, poolIDs map[string]int) error {
 	var fs struct {
 		Filesystems []struct {
+			ID     int `json:"id"`
 			MDSMap struct {
-				FSName string `json:"fs_name"`
-				Info   map[string]struct {
+				FSName       string `json:"fs_name"`
+				MetadataPool int    `json:"metadata_pool"`
+				MaxMDS       int    `json:"max_mds"`
+				DataPools    []int  `json:"data_pools"`
+				Info         map[string]struct {
 					Name  string `json:"name"`
 					State string `json:"state"`
 				} `json:"info"`
 			} `json:"mdsmap"`
 		} `json:"filesystems"`
 		Standbys []struct {
-			Name string `json:"name"`
+			Name    string `json:"name"`
+			ForFS   *int   `json:"standby_for_fscid"`
+			ForName string `json:"standby_for_name"`
+			ForRank *int   `json:"standby_for_rank"`
 		} `json:"standbys"`
 	}
 	if e := json.Unmarshal(data, &fs); e != nil {
@@ -264,10 +276,23 @@ func validateHAMDS(data []byte, p model.RealmPlan) error {
 	for _, n := range p.StorageNodes() {
 		planned[n.Name] = true
 	}
+	meta, hasMeta := poolIDs["titanusfs_meta"]
+	dataPool, hasData := poolIDs["titanusfs_data"]
+	if !hasMeta || !hasData || meta == dataPool {
+		return fmt.Errorf("CephFS HA pool identities missing")
+	}
 	active, standby := map[string]bool{}, map[string]bool{}
+	targetFSID := -1
 	for _, f := range fs.Filesystems {
 		if f.MDSMap.FSName != "titanusfs" {
 			continue
+		}
+		targetFSID = f.ID
+		if f.MDSMap.MaxMDS != 1 {
+			return fmt.Errorf("Native HA CephFS currently supports one active rank plus a standby")
+		}
+		if f.MDSMap.MetadataPool != meta || len(f.MDSMap.DataPools) != 1 || f.MDSMap.DataPools[0] != dataPool {
+			return fmt.Errorf("CephFS does not use the verified HA pools")
 		}
 		for _, m := range f.MDSMap.Info {
 			if planned[m.Name] && m.State == "up:active" {
@@ -279,7 +304,7 @@ func validateHAMDS(data []byte, p model.RealmPlan) error {
 		}
 	}
 	for _, m := range fs.Standbys {
-		if planned[m.Name] {
+		if planned[m.Name] && (m.ForFS == nil || *m.ForFS < 0 || *m.ForFS == targetFSID) && (m.ForName == "" || active[m.ForName]) && (m.ForRank == nil || *m.ForRank < 0 || *m.ForRank == 0) {
 			standby[m.Name] = true
 		}
 	}
