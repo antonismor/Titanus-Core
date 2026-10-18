@@ -11,20 +11,36 @@ type Archive struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
 }
+type InstallationProfile string
+
+const (
+	ProfileStandard InstallationProfile = "standard"
+	ProfileNativeHA InstallationProfile = "native-ha"
+	ProfileCustom   InstallationProfile = "custom"
+)
+
 type Installation struct {
-	Operation      string             `json:"operation"` // install, upgrade, rollback
-	ReleaseVersion string             `json:"release_version"`
-	Revision       string             `json:"revision"`
-	Archives       map[string]Archive `json:"archives,omitempty"`
-	PKIDir         string             `json:"pki_dir,omitempty"`
-	APIPort        int                `json:"api_port"`
-	RaftPort       int                `json:"raft_port"`
-	NodePrefix     int                `json:"node_prefix"`
-	VXLANID        int                `json:"vxlan_id"`
-	Start          bool               `json:"start"`
+	Profile        InstallationProfile `json:"profile,omitempty"`
+	Operation      string              `json:"operation"` // install, upgrade, rollback
+	ReleaseVersion string              `json:"release_version"`
+	Revision       string              `json:"revision"`
+	Archives       map[string]Archive  `json:"archives,omitempty"`
+	PKIDir         string              `json:"pki_dir,omitempty"`
+	APIPort        int                 `json:"api_port"`
+	RaftPort       int                 `json:"raft_port"`
+	NodePrefix     int                 `json:"node_prefix"`
+	VXLANID        int                 `json:"vxlan_id"`
+	Start          bool                `json:"start"`
 }
 
 func (i Installation) Validate() error {
+	switch i.Profile {
+	case "", ProfileStandard, ProfileCustom:
+	case ProfileNativeHA:
+		return fmt.Errorf("Native HA profile is not executable yet: validated fencing, safe failback and non-destructive migration are required")
+	default:
+		return fmt.Errorf("unknown installation profile %q", i.Profile)
+	}
 	if i.Operation != "install" && i.Operation != "upgrade" && i.Operation != "rollback" {
 		return fmt.Errorf("installation operation must be install, upgrade or rollback")
 	}

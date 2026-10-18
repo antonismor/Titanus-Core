@@ -21,6 +21,9 @@ type Result struct {
 }
 
 type SSHExecutor struct {
+	// Optional Realm-scoped trust; empty fields preserve existing installations.
+	IdentityFile   string
+	KnownHostsFile string
 	ConnectTimeout time.Duration
 	CommandTimeout time.Duration
 }
@@ -99,12 +102,13 @@ func (e *SSHExecutor) FetchFile(node model.NodeSpec, remotePath, localPath strin
 	args := []string{
 		"-q",
 		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", e.hostKeyPolicy(),
 		"-o", "ConnectTimeout=" + strconv.Itoa(connectSeconds),
 		"-P", strconv.Itoa(node.SSHPort),
 		source,
 		localPath,
 	}
+	args = append(e.trustOptions(), args...)
 	cmd := exec.CommandContext(ctx, "scp", args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
@@ -139,12 +143,13 @@ func (e *SSHExecutor) CopyFile(node model.NodeSpec, localPath, remotePath string
 	args := []string{
 		"-q",
 		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", e.hostKeyPolicy(),
 		"-o", "ConnectTimeout=" + strconv.Itoa(connectSeconds),
 		"-P", strconv.Itoa(node.SSHPort),
 		localPath,
 		target,
 	}
+	args = append(e.trustOptions(), args...)
 	cmd := exec.CommandContext(ctx, "scp", args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
@@ -174,13 +179,14 @@ func (e *SSHExecutor) Run(node model.NodeSpec, command string) (Result, error) {
 	target := node.SSHUser + "@" + node.ManagementIP
 	args := []string{
 		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", e.hostKeyPolicy(),
 		"-o", "ConnectTimeout=" + strconv.Itoa(connectSeconds),
 		"-p", strconv.Itoa(node.SSHPort),
 		target,
 		command,
 	}
 
+	args = append(e.trustOptions(), args...)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -203,4 +209,21 @@ func (e *SSHExecutor) Run(node model.NodeSpec, command string) (Result, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func (e *SSHExecutor) hostKeyPolicy() string {
+	if e.KnownHostsFile != "" {
+		return "StrictHostKeyChecking=yes"
+	}
+	return "StrictHostKeyChecking=accept-new"
+}
+func (e *SSHExecutor) trustOptions() []string {
+	var args []string
+	if e.KnownHostsFile != "" {
+		args = append(args, "-F", "/dev/null", "-o", "UserKnownHostsFile="+e.KnownHostsFile, "-o", "GlobalKnownHostsFile=/dev/null")
+	}
+	if e.IdentityFile != "" {
+		args = append(args, "-i", e.IdentityFile, "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none")
+	}
+	return args
 }

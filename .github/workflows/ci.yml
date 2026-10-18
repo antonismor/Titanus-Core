@@ -27,6 +27,12 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Verify isolated SSH trust bootstrap with real SSH servers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server sshpass
+          sudo env "PATH=$PATH" TITANUS_SSH_TEST=1 go test ./internal/sshtrust -run TestNativeSSHPasswordBootstrapAndFullMesh -count=1 -v -timeout 180s
+
       - name: Vet
         run: go vet ./...
 
@@ -34,7 +40,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Race checks
-        run: go test -race ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
+        run: go test -race ./internal/sshtrust ./internal/setup ./internal/remote ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
 
       - name: Cross-build native ARM64 runtime
         run: |
