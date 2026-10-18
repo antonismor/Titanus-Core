@@ -267,7 +267,11 @@ func TestNativeAuthenticatedProfileTransition(t *testing.T) {
 		}
 	}
 	preparedDir := filepath.Join(dir, "prepared-rollback")
-	p, e := hatransition.Prepare(target, setPath, keyPath, preparedDir)
+	currentDir, e := os.Getwd()
+	must(e)
+	relativeOutput, e := filepath.Rel(currentDir, preparedDir)
+	must(e)
+	p, e := hatransition.Prepare(target, setPath, keyPath, relativeOutput)
 	must(e)
 	preparedPath := filepath.Join(preparedDir, "transition.json")
 	// Recomputed artifact IDs cannot redirect authenticated backup roots.

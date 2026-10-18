@@ -349,6 +349,11 @@ func RollbackStaging(root, id, evidence string) error {
 }
 
 func verifyParents(path string) error {
+	absolute, e := filepath.Abs(path)
+	if e != nil {
+		return e
+	}
+	path = absolute
 	for dir := filepath.Dir(path); dir != "/"; dir = filepath.Dir(dir) {
 		st, e := os.Lstat(dir)
 		if os.IsNotExist(e) {

@@ -53,6 +53,12 @@ keyring = $root/osd.\$id/keyring
 osd memory target = 536870912
 osd heartbeat grace = 10
 osd objectstore = bluestore
+[osd.0]
+crush location = root=default host=a
+[osd.1]
+crush location = root=default host=b
+[osd.2]
+crush location = root=default host=c
 [mgr]
 keyring = $root/mgr.\$id/keyring
 CFG
