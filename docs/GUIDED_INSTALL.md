@@ -20,10 +20,10 @@ Community plan will be rejected; the installer does not delete or prune any
 node or Ceph storage. Review a safe migration/edition decision before updating
 an existing 10-node lab.
 
-The Enterprise Edition is planned without an edition-imposed node ceiling,
-with public availability targeted in the coming days and a 90-day trial.
-Enterprise installation and licensing are not yet available in the Community
-installer. See [Editions](EDITIONS.md).
+**Enterprise Edition: Soon Available.** It is planned without an
+edition-imposed node ceiling and with a 90-day trial at public launch.
+Release date, Enterprise installation and licensing are not yet available.
+See [Editions](EDITIONS.md).
 
 ## Requirements and workflow
 
