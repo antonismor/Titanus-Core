@@ -39,8 +39,11 @@ Relative archive and PKI paths are resolved against the invoking process's
 working directory. Plans retain explicit Ceph `provision` settings; versioned
 upgrade/rollback rejects Ceph provisioning. Initial provisioning requires
 services to be started and only uses the explicitly selected devices. It is a
-separate, destructive Ceph operation after Realm installation, not part of the
-binary activation transaction. Pre-provisioned storage remains supported.
+separate storage-creation operation after Realm installation, not part of the
+binary activation transaction. New OSD creation first probes selected devices
+read-only with wipefs and refuses existing signatures or probe errors. It never
+zaps or clears selected devices implicitly. Clearing a previously used device
+requires a separate, explicitly authorized offline operation. Pre-provisioned storage remains supported.
 
 ## Identity, roles and preserved state
 

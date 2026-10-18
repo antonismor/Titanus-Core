@@ -407,8 +407,7 @@ func (d *CephDeployer) provisionOSDs(nodes []model.NodeSpec) error {
 				"if $SUDO pvs --noheadings -o vg_name " + shellQuote(device) + " 2>/dev/null | grep -q 'ceph-'; then " +
 				"echo existing > /tmp/titanus-osd-state; " +
 				"else " +
-				"$SUDO ceph-volume lvm zap --destroy " + shellQuote(device) + "; " +
-				"$SUDO ceph-volume lvm create --data " + shellQuote(device) + "; " +
+				cephOSDCreateCommand(device) + "; " +
 				"fi; " +
 				"echo " + shellQuote(device) + " | $SUDO tee " + shellQuote(marker) + " >/dev/null"
 			if _, err := d.SSH.Run(node, cmd); err != nil {
@@ -417,6 +416,15 @@ func (d *CephDeployer) provisionOSDs(nodes []model.NodeSpec) error {
 		}
 	}
 	return nil
+}
+
+// cephOSDCreateCommand only initializes a device after a successful read-only
+// probe proves it has no recognized storage signature. Existing data is never
+// cleared implicitly; an unreadable probe or signature must stop provisioning.
+func cephOSDCreateCommand(device string) string {
+	return "signatures=$($SUDO wipefs --no-act --noheadings --output TYPE " + shellQuote(device) + "); " +
+		"if [ -n \"$signatures\" ]; then echo 'refusing to initialize selected Ceph device with existing storage signatures' >&2; exit 1; fi; " +
+		"$SUDO ceph-volume lvm create --data " + shellQuote(device)
 }
 
 func (d *CephDeployer) configurePools(primary model.NodeSpec, plan model.RealmPlan) error {
