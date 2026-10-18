@@ -255,6 +255,7 @@ func main() {
 
 	if controllerMode {
 		api.GatewayClient = clusterClient
+		api.WorkerRecovery = clusterClient
 		if path := os.Getenv("TITANUS_POWER_FENCING_CONFIG"); path != "" {
 			api.PowerFencer, err = fencing.Load(path)
 			if err != nil {
@@ -270,7 +271,10 @@ func main() {
 		if quorum != nil {
 			nodes = &reconcile.GuardedNodes{NodeRuntime: clusterClient, Check: quorum.CheckLeader}
 		}
-		controller := &reconcile.Controller{Storage: api.Disks, Store: store, Nodes: nodes, Sources: sourceManager, Interval: 5 * time.Second}
+		if store.Snapshot().NativeHA && (quorum == nil || api.PowerFencer == nil) {
+			log.Fatal("Native HA requires voting consensus and configured out-of-band power fencing")
+		}
+		controller := &reconcile.Controller{Power: api.PowerFencer, Storage: api.Disks, Store: store, Nodes: nodes, Sources: sourceManager, Interval: 5 * time.Second}
 		controller.RequirePublishedSources = quorum != nil
 		go api.MaintainSources(ctx)
 		go api.MaintainGateways(ctx)

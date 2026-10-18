@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Gateway struct {
@@ -171,6 +172,14 @@ func (s *Store) RecoverPowerFencedGatewayNode(id, evidence string) error {
 				return fmt.Errorf("node has a pending Gateway transfer")
 			}
 		}
+		for _, intent := range s.data.WorkerFailovers {
+			if intent.NodeID == id && intent.RecoveredAt.IsZero() {
+				if intent.CompletedAt.IsZero() {
+					return fmt.Errorf("node has a pending Worker fence")
+				}
+				fenced = true
+			}
+		}
 		if !fenced {
 			return fmt.Errorf("node has no verified historical power fence")
 		}
@@ -198,6 +207,13 @@ func (s *Store) RecoverPowerFencedGatewayNode(id, evidence string) error {
 	for _, a := range s.data.Assignments {
 		if a.NodeID == id {
 			return fmt.Errorf("node still has a Realm assignment")
+		}
+	}
+	for key, intent := range s.data.WorkerFailovers {
+		if intent.NodeID == id && intent.RecoveredAt.IsZero() {
+			intent.RecoveredAt = time.Now().UTC()
+			intent.RecoveryEvidence = evidence
+			s.data.WorkerFailovers[key] = intent
 		}
 	}
 	oldPower, oldStorage := n.PowerQuarantined, n.StorageQuarantined

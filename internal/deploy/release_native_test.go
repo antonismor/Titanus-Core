@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/consensus"
+	"github.com/antonismor/Titanus-Core/internal/fencing"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/realm"
@@ -27,7 +28,9 @@ import (
 // Three real generated voter configurations share this runner's kernel. Only
 // bind addresses, filesystem roots and Unix sockets are translated into private
 // test locations; roles, CA/leaf keys, membership and network plan are retained.
-func TestNativeGuidedInstallation(t *testing.T) {
+func TestNativeGuidedInstallation(t *testing.T)   { nativeGuidedInstallation(t, false) }
+func TestNativeHAGuidedInstallation(t *testing.T) { nativeGuidedInstallation(t, true) }
+func nativeGuidedInstallation(t *testing.T, nativeHA bool) {
 	if os.Getenv("TITANUS_GUIDED_INSTALL_TEST") != "1" {
 		t.Skip("native guided installation fixture required")
 	}
@@ -51,10 +54,14 @@ func TestNativeGuidedInstallation(t *testing.T) {
 		archives[arch] = model.Archive{Path: file, SHA256: hex.EncodeToString(sum[:])}
 	}
 	// Hold all API/Raft sockets until membership/configuration has been written.
+	count := 3
+	if nativeHA {
+		count = 5
+	}
 	held := []net.Listener{}
 	reserve := func(port int) (int, bool) {
 		start := len(held)
-		for i := 1; i <= 3; i++ {
+		for i := 1; i <= count; i++ {
 			l, e := net.Listen("tcp", fmt.Sprintf("127.0.0.%d:%d", i+10, port))
 			if e != nil {
 				for _, l := range held[start:] {
@@ -84,6 +91,15 @@ func TestNativeGuidedInstallation(t *testing.T) {
 	plan := model.RealmPlan{Version: "titanus-plan/v2", RealmName: "GUIDED-LAB", FabricCIDR: "10.210.0.0/16", ServiceCIDR: "10.220.0.0/16", Installation: &model.Installation{Operation: "install", ReleaseVersion: version.Version, Revision: revision, Archives: archives, PKIDir: filepath.Join(dir, "authority"), APIPort: api, RaftPort: raft, NodePrefix: 24, VXLANID: 4242}}
 	for i := 1; i <= 3; i++ {
 		plan.Nodes = append(plan.Nodes, model.NodeSpec{Name: fmt.Sprintf("control%d", i), ManagementIP: fmt.Sprintf("127.0.0.%d", i+10), SSHUser: "root", SSHPort: 22, Capabilities: []model.Capability{model.CapabilityControl}})
+	}
+	if nativeHA {
+		plan.Installation.Profile = model.ProfileNativeHA
+		plan.Installation.PowerFencing = map[string]fencing.Target{}
+		for i := 4; i <= 5; i++ {
+			name := fmt.Sprintf("worker%d", i)
+			plan.Nodes = append(plan.Nodes, model.NodeSpec{Name: name, ManagementIP: fmt.Sprintf("127.0.0.%d", i+10), SSHUser: "root", SSHPort: 22, Capabilities: []model.Capability{model.CapabilityExecution}})
+			plan.Installation.PowerFencing[name] = fencing.Target{Provider: "libvirt", UUID: fmt.Sprintf("00000000-0000-0000-0000-%012d", i), Address: "qemu+ssh://root@unreachable-test-hypervisor.example/system"}
+		}
 	}
 	output := filepath.Join(dir, "prepared")
 	prepared, e := PrepareRelease(plan, output)
@@ -136,6 +152,9 @@ func TestNativeGuidedInstallation(t *testing.T) {
 		}
 		state := filepath.Join(root, "var/lib/titanus")
 		seed := exec.Command(filepath.Join(root, "usr/local/bin/titanus"), "realm", "seed", "--name", plan.RealmName, "--fabric-cidr", plan.FabricCIDR, "--service-cidr", plan.ServiceCIDR, "--node-prefix", "24", "--vxlan-id", "4242")
+		if nativeHA {
+			seed.Args = append(seed.Args, "--native-ha")
+		}
 		seed.Env = append(os.Environ(), "TITANUS_STATE_ROOT="+state)
 		if data, e := seed.CombinedOutput(); e != nil {
 			t.Fatalf("seed: %v %s", e, data)
@@ -160,19 +179,27 @@ func TestNativeGuidedInstallation(t *testing.T) {
 			env = append(env, key+"="+value)
 		}
 		env = append(env, "TITANUS_SOCKET="+socket)
-		var membership consensus.Config
-		configData, e = os.ReadFile(filepath.Join(root, "etc/titanus/ha.json"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		if e = json.Unmarshal(configData, &membership); e != nil {
-			t.Fatal(e)
-		}
-		if membership.Bootstrap != (index == 0) || len(membership.Peers) != 3 {
-			t.Fatal("wrong generated quorum/bootstrap")
-		}
-		if info, e := os.Stat(filepath.Join(root, "etc/titanus/pki/ca.key")); e != nil || info.Mode().Perm() != 0600 {
-			t.Fatal("missing private surviving signer")
+		if index < 3 {
+			var membership consensus.Config
+			configData, e = os.ReadFile(filepath.Join(root, "etc/titanus/ha.json"))
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = json.Unmarshal(configData, &membership); e != nil {
+				t.Fatal(e)
+			}
+			if membership.Bootstrap != (index == 0) || len(membership.Peers) != 3 {
+				t.Fatal("wrong generated quorum/bootstrap")
+			}
+			if info, e := os.Stat(filepath.Join(root, "etc/titanus/pki/ca.key")); e != nil || info.Mode().Perm() != 0600 {
+				t.Fatal("missing private surviving signer")
+			}
+		} else {
+			for _, name := range []string{"ha.json", "pki/ca.key", "power-fencing.json"} {
+				if _, e := os.Lstat(filepath.Join(root, "etc/titanus", name)); !os.IsNotExist(e) {
+					t.Fatal("Worker received controller-only configuration", name)
+				}
+			}
 		}
 		log, e := os.Create(filepath.Join(dir, item.Node+".log"))
 		if e != nil {
@@ -210,7 +237,7 @@ func TestNativeGuidedInstallation(t *testing.T) {
 		leaderAPI := ""
 		leaders, followers := 0, 0
 		ready := true
-		for _, node := range plan.Nodes {
+		for _, node := range plan.ControlNodes() {
 			response, e := client.Get(fmt.Sprintf("https://%s:%d/v1/realm/consensus", node.ManagementIP, api))
 			if e != nil {
 				ready = false
@@ -259,7 +286,7 @@ func TestNativeGuidedInstallation(t *testing.T) {
 	var recovered realm.State
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		for _, node := range plan.Nodes {
+		for _, node := range plan.ControlNodes() {
 			response, e := client.Get(fmt.Sprintf("https://%s:%d/v1/realm/state", node.ManagementIP, api))
 			if e != nil {
 				continue
@@ -281,6 +308,9 @@ func TestNativeGuidedInstallation(t *testing.T) {
 			t.Logf("%s: %s", n.name, data)
 		}
 		t.Fatal("generated membership, TLS/admin identity and seeded network did not reconstruct functional quorum state")
+	}
+	if nativeHA && (!recovered.NativeHA || recovered.SchemaVersion != 3) {
+		t.Fatal("Native HA policy/schema missing from real generated quorum")
 	}
 	t.Log("TITANUS_NATIVE_GUIDED_QUORUM_INSTALL_OK")
 }

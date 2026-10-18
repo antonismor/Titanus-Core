@@ -29,4 +29,4 @@ profile=json.loads(__import__('subprocess').check_output(['./bin/titanus','versi
 (root/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.relative_to(root).as_posix()+'\n' for p in sorted(root.rglob('*')) if p.is_file()))
 with tarfile.open(fixture/'packages'/(root.name+'.tar.gz'),'w:gz') as tar:tar.add(root,arcname=root.name)
 PY
-TITANUS_GUIDED_INSTALL_TEST=1 TITANUS_GUIDED_ARCHIVES="$fixture/packages" go test ./internal/deploy -run TestNativeGuidedInstallation -count=1 -v -timeout 120s
+TITANUS_GUIDED_INSTALL_TEST=1 TITANUS_GUIDED_ARCHIVES="$fixture/packages" go test ./internal/deploy -run 'TestNative(HA)?GuidedInstallation' -count=1 -v -timeout 120s

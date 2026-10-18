@@ -149,7 +149,7 @@ func (s *Store) BeginStorageFailover(a Assignment) (StorageFailover, error) {
 		return StorageFailover{}, fmt.Errorf("assignment/writer changed before fencing")
 	}
 	n, ok := s.data.Nodes[a.NodeID]
-	if !ok || n.State != NodeUnreachable || a.LeaseExpiresAt.IsZero() || time.Now().Before(a.LeaseExpiresAt.Add(2*time.Second)) {
+	if !ok || (n.State != NodeUnreachable && !(s.data.NativeHA && n.PowerQuarantined && WorkerFenced(s.data, a))) || a.LeaseExpiresAt.IsZero() || time.Now().Before(a.LeaseExpiresAt.Add(2*time.Second)) {
 		return StorageFailover{}, fmt.Errorf("unreachable node and expired dispatch lease required")
 	}
 	f, ok := s.data.Fleets[a.Fleet]

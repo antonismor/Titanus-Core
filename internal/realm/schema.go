@@ -26,6 +26,12 @@ func taskIdentity(realm, name, salt string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(realm+"\x00"+name+"\x00"+salt)))
 }
 func ValidateSchema(s State) error {
+	if s.SchemaVersion < 3 && (s.NativeHA || len(s.WorkerFailovers) > 0) {
+		return fmt.Errorf("Native HA recovery state requires schema three")
+	}
+	if err := validateWorkerFailovers(s); err != nil {
+		return err
+	}
 	if s.SchemaVersion < 0 || s.SchemaVersion > version.MaxSchema {
 		return fmt.Errorf("unsupported Realm schema %d", s.SchemaVersion)
 	}
@@ -70,6 +76,12 @@ func ValidateSchema(s State) error {
 	return ValidateOrchestrationState(s)
 }
 func ValidateSchemaChange(before, after State) error {
+	if before.NativeHA && !after.NativeHA {
+		return fmt.Errorf("Native HA policy cannot be downgraded")
+	}
+	if err := validateWorkerFailoverChange(before, after); err != nil {
+		return err
+	}
 	if e := ValidateSchema(after); e != nil {
 		return e
 	}

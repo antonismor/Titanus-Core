@@ -5,6 +5,8 @@ import (
 	"net"
 	"regexp"
 	"strings"
+
+	"github.com/antonismor/Titanus-Core/internal/fencing"
 )
 
 type Archive struct {
@@ -20,26 +22,35 @@ const (
 )
 
 type Installation struct {
-	Profile        InstallationProfile `json:"profile,omitempty"`
-	Operation      string              `json:"operation"` // install, upgrade, rollback
-	ReleaseVersion string              `json:"release_version"`
-	Revision       string              `json:"revision"`
-	Archives       map[string]Archive  `json:"archives,omitempty"`
-	PKIDir         string              `json:"pki_dir,omitempty"`
-	APIPort        int                 `json:"api_port"`
-	RaftPort       int                 `json:"raft_port"`
-	NodePrefix     int                 `json:"node_prefix"`
-	VXLANID        int                 `json:"vxlan_id"`
-	Start          bool                `json:"start"`
+	PowerFencing   map[string]fencing.Target `json:"power_fencing,omitempty"`
+	Profile        InstallationProfile       `json:"profile,omitempty"`
+	Operation      string                    `json:"operation"` // install, upgrade, rollback
+	ReleaseVersion string                    `json:"release_version"`
+	Revision       string                    `json:"revision"`
+	Archives       map[string]Archive        `json:"archives,omitempty"`
+	PKIDir         string                    `json:"pki_dir,omitempty"`
+	APIPort        int                       `json:"api_port"`
+	RaftPort       int                       `json:"raft_port"`
+	NodePrefix     int                       `json:"node_prefix"`
+	VXLANID        int                       `json:"vxlan_id"`
+	Start          bool                      `json:"start"`
 }
 
 func (i Installation) Validate() error {
 	switch i.Profile {
 	case "", ProfileStandard, ProfileCustom:
 	case ProfileNativeHA:
-		return fmt.Errorf("Native HA profile is not executable yet: validated fencing, safe failback and non-destructive migration are required")
+		if i.Operation != "install" {
+			return fmt.Errorf("Native HA profile requires a fresh installation; Standard-to-HA migration is not enabled")
+		}
+		if len(i.PowerFencing) == 0 {
+			return fmt.Errorf("Native HA requires explicit out-of-band power fencing targets")
+		}
 	default:
 		return fmt.Errorf("unknown installation profile %q", i.Profile)
+	}
+	if i.Profile != ProfileNativeHA && len(i.PowerFencing) > 0 {
+		return fmt.Errorf("power_fencing is reserved for Native HA initial installation")
 	}
 	if i.Operation != "install" && i.Operation != "upgrade" && i.Operation != "rollback" {
 		return fmt.Errorf("installation operation must be install, upgrade or rollback")

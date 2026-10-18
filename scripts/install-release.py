@@ -31,7 +31,7 @@ def private_json(path):
  return json.loads(path.read_text())
 if os.path.lexists(floorpath):
  floor=private_json(floorpath)
- if set(floor)!={'format','realm','migration_id','schema'} or floor['format']!='titanus-schema-floor/v1' or floor['schema'] not in (1,2) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{15,127}',floor['migration_id']):raise SystemExit('invalid schema floor')
+ if set(floor)!={'format','realm','migration_id','schema'} or floor['format']!='titanus-schema-floor/v1' or floor['schema'] not in (1,2,3) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{15,127}',floor['migration_id']):raise SystemExit('invalid schema floor')
  marker=pathlib.Path(str(state)+'.recovery-pending')
  if not os.path.lexists(marker) or private_json(marker)!=floor:raise SystemExit('incomplete schema rollback floor')
 for suffix in ['.recovery-pending','.backup-pending','.cluster-recovery-pending','.ceph-recovery-pending']:
@@ -112,9 +112,9 @@ try:
  if args.config:
   if args.rollback or old:raise ValueError('configuration is for initial installation only')
   config=args.config.resolve();inventory=json.loads((config/'config.json').read_text())
-  allowed_config={'daemon.env','agent.env','ha.json','pki/ca.crt','pki/ca.crl','pki/ca.key','pki/node.crt','pki/node.key'}
+  allowed_config={'daemon.env','agent.env','ha.json','power-fencing.json','pki/ca.crt','pki/ca.crl','pki/ca.key','pki/node.crt','pki/node.key'}
   required={'daemon.env','agent.env','pki/ca.crt','pki/ca.crl','pki/node.crt','pki/node.key'}
-  if not required.issubset(inventory) or not set(inventory).issubset(allowed_config):raise ValueError('invalid initial configuration inventory')
+  if not required.issubset(inventory) or not all(n in allowed_config or re.fullmatch(r'fencing/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.(credential|ca)',n) for n in inventory):raise ValueError('invalid initial configuration inventory')
   for name,digest in inventory.items():
    src=config/name;dst=root/'etc/titanus'/name
    if src.is_symlink() or not src.is_file() or not re.fullmatch('[0-9a-f]{64}',digest):raise ValueError('invalid configuration file')

@@ -49,7 +49,8 @@ func reserveRaftAddress(t *testing.T) net.Listener {
 	t.Cleanup(func() { _ = l.Close() })
 	return l
 }
-func newCluster(t *testing.T) *cluster {
+func newCluster(t *testing.T) *cluster { return newClusterSeed(t, false) }
+func newClusterSeed(t *testing.T, nativeHA bool) *cluster {
 	t.Helper()
 	a, e := identity.InitAuthority(t.TempDir(), "LAB")
 	if e != nil {
@@ -74,6 +75,11 @@ func newCluster(t *testing.T) *cluster {
 		}
 		if e = s.ConfigureNetwork(realm.RealmNetwork{FabricCIDR: "10.240.0.0/16", ServiceCIDR: "10.250.0.0/16", NodePrefix: 24, VXLANID: 4242}); e != nil {
 			t.Fatal(e)
+		}
+		if nativeHA {
+			if e = s.SeedNativeHA(); e != nil {
+				t.Fatal(e)
+			}
 		}
 		c.seeds[i] = s.Snapshot()
 	}

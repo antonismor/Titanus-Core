@@ -24,6 +24,7 @@ type NodeRuntime interface {
 }
 
 type Controller struct {
+	Power                   WorkerPowerFencer
 	ResolveSource           func(realm.SourceRecord) error
 	RequirePublishedSources bool
 	Storage                 StorageFencer
@@ -58,6 +59,9 @@ func (c *Controller) Once() error {
 	c.Store.Orchestration.Lock()
 	defer c.Store.Orchestration.Unlock()
 	if err := c.Store.CheckLeader(); err != nil {
+		return err
+	}
+	if err := c.maintainWorkerFailovers(); err != nil {
 		return err
 	}
 	if err := c.maintainStorageFences(); err != nil {
@@ -210,6 +214,9 @@ func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assig
 	}
 	node, ok := state.Nodes[assignment.NodeID]
 	if !ok || node.State == realm.NodeUnreachable || (node.StorageQuarantined || node.PowerQuarantined) || node.Address == "" {
+		if state.NativeHA && !realm.WorkerFenced(c.Store.Snapshot(), assignment) {
+			return fmt.Errorf("Worker retirement waits for confirmed physical fence")
+		}
 		fleet, exists := state.Fleets[assignment.Fleet]
 		if !exists {
 			return fmt.Errorf("deleted Fleet requires acknowledged node cleanup")
@@ -223,7 +230,7 @@ func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assig
 		}
 		// Writable storage cannot be released by a time-based scheduling lease.
 		for _, m := range previous.Template.Mounts {
-			if !m.ReadOnly {
+			if state.NativeHA || !m.ReadOnly {
 				return c.fenceStorage(assignment)
 			}
 		}

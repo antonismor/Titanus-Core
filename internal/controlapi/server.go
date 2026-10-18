@@ -33,6 +33,7 @@ type Server struct {
 	Gateway          GatewayRuntime
 	GatewayClient    GatewayClient
 	PowerFencer      PowerFencer
+	WorkerRecovery   WorkerRecoveryClient
 	SourcePeers      []string
 	SourceReplicator SourceReplicator
 	SecretKeyring    string
@@ -760,6 +761,12 @@ func (s *Server) recoverPowerGatewayNode(w http.ResponseWriter, r *http.Request)
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, 400, err)
+		return
+	}
+	s.Store.Orchestration.Lock()
+	defer s.Store.Orchestration.Unlock()
+	if err := s.verifyWorkerRecovery(req.Node); err != nil {
+		writeError(w, 409, err)
 		return
 	}
 	if err := s.Store.RecoverPowerFencedGatewayNode(req.Node, req.Evidence); err != nil {
