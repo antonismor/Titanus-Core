@@ -811,6 +811,7 @@ func runRealm(args []string) error {
 
 	case "seed":
 		fs := flag.NewFlagSet("realm seed", flag.ContinueOnError)
+		nativeHA := fs.Bool("native-ha", false, "seed schema-protected Native HA policy on a new empty Realm")
 		name := fs.String("name", "TITANUS-REALM", "Realm name")
 		fabricCIDR := fs.String("fabric-cidr", "10.240.0.0/16", "Realm Unit Fabric CIDR")
 		serviceCIDR := fs.String("service-cidr", "10.250.0.0/16", "Realm service CIDR")
@@ -825,6 +826,11 @@ func runRealm(args []string) error {
 		store, err := realm.Open(stateRoot(), *name)
 		if err != nil {
 			return err
+		}
+		if *nativeHA {
+			if err := store.SeedNativeHA(); err != nil {
+				return err
+			}
 		}
 		if err := store.ConfigureNetwork(realm.RealmNetwork{
 			FabricCIDR: *fabricCIDR, ServiceCIDR: *serviceCIDR,

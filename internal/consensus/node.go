@@ -110,7 +110,9 @@ func Open(root string, cfg Config, seed realm.State, ca, cert, key string) (*Nod
 		return nil, fmt.Errorf("seed Realm does not match consensus Realm")
 	}
 	canonical := clone(seed)
-	canonical.Revision = 0
+	if !canonical.NativeHA {
+		canonical.Revision = 0
+	}
 	canonical.UpdatedAt = time.Time{}
 	encoded, _ := json.Marshal(canonical)
 	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
@@ -198,7 +200,7 @@ func Open(root string, cfg Config, seed realm.State, ca, cert, key string) (*Nod
 			return nil, err
 		}
 	}
-	fsm := &machine{root: root, data: emptyState(cfg.Realm)}
+	fsm := &machine{root: root, data: emptyState(cfg.Realm), nativeSeedHash: cfg.SeedHash}
 	r, err := raft.NewRaft(config, fsm, db, db, snapshots, transport)
 	if err != nil {
 		return nil, err
@@ -278,6 +280,9 @@ func (n *Node) Initialize() error {
 	}
 	candidate := clone(n.seed)
 	candidate.Revision = 1
+	if candidate.NativeHA {
+		candidate.Revision = n.seed.Revision
+	}
 	return n.Apply(candidate)
 }
 func (n *Node) Apply(candidate realm.State) error {
@@ -320,9 +325,10 @@ func (n *Node) Close() error {
 }
 
 type machine struct {
-	root string
-	mu   sync.RWMutex
-	data realm.State
+	nativeSeedHash string
+	root           string
+	mu             sync.RWMutex
+	data           realm.State
 }
 
 func (m *machine) state() realm.State { m.mu.RLock(); defer m.mu.RUnlock(); return clone(m.data) }
@@ -333,13 +339,27 @@ func (m *machine) Apply(log *raft.Log) any {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if next.Name != m.data.Name || next.Revision != m.data.Revision+1 {
+	// Only a pristine FSM can accept the exact prepared Native HA genesis.
+	// Its offline schema chain already has revisions; no live transition skips
+	// compatibility preparation or changes the existing migration rules.
+	genesis := false
+	if m.data.Revision == 0 && next.NativeHA && next.SchemaVersion == 3 {
+		canonical := clone(next)
+		canonical.UpdatedAt = time.Time{}
+		encoded, _ := json.Marshal(canonical)
+		genesis = fmt.Sprintf("%x", sha256.Sum256(encoded)) == m.nativeSeedHash
+	}
+	if next.Name != m.data.Name || (next.Revision != m.data.Revision+1 && !genesis) {
 		return ErrConflict
 	}
 	if next.Nodes == nil || next.Fleets == nil || next.Assignments == nil || next.Routes == nil || next.Policies == nil {
 		return fmt.Errorf("incomplete replicated Realm")
 	}
-	if e := realm.ValidateSchemaChange(m.data, next); e != nil {
+	if genesis {
+		if e := realm.ValidateSchema(next); e != nil {
+			return e
+		}
+	} else if e := realm.ValidateSchemaChange(m.data, next); e != nil {
 		return e
 	}
 	if next.SchemaVersion > 0 {

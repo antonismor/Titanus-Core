@@ -54,6 +54,9 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 	if err := plan.Validate(); err != nil {
 		return nil, err
 	}
+	if plan.Installation != nil && plan.Installation.Profile == model.ProfileNativeHA {
+		return nil, fmt.Errorf("Native HA requires the verified versioned release installer")
+	}
 	if opts.BinDir == "" {
 		opts.BinDir = "./bin"
 	}
@@ -404,6 +407,9 @@ func daemonEnvironment(plan model.RealmPlan, node, primary model.NodeSpec, opts 
 		if controller {
 			env += "TITANUS_HA_CONFIG=/etc/titanus/ha.json\n"
 		}
+	}
+	if controller && plan.Installation != nil && plan.Installation.Profile == model.ProfileNativeHA {
+		env += "TITANUS_POWER_FENCING_CONFIG=/etc/titanus/power-fencing.json\n"
 	}
 	return env
 }

@@ -3,6 +3,7 @@
 package fencing
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -34,48 +35,71 @@ type Power struct {
 	request func(Target, string, string) (json.RawMessage, error)
 }
 
-func privateFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
+// ReadPrivateFile opens exactly the inspected inode, without following symlinks.
+func ReadPrivateFile(path string) ([]byte, error) {
+	fd, e := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if e != nil {
+		return nil, e
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || st.Uid != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("fencing configuration/credentials require root-owned private regular files")
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	st, e := f.Stat()
+	if e != nil {
+		return nil, e
 	}
-	return nil
+	if !st.Mode().IsRegular() || st.Sys().(*syscall.Stat_t).Uid != 0 || st.Mode().Perm()&0077 != 0 || st.Size() > 1<<20 {
+		return nil, fmt.Errorf("private root-owned regular fencing file required")
+	}
+	return io.ReadAll(io.LimitReader(f, 1<<20))
+}
+
+func LoadTargets(path string, files bool) (map[string]Target, error) {
+	b, e := ReadPrivateFile(path)
+	if e != nil {
+		return nil, e
+	}
+	var targets map[string]Target
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if e = d.Decode(&targets); e != nil {
+		return nil, e
+	}
+	if d.Decode(new(any)) != io.EOF {
+		return nil, fmt.Errorf("trailing fencing configuration")
+	}
+	if e = ValidateTargets(targets, files); e != nil {
+		return nil, e
+	}
+	return targets, nil
 }
 func Load(path string) (*Power, error) {
-	if err := privateFile(path); err != nil {
-		return nil, err
+	targets, e := LoadTargets(path, true)
+	if e != nil {
+		return nil, e
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var targets map[string]Target
-	decoder := json.NewDecoder(f)
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(&targets); err != nil {
-		return nil, err
-	}
+	return &Power{Targets: targets}, nil
+}
+
+// ValidateTargets checks identity and provider syntax without contacting a target.
+func ValidateTargets(targets map[string]Target, files bool) error {
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("no power fencing targets")
+		return fmt.Errorf("no power fencing targets")
 	}
 	uuids := map[string]bool{}
 	for node, target := range targets {
 		if node == "" || !regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`).MatchString(target.UUID) || uuids[strings.ToLower(target.UUID)] {
-			return nil, fmt.Errorf("invalid/duplicate power target identity")
+			return fmt.Errorf("invalid/duplicate power target identity")
 		}
 		uuids[strings.ToLower(target.UUID)] = true
 		switch target.Provider {
 		case "ipmi":
-			if net.ParseIP(target.Address) == nil || target.User == "" {
-				return nil, fmt.Errorf("IPMI requires literal BMC address and user")
+			if net.ParseIP(target.Address) == nil || target.User == "" || target.CredentialFile == "" {
+				return fmt.Errorf("IPMI requires literal BMC address and user")
 			}
-			if err = privateFile(target.CredentialFile); err != nil {
-				return nil, err
+			if files {
+				if _, err := ReadPrivateFile(target.CredentialFile); err != nil {
+					return err
+				}
 			}
 		case "libvirt":
 			uri, e := url.Parse(target.Address)
@@ -86,7 +110,7 @@ func Load(path string) (*Power, error) {
 				}
 			}
 			if !valid {
-				return nil, fmt.Errorf("libvirt requires an explicit privileged hypervisor URI")
+				return fmt.Errorf("libvirt requires an explicit privileged hypervisor URI")
 			}
 		case "proxmox":
 			uri, e := url.Parse(target.Address)
@@ -94,20 +118,24 @@ func Load(path string) (*Power, error) {
 				uri.User == nil && uri.RawQuery == "" && uri.Fragment == "" &&
 				regexp.MustCompile(`^/api2/json/nodes/[A-Za-z0-9_.-]+/qemu/[1-9][0-9]*$`).MatchString(uri.Path) &&
 				regexp.MustCompile(`^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+![A-Za-z0-9_.-]+$`).MatchString(target.User)
-			if !valid {
-				return nil, fmt.Errorf("Proxmox requires an HTTPS VM API URL and API token identity")
+			if !valid || target.CredentialFile == "" || target.CAFile == "" {
+				return fmt.Errorf("Proxmox requires an HTTPS VM API URL and API token identity")
 			}
-			if err = privateFile(target.CredentialFile); err != nil {
-				return nil, err
+			if files {
+				if _, err := ReadPrivateFile(target.CredentialFile); err != nil {
+					return err
+				}
 			}
-			if err = privateFile(target.CAFile); err != nil {
-				return nil, err
+			if files {
+				if _, err := ReadPrivateFile(target.CAFile); err != nil {
+					return err
+				}
 			}
 		default:
-			return nil, fmt.Errorf("unsupported power fence provider")
+			return fmt.Errorf("unsupported power fence provider")
 		}
 	}
-	return &Power{Targets: targets}, nil
+	return nil
 }
 func (p *Power) command(binary string, args ...string) (string, error) {
 	if p.run != nil {
@@ -126,7 +154,7 @@ func (p *Power) proxmoxRequest(target Target, method, suffix string) (json.RawMe
 	if p.request != nil {
 		return p.request(target, method, suffix)
 	}
-	credential, err := os.ReadFile(target.CredentialFile)
+	credential, err := ReadPrivateFile(target.CredentialFile)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +162,7 @@ func (p *Power) proxmoxRequest(target Target, method, suffix string) (json.RawMe
 	if secret == "" {
 		return nil, fmt.Errorf("empty Proxmox API token secret")
 	}
-	caPEM, err := os.ReadFile(target.CAFile)
+	caPEM, err := ReadPrivateFile(target.CAFile)
 	if err != nil {
 		return nil, err
 	}

@@ -225,7 +225,8 @@ func (p RealmPlan) Validate() error {
 		}
 	}
 
-	return nil
+	if err := p.validateNativeHA(); err != nil { return err }
+ return nil
 }
 
 func (p RealmPlan) ControlNodes() []NodeSpec {

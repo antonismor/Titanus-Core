@@ -160,6 +160,8 @@ type Assignment struct {
 }
 
 type State struct {
+	NativeHA         bool                             `json:"native_ha,omitempty"`
+	WorkerFailovers  map[string]WorkerFailover        `json:"worker_failovers,omitempty"`
 	TaskSchedules    map[string]TaskSchedule          `json:"task_schedules,omitempty"`
 	SecretRotations  []SecretRotation                 `json:"secret_rotations,omitempty"`
 	SchemaVersion    int                              `json:"schema_version,omitempty"`
@@ -227,6 +229,9 @@ func (s *Store) UpsertNode(node Node) error {
 	}
 	if !version.Admits(node.Compatibility, s.data.SchemaVersion) {
 		return fmt.Errorf("node protocol/data capabilities do not admit active schema")
+	}
+	if s.data.NativeHA && hasCapability(node.Capabilities, model.CapabilityExecution) && hasCapability(node.Capabilities, model.CapabilityControl) {
+		return fmt.Errorf("Native HA separates Workers from CONTROL voters")
 	}
 	existing, existed := s.data.Nodes[node.ID]
 	if node.JoinedAt.IsZero() {
@@ -855,6 +860,15 @@ func (s *Store) DeleteFleet(name string) error {
 func (s *Store) SetAssignments(fleetName string, assignments []Assignment) error {
 	s.lock()
 	defer s.unlock()
+	if s.data.NativeHA {
+		for _, a := range assignments {
+			n, ok := s.data.Nodes[a.NodeID]
+			old, retained := s.data.Assignments[a.ID]
+			if !ok || ((n.PowerQuarantined || n.StorageQuarantined) && (!retained || failoverID(old) != failoverID(a))) {
+				return fmt.Errorf("new assignment cannot target missing or quarantined Worker")
+			}
+		}
+	}
 	for id, assignment := range s.data.Assignments {
 		if assignment.Fleet == fleetName {
 			delete(s.data.Assignments, id)

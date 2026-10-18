@@ -5,8 +5,8 @@
 The Community Edition supports up to **9 Realm nodes**, regardless of
 installation topology:
 - Standard Titanus Core
-- Titanus Native HA (planned installation profile)
-- Advanced / Custom (planned installation profile)
+- Titanus Native HA (opt-in fresh-install profile, 5–9 hosts)
+- Advanced / Custom
 
 A Realm node is a distinct participating **virtual machine or physical host**,
 independent of VM ID, management address, or capabilities. A host with multiple
@@ -57,11 +57,15 @@ The shared installation flow under development is:
 4. Choose Standard, Native HA, or Advanced/Custom profile.
 5. Assign roles, network, storage, preflight and reviewed deployment plan.
 
-The SSH mesh and profile menu are a **design proposal**, not implemented by
-this edition-limit change. Private keys stay private, host fingerprints must
-be verified, secrets must not be stored in plans or logs, and existing node
-keys/authorized_keys must never be destructively replaced. Implement these
-as separately reviewed changes with automated tests and operator opt-in.
+The Universal Installer candidate implements the profile menu and directed SSH
+trust bootstrap in [Phase A](universal-installer-phase-a.md), and the fresh Native
+HA profile in [Phase B](universal-installer-phase-b.md). Native HA requires three
+or five separate CONTROL voters and at least two EXECUTION Workers, all within
+the Community nine-host ceiling. Standard-to-HA conversion remains blocked.
+Private keys stay private, host fingerprints require approval, secrets are not
+stored in plans/logs, and existing node keys/authorized_keys are preserved.
+Fenced Workers require explicit, verified capacity recovery; no automatic
+power-on or application relocation is enabled.
 
 ## Release gate
 

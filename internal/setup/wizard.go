@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/ansi"
+	"github.com/antonismor/Titanus-Core/internal/fencing"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/version"
 )
@@ -38,16 +39,16 @@ func (w *Wizard) Run() (Result, error) {
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "The wizard will build and validate a deployment Plan before changing any host."))
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, "  1) Standard Titanus Core")
-	fmt.Fprintln(w.out, "  2) Titanus Native HA Cluster (planned; activation requires fencing/failback phase)")
+	fmt.Fprintln(w.out, "  2) Titanus Native HA Cluster (3/5 voters, separate Workers, verified power fencing)")
 	fmt.Fprintln(w.out, "  3) Advanced/Custom")
 	profileChoice, err := w.askInt("Installation profile", 1, 1, 3)
 	if err != nil {
 		return Result{}, err
 	}
-	if profileChoice == 2 {
-		return Result{}, fmt.Errorf("Native HA installation is not available in Phase A; no plan or host has been changed")
-	}
 	profile := model.ProfileStandard
+	if profileChoice == 2 {
+		profile = model.ProfileNativeHA
+	}
 	mode := 2
 	if profileChoice == 3 {
 		profile = model.ProfileCustom
@@ -63,6 +64,9 @@ func (w *Wizard) Run() (Result, error) {
 	operation, err := w.askInt("Operation: 1 initial install, 2 upgrade, 3 binary rollback", 1, 1, 3)
 	if err != nil {
 		return Result{}, err
+	}
+	if profile == model.ProfileNativeHA && operation != 1 {
+		return Result{}, fmt.Errorf("Native HA requires a fresh install; Standard-to-HA migration is not enabled")
 	}
 	install := &model.Installation{Profile: profile, Operation: []string{"install", "upgrade", "rollback"}[operation-1], APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242, Start: true}
 	plan := model.RealmPlan{
@@ -88,7 +92,11 @@ func (w *Wizard) Run() (Result, error) {
 
 	fmt.Fprintln(w.out, "Controllers use the configured HTTPS origins; register Gateway VIPs separately after exclusion policy is configured.")
 
-	nodeCount, err := w.askInt("Number of Titanus nodes (Community Edition)", 1, 1, model.CommunityNodeLimit)
+	minNodes := 1
+	if profile == model.ProfileNativeHA {
+		minNodes = 5
+	}
+	nodeCount, err := w.askInt("Number of Titanus nodes (Community Edition)", minNodes, minNodes, model.CommunityNodeLimit)
 	if err != nil {
 		return Result{}, err
 	}
@@ -107,7 +115,11 @@ func (w *Wizard) Run() (Result, error) {
 			if err != nil {
 				return Result{}, err
 			}
-			if controlNodes == 1 || controlNodes == 3 || controlNodes == 5 {
+			valid := controlNodes == 1 || controlNodes == 3 || controlNodes == 5
+			if profile == model.ProfileNativeHA {
+				valid = (controlNodes == 3 || controlNodes == 5) && controlNodes <= nodeCount-2
+			}
+			if valid {
 				break
 			}
 			fmt.Fprintln(w.out, "Choose 1, 3 or 5 CONTROL-capable nodes for a valid voting topology.")
@@ -149,6 +161,9 @@ func (w *Wizard) Run() (Result, error) {
 		defaultCaps := "EXECUTION"
 		if i < controlNodes {
 			defaultCaps = "CONTROL,EXECUTION"
+			if profile == model.ProfileNativeHA {
+				defaultCaps = "CONTROL"
+			}
 		}
 		if mode == 3 && i < storageNodesWanted {
 			defaultCaps += ",STORAGE"
@@ -262,6 +277,17 @@ func (w *Wizard) Run() (Result, error) {
 		}
 	}
 
+	if profile == model.ProfileNativeHA {
+		file, e := w.ask("Private fencing inventory JSON (node name -> provider/UUID/address/credential_file)", "", true)
+		if e != nil {
+			return Result{}, e
+		}
+		install.PowerFencing, e = fencing.LoadTargets(file, false)
+		if e != nil {
+			return Result{}, fmt.Errorf("fencing inventory: %w", e)
+		}
+		fmt.Fprintln(w.out, "Fenced Workers remain quarantined until explicit, verified recovery. Existing local Disks are never copied during failover.")
+	}
 	install.ReleaseVersion, err = w.ask("Target release version", version.Version, true)
 	if err != nil {
 		return Result{}, err

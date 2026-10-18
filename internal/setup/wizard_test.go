@@ -55,10 +55,10 @@ func TestWizardSavesOfflineVersionedLifecyclePlan(t *testing.T) {
 		}
 	}
 }
-func TestWizardRejectsNativeHABeforeSaving(t *testing.T) {
+func TestWizardRejectsNativeHAMigrationBeforeSaving(t *testing.T) {
 	var out bytes.Buffer
-	_, err := New(strings.NewReader("2\n"), &out).Run()
-	if err == nil || !strings.Contains(err.Error(), "not available in Phase A") {
+	_, err := New(strings.NewReader("2\n2\n"), &out).Run()
+	if err == nil || !strings.Contains(err.Error(), "fresh install") {
 		t.Fatal(err)
 	}
 }
@@ -84,5 +84,42 @@ func TestPasswordRefusesRedirectedInput(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "secret") {
 		t.Fatal("password exposed")
+	}
+}
+
+func TestWizardSavesNativeHAWithSeparateWorkersAndFencing(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned fencing files: covered by dedicated isolated root CI step")
+	}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "plan.json")
+	inventory := filepath.Join(dir, "fencing.json")
+	data := `{"node4":{"provider":"libvirt","uuid":"00000000-0000-0000-0000-000000000004","address":"qemu+ssh://root@hypervisor.example/system"},"node5":{"provider":"libvirt","uuid":"00000000-0000-0000-0000-000000000005","address":"qemu+ssh://root@hypervisor.example/system"}}`
+	if e := os.WriteFile(inventory, []byte(data), 0600); e != nil {
+		t.Fatal(e)
+	}
+	lines := []string{"2", "1", "LAB", "", "", "5", "", "22", "3"}
+	for i := 1; i <= 5; i++ {
+		lines = append(lines, fmt.Sprintf("node%d", i), fmt.Sprintf("192.0.2.%d", i), "", "")
+	}
+	lines = append(lines, inventory, "0.4.0-rc.13", strings.Repeat("a", 40), "amd.tar.gz", strings.Repeat("b", 64), "arm.tar.gz", strings.Repeat("c", 64), "", "", "", "", "", "y", "n", file, "")
+	var out bytes.Buffer
+	result, e := New(strings.NewReader(strings.Join(lines, "\n")), &out).Run()
+	if e != nil {
+		t.Fatalf("%v\n%s", e, out.String())
+	}
+	plan, e := model.LoadPlan(result.PlanPath)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if plan.Installation.Profile != model.ProfileNativeHA || len(plan.Installation.PowerFencing) != 2 || len(plan.ControlNodes()) != 3 {
+		t.Fatal("HA profile lost policy")
+	}
+	for _, n := range plan.ControlNodes() {
+		for _, c := range n.Capabilities {
+			if c == model.CapabilityExecution {
+				t.Fatal("voter also Worker")
+			}
+		}
 	}
 }

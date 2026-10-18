@@ -41,7 +41,7 @@ type RolloutPlan struct {
 }
 func assignmentAvailable(state State,a Assignment,now time.Time)bool {
  n,ok:=state.Nodes[a.NodeID]
- return ok && n.State==NodeReady && a.State==AssignmentActive && !a.LeaseExpiresAt.IsZero() && now.Before(a.LeaseExpiresAt)
+ return ok && n.State==NodeReady && !n.PowerQuarantined && !n.StorageQuarantined && a.State==AssignmentActive && !a.LeaseExpiresAt.IsZero() && now.Before(a.LeaseExpiresAt)
 }
 // Creation capacity never includes retirements not yet acknowledged by a node.
 func(p *PlacementEngine) Rolling(state State,f Fleet,now time.Time)RolloutPlan {

@@ -59,6 +59,14 @@ func PrepareRelease(plan model.RealmPlan, output string) (PreparedInstallation, 
 			}
 		}
 	}
+	var powerConfig map[string][]byte
+	if i.Profile == model.ProfileNativeHA {
+		var e error
+		powerConfig, e = nativeHAFencingConfig(i)
+		if e != nil {
+			return result, e
+		}
+	}
 	parent := filepath.Dir(output)
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return result, err
@@ -135,6 +143,11 @@ func PrepareRelease(plan model.RealmPlan, output string) (PreparedInstallation, 
 					return result, e
 				}
 				cfg["pki/ca.key"] = data
+			}
+			if controller {
+				for name, data := range powerConfig {
+					cfg[name] = data
+				}
 			}
 			cfg["daemon.env"] = []byte(daemonEnvironment(plan, node, primary, opts, controller, gateway))
 			cfg["agent.env"] = []byte(agentEnvironment(plan, node, primary, opts))
@@ -242,8 +255,11 @@ func releaseApplyScript(plan model.RealmPlan, node model.NodeSpec, i model.Insta
 		script += " --config \"$stage/config\""
 	}
 	script += "\n"
-	if i.Operation == "install" && controller {
+	if i.Operation == "install" && (controller || i.Profile == model.ProfileNativeHA) {
 		script += fmt.Sprintf("TITANUS_STATE_ROOT=/var/lib/titanus /usr/local/bin/titanus realm seed --name %s --fabric-cidr %s --service-cidr %s --node-prefix %d --vxlan-id %d\n", shellQuote(plan.RealmName), shellQuote(plan.FabricCIDR), shellQuote(plan.ServiceCIDR), i.NodePrefix, i.VXLANID)
+		if i.Profile == model.ProfileNativeHA {
+			script = strings.TrimSuffix(script, "\n") + " --native-ha\n"
+		}
 	}
 	if i.Operation == "install" && i.Start {
 		script += "systemctl enable titanusd.service titanus-agent.service\nsystemctl start titanusd.service titanus-agent.service\nsystemctl --no-pager is-active titanusd.service titanus-agent.service\n"
@@ -317,6 +333,22 @@ func (d *RealmDeployer) ApplyPrepared(plan model.RealmPlan, prepared PreparedIns
 		}
 		if _, err = d.SSH.Run(node, "command -v python3 && command -v systemctl && command -v tar && command -v sha256sum"); err != nil {
 			return nil, fmt.Errorf("required release tools missing on %s: %w", node.Name, err)
+		}
+		if plan.Installation.Profile == model.ProfileNativeHA && hasCapability(node, model.CapabilityControl) {
+			binaries := map[string]bool{}
+			for _, target := range plan.Installation.PowerFencing {
+				if target.Provider == "ipmi" {
+					binaries["/usr/bin/ipmitool"] = true
+				}
+				if target.Provider == "libvirt" {
+					binaries["/usr/bin/virsh"] = true
+				}
+			}
+			for binary := range binaries {
+				if _, err = d.SSH.Run(node, remoteSudoPrefix+"; $SUDO test -x "+shellQuote(binary)); err != nil {
+					return nil, fmt.Errorf("fencing provider tool missing on %s: %w", node.Name, err)
+				}
+			}
 		}
 		if prepared.Operation != "install" {
 			// Read only the public build identity and configured Realm/node IDs.
