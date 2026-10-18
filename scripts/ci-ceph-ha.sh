@@ -76,9 +76,11 @@ for attempt in $(seq 1 60); do if ceph quorum_status -f json | jq -e '(.quorum_n
 if (( ready == 0 )); then echo 'Three monitor quorum unavailable' >&2; exit 1; fi
 ceph mon enable-msgr2
 ceph config set mon auth_allow_insecure_global_id_reclaim false
-ceph auth get-or-create mgr.a mon 'profile mgr' osd 'allow *' -o "$root/mgr.a.keyring"
-mkdir -p "$root/mgr.a"; cp "$root/mgr.a.keyring" "$root/mgr.a/keyring"
-ceph-mgr -i a -f -c "$conf" >"$root/mgr.stdout" 2>&1 & pids+=("$!")
+for name in a b; do
+ mkdir -p "$root/mgr.$name"
+ ceph auth get-or-create "mgr.$name" mon 'profile mgr' osd 'allow *' -o "$root/mgr.$name/keyring"
+ ceph-mgr -i "$name" -f -c "$conf" >"$root/mgr.$name.stdout" 2>&1 & pid=$!; pids+=("$pid"); if [[ $name == a ]]; then mgr_a_pid=$pid; fi
+ done
 for id in 0 1 2; do
  osd_uuid=$(cat /proc/sys/kernel/random/uuid)
  actual=$(ceph osd new "$osd_uuid"); test "$actual" = "$id"
@@ -111,8 +113,8 @@ rados -p titanus put ha-proof "$root/before"
 # Lose one planned monitor and one OSD failure domain together. Remaining
 # quorum and min_size=2 must permit real writes; the HA readiness gate refuses
 # activation until the entire planned storage topology is healthy again.
-kill -KILL "$mon_a_pid" "$osd_0_pid"
-wait "$mon_a_pid" || true; wait "$osd_0_pid" || true
+kill -KILL "$mon_a_pid" "$osd_0_pid" "$mgr_a_pid"
+wait "$mon_a_pid" || true; wait "$osd_0_pid" || true; wait "$mgr_a_pid" || true
 ready=0
 for attempt in $(seq 1 90); do
  if ceph quorum_status -f json | jq -e '(.quorum_names|length)==2' >/dev/null && ceph osd dump -f json | jq -e '[.osds[]|select(.up==1)]|length==2' >/dev/null; then ready=1; break; fi
@@ -125,6 +127,7 @@ printf 'DURING_FAILURE_%s\n' "$uuid" > "$root/during"
 rados -p titanus put ha-proof "$root/during"
 ceph-mon -i a -f -c "$conf" >"$root/mon.a.rejoin.stdout" 2>&1 & pids+=("$!")
 ceph-osd -i 0 -f -c "$conf" --no-mon-config --monmap "$root/monmap" >"$root/osd.0.rejoin.stdout" 2>&1 & pids+=("$!")
+ceph-mgr -i a -f -c "$conf" >"$root/mgr.a.rejoin.stdout" 2>&1 & pids+=("$!")
 wait_clean
 go test ./internal/deploy -run '^TestNativeThreeMonitorHAPolicy$' -count=1 -v -timeout 120s
 rados -p titanus get ha-proof "$root/read-after"; cmp "$root/during" "$root/read-after"

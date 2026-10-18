@@ -15,6 +15,7 @@ changing monitor membership. CONTROL and EXECUTION remain separate as in Phase B
 STORAGE can be combined with either role. Counting logical hosts does not prove
 independent hardware, power or network domains.
 
+An active MGR and a standby must run on distinct planned STORAGE hosts.
 RBD uses the `titanus` pool. CephFS uses `titanusfs_meta` and `titanusfs_data`, and
 requires an active MDS plus a standby on a different planned STORAGE host. RGW HA
 is refused until its complete availability policy is implemented. Existing
@@ -171,7 +172,7 @@ checks that the genesis revision remains part of its consensus binding.
 
 CI runs the transition on AMD64 and ARM64. The Ceph fixture runs three real
 monitors and three native OSDs on sparse files in an isolated runner, verifies
-host-domain replication, loses one monitor and OSD together, writes/reads data
+host-domain replication, loses one monitor, OSD and MGR together, writes/reads data
 through the remaining quorum/copies, then verifies clean rejoin and retained
 bytes. Existing native RBD/CephFS writer-fencing tests remain in the five-job gate.
 These fixtures share a kernel. Independent VM/physical host power loss, management

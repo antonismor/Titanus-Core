@@ -115,7 +115,13 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 		} `json:"status"`
 		Quorum json.RawMessage `json:"quorum"`
 		FS     json.RawMessage `json:"fs"`
-		Pools  []struct {
+		MGR    struct {
+			Active   string `json:"active_name"`
+			Standbys []struct {
+				Name string `json:"name"`
+			} `json:"standbys"`
+		} `json:"mgr"`
+		Pools []struct {
 			Name string `json:"pool_name"`
 			Size int    `json:"size"`
 			Min  int    `json:"min_size"`
@@ -164,6 +170,19 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 	if report.Rule.Type != 1 || len(steps) != 3 || steps[0].Op != "take" || steps[0].ItemName != "default" || (steps[1].Op != "chooseleaf_firstn" && steps[1].Op != "chooseleaf_indep") || steps[1].Type != "host" || steps[1].Num != 0 || steps[2].Op != "emit" {
 		return fmt.Errorf("Native HA requires the default replicated host-domain CRUSH rule")
 	}
+	plannedManagers := map[string]bool{}
+	for _, n := range p.StorageNodes() {
+		plannedManagers[n.Name] = true
+	}
+	managerReady := false
+	for _, m := range report.MGR.Standbys {
+		if plannedManagers[report.MGR.Active] && plannedManagers[m.Name] && report.MGR.Active != m.Name {
+			managerReady = true
+		}
+	}
+	if !managerReady {
+		return fmt.Errorf("Native HA requires active and standby MGR on separate planned storage hosts")
+	}
 	if p.Ceph.EnableCephFS {
 		if e := validateHAMDS(report.FS, p); e != nil {
 			return e
@@ -205,7 +224,7 @@ func ValidateHACephReport(data []byte, p model.RealmPlan) error {
 }
 func HACephProbeCommand() string {
 	// Each subprocess is bounded; no cluster settings or data are modified.
-	return `python3 -c 'import json,subprocess,os; base=json.loads(os.environ.get("TITANUS_CEPH_ARGS","[]")); run=lambda *a: json.loads(subprocess.check_output(["ceph",*base,*a,"--format","json"],timeout=15)); print(json.dumps({"status":run("status"),"quorum":run("quorum_status"),"pools":run("osd","pool","ls","detail"),"rule":run("osd","crush","rule","dump","titanus-ha-host"),"tree":run("osd","tree"),"fs":run("fs","dump")}))'`
+	return `python3 -c 'import json,subprocess,os; base=json.loads(os.environ.get("TITANUS_CEPH_ARGS","[]")); run=lambda *a: json.loads(subprocess.check_output(["ceph",*base,*a,"--format","json"],timeout=15)); print(json.dumps({"status":run("status"),"quorum":run("quorum_status"),"pools":run("osd","pool","ls","detail"),"rule":run("osd","crush","rule","dump","titanus-ha-host"),"tree":run("osd","tree"),"fs":run("fs","dump"),"mgr":run("mgr","dump")}))'`
 }
 func (d *CephDeployer) verifyHACeph(primary model.NodeSpec, p model.RealmPlan) error {
 	var last error

@@ -13,7 +13,7 @@ func haReportFixture() (map[string]any, model.RealmPlan) {
 	for _, name := range []string{"a", "b", "c"} {
 		p.Nodes = append(p.Nodes, model.NodeSpec{Name: name, Capabilities: []model.Capability{model.CapabilityStorage}})
 	}
-	report := map[string]any{"quorum": map[string]any{"quorum_names": []string{"a", "b", "c"}, "monmap": map[string]any{"mons": []map[string]any{{"name": "a"}, {"name": "b"}, {"name": "c"}}}}, "status": map[string]any{"health": map[string]any{"status": "HEALTH_OK"}, "pgmap": map[string]any{"num_pgs": 8, "pgs_by_state": []map[string]any{{"state_name": "active+clean", "count": 8}}}}, "pools": []map[string]any{{"pool_name": "titanus", "size": 3, "min_size": 2, "crush_rule": 7}}, "rule": map[string]any{"rule_id": 7, "type": 1, "steps": []map[string]any{{"op": "take", "item_name": "default"}, {"op": "chooseleaf_firstn", "type": "host", "num": 0}, {"op": "emit"}}}, "tree": map[string]any{"nodes": []map[string]any{{"id": 0, "type": "osd", "status": "up"}, {"id": 1, "type": "osd", "status": "up"}, {"id": 2, "type": "osd", "status": "up"}, {"id": -1, "name": "a", "type": "host", "children": []int{0}}, {"id": -2, "name": "b", "type": "host", "children": []int{1}}, {"id": -3, "name": "c", "type": "host", "children": []int{2}}}}}
+	report := map[string]any{"mgr": map[string]any{"active_name": "a", "standbys": []map[string]any{{"name": "b"}}}, "quorum": map[string]any{"quorum_names": []string{"a", "b", "c"}, "monmap": map[string]any{"mons": []map[string]any{{"name": "a"}, {"name": "b"}, {"name": "c"}}}}, "status": map[string]any{"health": map[string]any{"status": "HEALTH_OK"}, "pgmap": map[string]any{"num_pgs": 8, "pgs_by_state": []map[string]any{{"state_name": "active+clean", "count": 8}}}}, "pools": []map[string]any{{"pool_name": "titanus", "size": 3, "min_size": 2, "crush_rule": 7}}, "rule": map[string]any{"rule_id": 7, "type": 1, "steps": []map[string]any{{"op": "take", "item_name": "default"}, {"op": "chooseleaf_firstn", "type": "host", "num": 0}, {"op": "emit"}}}, "tree": map[string]any{"nodes": []map[string]any{{"id": 0, "type": "osd", "status": "up"}, {"id": 1, "type": "osd", "status": "up"}, {"id": 2, "type": "osd", "status": "up"}, {"id": -1, "name": "a", "type": "host", "children": []int{0}}, {"id": -2, "name": "b", "type": "host", "children": []int{1}}, {"id": -3, "name": "c", "type": "host", "children": []int{2}}}}}
 	return report, p
 }
 func TestHACephEvidenceRejectsUnsafeQuorumPoolsAndDomains(t *testing.T) {
@@ -23,6 +23,9 @@ func TestHACephEvidenceRejectsUnsafeQuorumPoolsAndDomains(t *testing.T) {
 		t.Fatal(e)
 	}
 	changes := []func(map[string]any){
+		func(r map[string]any) {
+			r["mgr"] = map[string]any{"active_name": "a", "standbys": []map[string]any{{"name": "a"}}}
+		},
 		func(r map[string]any) { r["quorum"].(map[string]any)["quorum_names"] = []string{"a", "a", "c"} },
 		func(r map[string]any) { r["pools"].([]map[string]any)[0]["min_size"] = 1 },
 		func(r map[string]any) { r["pools"].([]map[string]any)[0]["size"] = 2 },
