@@ -61,7 +61,9 @@ The Universal Installer candidate implements the profile menu and directed SSH
 trust bootstrap in [Phase A](universal-installer-phase-a.md), and the fresh Native
 HA profile in [Phase B](universal-installer-phase-b.md). Native HA requires three
 or five separate CONTROL voters and at least two EXECUTION Workers, all within
-the Community nine-host ceiling. Standard-to-HA conversion remains blocked.
+the Community nine-host ceiling. [Phase C](universal-installer-phase-c.md) adds
+Ceph HA and an explicit backup-bound transition for existing 3/5-voter Realms
+with 5–9 hosts. Single-controller membership conversion remains blocked.
 Private keys stay private, host fingerprints require approval, secrets are not
 stored in plans/logs, and existing node keys/authorized_keys are preserved.
 Fenced Workers require explicit, verified capacity recovery; no automatic

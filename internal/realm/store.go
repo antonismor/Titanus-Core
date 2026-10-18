@@ -160,6 +160,7 @@ type Assignment struct {
 }
 
 type State struct {
+	HAActivation     *HAActivation                    `json:"ha_activation,omitempty"`
 	NativeHA         bool                             `json:"native_ha,omitempty"`
 	WorkerFailovers  map[string]WorkerFailover        `json:"worker_failovers,omitempty"`
 	TaskSchedules    map[string]TaskSchedule          `json:"task_schedules,omitempty"`

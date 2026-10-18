@@ -11,6 +11,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
+	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/observe"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/source"
@@ -24,28 +25,30 @@ type LeaderGate interface {
 }
 
 type Server struct {
-	Central          *observe.Central
-	M6Client         M6Client
-	NodeID           string
-	StateRoot        string
-	SchemaPeers      []SchemaPeer
-	TransitionClient TransitionClient
-	Gateway          GatewayRuntime
-	GatewayClient    GatewayClient
-	PowerFencer      PowerFencer
-	WorkerRecovery   WorkerRecoveryClient
-	SourcePeers      []string
-	SourceReplicator SourceReplicator
-	SecretKeyring    string
-	Observations     *observe.Recorder
-	Disks            *disk.Manager
-	Consensus        LeaderGate
-	Store            *realm.Store
-	Runtime          *unitruntime.Manager
-	Sources          *source.Manager
-	Leases           *lease.Manager
-	CAPath           string
-	Authority        *identity.Authority
+	HATransitionClient HATransitionClient
+	HACephProbe        func(model.RealmPlan) error
+	Central            *observe.Central
+	M6Client           M6Client
+	NodeID             string
+	StateRoot          string
+	SchemaPeers        []SchemaPeer
+	TransitionClient   TransitionClient
+	Gateway            GatewayRuntime
+	GatewayClient      GatewayClient
+	PowerFencer        PowerFencer
+	WorkerRecovery     WorkerRecoveryClient
+	SourcePeers        []string
+	SourceReplicator   SourceReplicator
+	SecretKeyring      string
+	Observations       *observe.Recorder
+	Disks              *disk.Manager
+	Consensus          LeaderGate
+	Store              *realm.Store
+	Runtime            *unitruntime.Manager
+	Sources            *source.Manager
+	Leases             *lease.Manager
+	CAPath             string
+	Authority          *identity.Authority
 }
 
 type PulseRequest struct {
@@ -58,6 +61,8 @@ func New(store *realm.Store, runtime *unitruntime.Manager, sources *source.Manag
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/node/ha-readiness", s.authorize(s.haReadiness))
+	mux.HandleFunc("/v1/realm/ha/activate", s.authorize(s.haActivate))
 	s.registerM6(mux)
 	mux.HandleFunc("/v1/compatibility", s.authorize(s.compatibility))
 	mux.HandleFunc("/v1/node/schema-floor", s.authorize(s.schemaFloor))
@@ -397,6 +402,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
 		state.StorageFailovers = nil
 		state.WorkerFailovers = nil
+		state.HAActivation = nil
 		state.UnitMappings = nil
 		state.Disks = nil
 		state.Secrets = nil

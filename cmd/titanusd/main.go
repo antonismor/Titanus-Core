@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	buildversion "github.com/antonismor/Titanus-Core/internal/version"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -18,10 +20,12 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/consensus"
 	"github.com/antonismor/Titanus-Core/internal/controlapi"
+	"github.com/antonismor/Titanus-Core/internal/deploy"
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/fencing"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/lease"
+	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/observe"
 	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/realm"
@@ -256,6 +260,27 @@ func main() {
 	if controllerMode {
 		api.GatewayClient = clusterClient
 		api.WorkerRecovery = clusterClient
+		api.HATransitionClient = clusterClient
+		api.HACephProbe = func(p model.RealmPlan) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			cfg, e := api.Disks.CephConfig()
+			if e != nil {
+				return e
+			}
+			args := []string{"--cluster", cfg.Cluster, "--name", cfg.Client, "--conf", cfg.Conf}
+			if cfg.Keyring != "" {
+				args = append(args, "--keyring", cfg.Keyring)
+			}
+			encoded, _ := json.Marshal(args)
+			cmd := exec.CommandContext(ctx, "bash", "-c", deploy.HACephProbeCommand())
+			cmd.Env = append(os.Environ(), "TITANUS_CEPH_ARGS="+string(encoded))
+			b, e := cmd.Output()
+			if e != nil {
+				return fmt.Errorf("Ceph HA read-only probe failed: %w", e)
+			}
+			return deploy.ValidateHACephCatalogReport(b, p, api.Store.Snapshot().Disks)
+		}
 		if path := os.Getenv("TITANUS_POWER_FENCING_CONFIG"); path != "" {
 			api.PowerFencer, err = fencing.Load(path)
 			if err != nil {

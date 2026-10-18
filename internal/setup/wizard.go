@@ -61,12 +61,21 @@ func (w *Wizard) Run() (Result, error) {
 		}
 	}
 
+	if profile == model.ProfileNativeHA {
+		ceph, e := w.askBool("Configure Native HA Ceph storage (three hosts, three copies, min_size=2)", false)
+		if e != nil {
+			return Result{}, e
+		}
+		if ceph {
+			mode = 3
+		}
+	}
 	operation, err := w.askInt("Operation: 1 initial install, 2 upgrade, 3 binary rollback", 1, 1, 3)
 	if err != nil {
 		return Result{}, err
 	}
 	if profile == model.ProfileNativeHA && operation != 1 {
-		return Result{}, fmt.Errorf("Native HA requires a fresh install; Standard-to-HA migration is not enabled")
+		return Result{}, fmt.Errorf("Native HA installer requires a fresh install; use titanus ha for the separate verified existing-Realm transition")
 	}
 	install := &model.Installation{Profile: profile, Operation: []string{"install", "upgrade", "rollback"}[operation-1], APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242, Start: true}
 	plan := model.RealmPlan{
@@ -131,7 +140,11 @@ func (w *Wizard) Run() (Result, error) {
 		if nodeCount < defaultStorage {
 			defaultStorage = nodeCount
 		}
-		storageNodesWanted, err = w.askInt("How many nodes should provide Ceph storage", defaultStorage, 1, nodeCount)
+		minStorage := 1
+		if profile == model.ProfileNativeHA {
+			minStorage = 3
+		}
+		storageNodesWanted, err = w.askInt("How many nodes should provide Ceph storage", defaultStorage, minStorage, nodeCount)
 		if err != nil {
 			return Result{}, err
 		}
@@ -221,7 +234,12 @@ func (w *Wizard) Run() (Result, error) {
 		if defaultReplication < 1 {
 			defaultReplication = 1
 		}
-		plan.Ceph.Replication, err = w.askInt("Ceph replication copies", defaultReplication, 1, 9)
+		if profile == model.ProfileNativeHA {
+			plan.Ceph.Replication = 3
+			fmt.Fprintln(w.out, "Native HA storage: replication=3, min_size=2, three monitors, host failure domains.")
+		} else {
+			plan.Ceph.Replication, err = w.askInt("Ceph replication copies", defaultReplication, 1, 9)
+		}
 		if err != nil {
 			return Result{}, err
 		}
@@ -237,7 +255,9 @@ func (w *Wizard) Run() (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		plan.Ceph.EnableRGW, err = w.askBool("Enable RGW object storage", false)
+		if profile != model.ProfileNativeHA {
+			plan.Ceph.EnableRGW, err = w.askBool("Enable RGW object storage", false)
+		}
 		if err != nil {
 			return Result{}, err
 		}

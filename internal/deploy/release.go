@@ -62,7 +62,7 @@ func PrepareRelease(plan model.RealmPlan, output string) (PreparedInstallation, 
 	var powerConfig map[string][]byte
 	if i.Profile == model.ProfileNativeHA {
 		var e error
-		powerConfig, e = nativeHAFencingConfig(i)
+		powerConfig, e = NativeHAFencingConfig(i)
 		if e != nil {
 			return result, e
 		}

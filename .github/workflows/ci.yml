@@ -43,7 +43,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Race checks
-        run: go test -race ./internal/sshtrust ./internal/setup ./internal/remote ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
+        run: go test -race ./internal/haprofile ./internal/hatransition ./internal/sshtrust ./internal/setup ./internal/remote ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
 
       - name: Cross-build native ARM64 runtime
         run: |
@@ -129,7 +129,10 @@ jobs:
         run: go test -race ./internal/consensus ./internal/controllerclient -count=1 -timeout 180s
 
       - name: Restore offline three-voter state, private keys, Sources and local bytes
-        run: sudo env "PATH=$PATH" TITANUS_BACKUP_NATIVE_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" TITANUS_BACKUP_TEST_REVISION="$(git rev-parse HEAD)" go test ./internal/backup -run 'TestNativeOfflineQuorumRecovery|TestNativeMigratedQuorumRecovery|TestNativePendingRestoreBlocksDaemon|TestMappedOwnershipLedgerPreserved|TestNativeClusterRecovery' -count=1 -v -timeout 120s
+        run: sudo env "PATH=$PATH" TITANUS_BACKUP_NATIVE_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" TITANUS_BACKUP_TEST_REVISION="$(git rev-parse HEAD)" go test ./internal/backup -run 'TestNativeOfflineQuorumRecovery|TestNativeMigratedQuorumRecovery|TestNativeHASeedQuorumRecovery|TestNativePendingRestoreBlocksDaemon|TestMappedOwnershipLedgerPreserved|TestNativeClusterRecovery' -count=1 -v -timeout 120s
+
+      - name: Transition five existing hosts with authenticated backups and original TLS quorum
+        run: sudo env "PATH=$PATH" TITANUS_HA_TRANSITION_NATIVE_TEST=1 go test -ldflags "-X github.com/antonismor/Titanus-Core/internal/version.Revision=$(git rev-parse HEAD)" ./internal/hatransition -run TestNativeAuthenticatedProfileTransition -count=1 -race -v -timeout 120s
 
       - name: Kill and recover real HA daemons
         run: sudo env "PATH=$PATH" TITANUS_HA_DAEMON_TEST=1 TITANUS_DAEMON_BINARY="$PWD/bin/titanusd" go test ./cmd/titanusd -run TestNativeHADaemonCrash -count=1 -v -timeout 180s
@@ -310,3 +313,5 @@ jobs:
         run: TITANUS_CEPH_BOOTSTRAP_TEST=1 go test ./internal/deploy -run TestCephBootstrapMonmapCreationIsRerunnable -count=1 -v
       - name: Real RBD and CephFS snapshot, restore, exclusion and fencing
         run: sudo env "PATH=$PATH" bash scripts/ci-ceph-storage.sh
+      - name: Verify three native monitors, host-domain copies and storage recovery
+        run: sudo env "PATH=$PATH" bash scripts/ci-ceph-ha.sh

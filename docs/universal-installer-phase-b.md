@@ -1,6 +1,11 @@
 # Universal Installer — Phase B: Titanus Native HA
 
-Phase B is stacked on Phase A (#46) and the Community edition changes (#45).
+Phase B follows Phase A (#46) and the Community edition changes (#45).
+All three dependency PRs were integrated in order after their own 5/5 CI gates.
+[Phase C](universal-installer-phase-c.md) adds optional Ceph HA and the explicit
+backup-bound transition for supported existing 3/5-voter Realms. The fresh-install
+restrictions below describe Phase B; the ordinary installer still never converts
+an existing Realm.
 The existing Titanus Realm, Pulse, Unit, Fleet, Gateway and native storage model
 is retained. No external orchestration platform or new workload abstraction is
 introduced. This change does not access any deployed infrastructure.

@@ -9,7 +9,7 @@ import (
 
 // All credential bytes are in the private, checksum-bound configuration archive,
 // never in the plan, generated shell, logs, or non-controller packages.
-func nativeHAFencingConfig(i model.Installation) (map[string][]byte, error) {
+func NativeHAFencingConfig(i model.Installation) (map[string][]byte, error) {
 	cfg := map[string][]byte{}
 	targets := map[string]fencing.Target{}
 	for id, t := range i.PowerFencing {

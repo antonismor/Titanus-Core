@@ -20,7 +20,7 @@ func TestNativeHAFencingPackagesPrivatePinnedCredentials(t *testing.T) {
 		t.Fatal(e)
 	}
 	i := model.Installation{Profile: model.ProfileNativeHA, Operation: "install", PowerFencing: map[string]fencing.Target{"worker": {Provider: "ipmi", UUID: "00000000-0000-0000-0000-000000000004", Address: "192.0.2.50", User: "fencer", CredentialFile: secret}}}
-	cfg, e := nativeHAFencingConfig(i)
+	cfg, e := NativeHAFencingConfig(i)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -40,7 +40,7 @@ func TestNativeHAFencingPackagesPrivatePinnedCredentials(t *testing.T) {
 	if e = os.Chmod(secret, 0644); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = nativeHAFencingConfig(i); e == nil {
+	if _, e = NativeHAFencingConfig(i); e == nil {
 		t.Fatal("public credential packaged")
 	}
 	os.Chmod(secret, 0600)
@@ -51,7 +51,7 @@ func TestNativeHAFencingPackagesPrivatePinnedCredentials(t *testing.T) {
 	target := i.PowerFencing["worker"]
 	target.CredentialFile = link
 	i.PowerFencing["worker"] = target
-	if _, e = nativeHAFencingConfig(i); e == nil {
+	if _, e = NativeHAFencingConfig(i); e == nil {
 		t.Fatal("redirected secret packaged")
 	}
 }
