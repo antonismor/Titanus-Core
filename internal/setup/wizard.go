@@ -33,7 +33,7 @@ func (w *Wizard) Run() (Result, error) {
 	ansi.Banner()
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.White, "Create a Titanus Realm"))
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Cyan, fmt.Sprintf("Community Edition: up to %d Realm nodes (VMs/hosts). Workloads do not count.", model.CommunityNodeLimit)))
-	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "Enterprise Edition: unlimited nodes and 90-day trial planned for public launch."))
+	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "Enterprise Edition: Soon Available (planned unlimited nodes, 90-day trial)."))
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "The wizard will build and validate a deployment Plan before changing any host."))
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, "  "+ansi.Paint(ansi.Cyan, "1)")+" Single-node Titanus")
