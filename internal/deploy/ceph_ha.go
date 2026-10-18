@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"net"
 	"strings"
 	"time"
 )
@@ -30,6 +31,12 @@ func validateHAQuorum(data []byte, p model.RealmPlan) error {
 			Mons []struct {
 				Name   string `json:"name"`
 				Public string `json:"public_addr"`
+				Addr   string `json:"addr"`
+				Addrs  struct {
+					Values []struct {
+						Addr string `json:"addr"`
+					} `json:"addrvec"`
+				} `json:"public_addrs"`
 			} `json:"mons"`
 		} `json:"monmap"`
 	}
@@ -57,8 +64,23 @@ func validateHAQuorum(data []byte, p model.RealmPlan) error {
 		if !expected[mon.Name] || seen[mon.Name] {
 			return fmt.Errorf("monitor map differs from planned membership")
 		}
-		if ip := addresses[mon.Name]; ip != "" && !strings.HasPrefix(mon.Public, "v1:"+ip+":") && !strings.HasPrefix(mon.Public, ip+":") {
-			return fmt.Errorf("monitor address differs from planned identity")
+		if ip := addresses[mon.Name]; ip != "" {
+			candidates := []string{mon.Public, mon.Addr}
+			for _, a := range mon.Addrs.Values {
+				candidates = append(candidates, a.Addr)
+			}
+			found := false
+			for _, address := range candidates {
+				address = strings.TrimPrefix(strings.TrimPrefix(address, "v1:"), "v2:")
+				address = strings.SplitN(address, "/", 2)[0]
+				host, _, e := net.SplitHostPort(address)
+				if e == nil && host == ip {
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("monitor address differs from planned identity")
+			}
 		}
 		seen[mon.Name] = true
 	}

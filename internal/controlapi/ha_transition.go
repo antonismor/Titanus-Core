@@ -11,17 +11,20 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/haprofile"
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/offline"
 
 	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
 type HAReadiness struct {
-	ID           string        `json:"id"`
-	Node         string        `json:"node"`
-	Realm        string        `json:"realm"`
-	BackupSetID  string        `json:"backup_set_id"`
-	Capabilities string        `json:"capabilities"`
-	Build        version.Build `json:"build"`
+	ID               string        `json:"id"`
+	Node             string        `json:"node"`
+	Realm            string        `json:"realm"`
+	BackupSetID      string        `json:"backup_set_id"`
+	Capabilities     string        `json:"capabilities"`
+	Build            version.Build `json:"build"`
+	FloorSchema      int           `json:"floor_schema"`
+	FloorMigrationID string        `json:"floor_migration_id"`
 }
 type HAActivateRequest struct {
 	Prepared         haprofile.Prepared `json:"prepared"`
@@ -61,7 +64,14 @@ func (s *Server) haReady(id string) (HAReadiness, error) {
 			return HAReadiness{}, fmt.Errorf("running fencing configuration differs from staged inventory")
 		}
 	}
-	return HAReadiness{r.ID, r.Node, r.Realm, r.BackupSetID, r.TargetCapabilities, version.Info()}, nil
+	floor, e := offline.ReadSchemaFloor(s.StateRoot)
+	if e != nil || floor.Schema != 4 || floor.Realm != r.Realm {
+		return HAReadiness{}, fmt.Errorf("host has not durably prepared schema four")
+	}
+	if e = offline.CheckSchemaFloor(s.StateRoot); e != nil {
+		return HAReadiness{}, e
+	}
+	return HAReadiness{ID: r.ID, Node: r.Node, Realm: r.Realm, BackupSetID: r.BackupSetID, Capabilities: r.TargetCapabilities, Build: version.Info(), FloorSchema: floor.Schema, FloorMigrationID: floor.MigrationID}, nil
 }
 func (s *Server) haReadiness(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -147,7 +157,7 @@ func (s *Server) haActivate(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ready, e = s.HATransitionClient.HAReadiness(node.Address, p.ID)
 		}
-		if e != nil || ready.ID != p.ID || ready.Node != n.Name || ready.Realm != state.Name || ready.BackupSetID != p.BackupSetID || ready.Capabilities != haprofile.Capabilities(n.Capabilities) || !compatibleHABuild(ready.Build) {
+		if e != nil || ready.ID != p.ID || ready.Node != n.Name || ready.Realm != state.Name || ready.BackupSetID != p.BackupSetID || ready.Capabilities != haprofile.Capabilities(n.Capabilities) || !compatibleHABuild(ready.Build) || ready.FloorSchema != 4 || len(state.SchemaMigrations) != 4 || ready.FloorMigrationID != state.SchemaMigrations[3].ID {
 			writeError(w, 409, fmt.Errorf("host %s has not acknowledged the exact staged transition/build", n.Name))
 			return
 		}

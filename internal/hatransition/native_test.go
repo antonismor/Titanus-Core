@@ -399,6 +399,13 @@ func TestNativeAuthenticatedProfileTransition(t *testing.T) {
 	for schema := 1; schema <= 4; schema++ {
 		post("/v1/realm/schema", controlapi.SchemaRequest{Target: schema, ID: fmt.Sprintf("native-transition-schema-%d", schema), ExpectedRevision: stores[l].Snapshot().Revision}, 200)
 	}
+
+	pendingPath := plans[4].StateRoot + ".recovery-pending"
+	pending, e := os.ReadFile(pendingPath)
+	must(e)
+	must(os.WriteFile(pendingPath, []byte("interrupted or mismatched floor"), 0600))
+	post("/v1/realm/ha/activate", controlapi.HAActivateRequest{Prepared: p, ExpectedRevision: stores[l].Snapshot().Revision}, 409)
+	must(os.WriteFile(pendingPath, pending, 0600))
 	post("/v1/realm/ha/activate", controlapi.HAActivateRequest{Prepared: p, ExpectedRevision: stores[l].Snapshot().Revision - 1}, 409)
 	post("/v1/realm/ha/activate", controlapi.HAActivateRequest{Prepared: p, ExpectedRevision: stores[l].Snapshot().Revision}, 200)
 	after := stores[l].Snapshot()

@@ -94,3 +94,17 @@ func TestHACephHostLocationUsesPlannedNodeIdentity(t *testing.T) {
 		t.Fatal("legacy config changed")
 	}
 }
+
+func TestHACephMonitorAddressFormatsBindPlannedIP(t *testing.T) {
+	_, p := haReportFixture()
+	p.Nodes[0].CephPublicIP = "192.0.2.1"
+	for _, field := range []string{`"public_addr":"192.0.2.1:6789/0"`, `"addr":"v1:192.0.2.1:6789/0"`, `"public_addrs":{"addrvec":[{"addr":"192.0.2.1:3300","type":"v2"}]}`} {
+		raw := `{"quorum_names":["a","b","c"],"monmap":{"mons":[{"name":"a",` + field + `},{"name":"b"},{"name":"c"}]}}`
+		if e := validateHAQuorum([]byte(raw), p); e != nil {
+			t.Fatal(e)
+		}
+		if validateHAQuorum([]byte(strings.ReplaceAll(raw, "192.0.2.1", "192.0.2.2")), p) == nil {
+			t.Fatal("wrong monitor IP accepted")
+		}
+	}
+}
