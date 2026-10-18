@@ -31,17 +31,19 @@ units, Ceph devices, or Realm data to force a plan under the limit.
 Do not remove a live Ceph, quorum or execution node merely to reach the count;
 plan a safe topology or edition migration separately.
 
-## Enterprise Edition (planned)
+## Enterprise Edition — Soon Available
+
+**Current status: Soon Available.**
 
 Enterprise is planned to remove the fixed **edition-imposed node ceiling** for
 both Standard and Native HA cluster installations. It does not imply infinite
 physical capacity or validated scale at arbitrary cluster size.
 
-A public release is **planned in the coming days**, with a **90-day trial**.
-An exact availability date, eligibility, trial activation, licensing and
-download procedures have **not yet been published**. Enterprise is not currently
-selectable in the Community binary, and there is no Enterprise license/trial
-enforcement mechanism in this Community branch. Do not represent it as shipping.
+A **90-day trial** is planned for its public release. An exact release date,
+eligibility, activation, licensing and download procedures have **not yet been
+published**. Enterprise is not selectable in the current Community binary,
+and this Community branch does not implement Enterprise license/trial enforcement.
+Do not represent Enterprise as already shipping.
 
 ## Installation UX direction
 
