@@ -85,8 +85,9 @@ prepared genesis; live schemas still advance one guarded step at a time.
    does not satisfy the Native HA Worker fence.
 4. Commit completion only after confirmed physical exclusion. A crash before
    completion leaves a resumable intent; the next majority leader re-verifies
-   the fence. A failed target blocks its own handoffs while healthy Fleets keep
-   receiving dispatch leases.
+   the fence. Power management runs independently of Fleet orchestration, including slow
+   or hung management interfaces. A failed target blocks its own handoffs while
+   healthy Fleets keep receiving dispatch leases.
 5. Retire old assignments only when the exact captured incarnation is fenced.
    Dispatch lease expiry and the existing safety margin still apply. Remote
    mounts additionally require registered automatic-failover catalogs and exact
@@ -119,7 +120,8 @@ For a fenced Worker to return as usable capacity:
 3. Submit an admin-authenticated request to the existing endpoint
    `POST /v1/realm/nodes/recover-power` with `node` and detailed `evidence`.
    The controller additionally probes the returning runtime over mTLS, verifies
-   Node/Realm/schema identity and requires an **empty runtime Unit inventory**.
+   Node/Realm/schema identity and requires an **empty, strict runtime Unit inventory**, including refusal of
+   unreadable, corrupt or redirected entries.
    Failed probes, old schema support, stale Pulse and retained runtime entries
    refuse recovery. The supplied evidence must describe independent stale-writer
    and mount exclusion; an empty runtime listing alone does not prove it.

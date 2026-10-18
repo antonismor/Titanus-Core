@@ -11,6 +11,9 @@ import (
 )
 
 func TestNativeHAFencingPackagesPrivatePinnedCredentials(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned fencing files: covered by dedicated isolated root CI step")
+	}
 	dir := t.TempDir()
 	secret := filepath.Join(dir, "credential")
 	if e := os.WriteFile(secret, []byte("private-test-token"), 0600); e != nil {

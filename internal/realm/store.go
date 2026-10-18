@@ -860,6 +860,15 @@ func (s *Store) DeleteFleet(name string) error {
 func (s *Store) SetAssignments(fleetName string, assignments []Assignment) error {
 	s.lock()
 	defer s.unlock()
+	if s.data.NativeHA {
+		for _, a := range assignments {
+			n, ok := s.data.Nodes[a.NodeID]
+			old, retained := s.data.Assignments[a.ID]
+			if !ok || ((n.PowerQuarantined || n.StorageQuarantined) && (!retained || failoverID(old) != failoverID(a))) {
+				return fmt.Errorf("new assignment cannot target missing or quarantined Worker")
+			}
+		}
+	}
 	for id, assignment := range s.data.Assignments {
 		if assignment.Fleet == fleetName {
 			delete(s.data.Assignments, id)

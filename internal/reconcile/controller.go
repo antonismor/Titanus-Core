@@ -40,6 +40,7 @@ func (c *Controller) Run(ctx context.Context) {
 	if c.Interval <= 0 {
 		c.Interval = 5 * time.Second
 	}
+	go c.runWorkerFailovers(ctx)
 	ticker := time.NewTicker(c.Interval)
 	defer ticker.Stop()
 	for {
@@ -59,9 +60,6 @@ func (c *Controller) Once() error {
 	c.Store.Orchestration.Lock()
 	defer c.Store.Orchestration.Unlock()
 	if err := c.Store.CheckLeader(); err != nil {
-		return err
-	}
-	if err := c.maintainWorkerFailovers(); err != nil {
 		return err
 	}
 	if err := c.maintainStorageFences(); err != nil {

@@ -50,4 +50,15 @@ func TestNativeWorkerFenceIntentSurvivesMajorityElection(t *testing.T) {
 	if realm.WorkerFenced(s.Snapshot(), a) {
 		t.Fatal("minority saw uncommitted completion")
 	}
+	revision := c.stores[next].Snapshot().Revision
+	if e = c.nodes[leader].Close(); e != nil {
+		t.Fatal(e)
+	}
+	c.nodes[leader] = nil
+	c.open(leader)
+	c.converge(revision)
+	if !realm.WorkerFenced(c.stores[leader].Snapshot(), a) {
+		t.Fatal("rejoined voter lost completed fence")
+	}
+
 }

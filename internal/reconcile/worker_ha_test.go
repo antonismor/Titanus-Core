@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"context"
 	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/disk"
 	"github.com/antonismor/Titanus-Core/internal/model"
@@ -50,6 +51,9 @@ func nativeRecoveryFixture(t *testing.T) (*realm.Store, *Controller, *workerFenc
 	}
 	power := &workerFence{}
 	c := &Controller{Store: s, Nodes: &healthNode{ready: true}, Power: power}
+	if e = c.maintainWorkerFailovers(context.Background()); e != nil {
+		t.Fatal(e)
+	}
 	if e = c.Once(); e != nil {
 		t.Fatal(e)
 	}
@@ -77,6 +81,9 @@ func TestNativeWorkerFailoverWaitsForFenceAndSurvivesRestart(t *testing.T) {
 	old := loseWorker(t, s)
 	power.fail = true
 	for i := 0; i < 2; i++ {
+		if e := c.maintainWorkerFailovers(context.Background()); e != nil {
+			t.Fatal(e)
+		}
 		if e := c.Once(); e != nil {
 			t.Fatal(e)
 		}
@@ -93,6 +100,9 @@ func TestNativeWorkerFailoverWaitsForFenceAndSurvivesRestart(t *testing.T) {
 	c.Store = s
 	power.fail = false
 	for i := 0; i < 3; i++ {
+		if e = c.maintainWorkerFailovers(context.Background()); e != nil {
+			t.Fatal(e)
+		}
 		if e = c.Once(); e != nil {
 			t.Fatal(e)
 		}
@@ -107,6 +117,9 @@ func TestNativeWorkerFailoverWaitsForFenceAndSurvivesRestart(t *testing.T) {
 	}
 	calls := power.calls
 	for i := 0; i < 3; i++ {
+		if e = c.maintainWorkerFailovers(context.Background()); e != nil {
+			t.Fatal(e)
+		}
 		if e = c.Once(); e != nil {
 			t.Fatal(e)
 		}
@@ -123,6 +136,9 @@ func TestNativeWorkerFailureDoesNotExpireHealthyFleetLeases(t *testing.T) {
 		t.Fatal(e)
 	}
 	for i := 0; i < 3; i++ {
+		if e := c.maintainWorkerFailovers(context.Background()); e != nil {
+			t.Fatal(e)
+		}
 		if e := c.Once(); e != nil {
 			t.Fatal(e)
 		}
@@ -155,11 +171,65 @@ func TestNativeWorkerLocalDiskDoesNotMoveAfterPowerFence(t *testing.T) {
 		t.Fatal(e)
 	}
 	for i := 0; i < 3; i++ {
+		if e := c.maintainWorkerFailovers(context.Background()); e != nil {
+			t.Fatal(e)
+		}
 		if e := c.Once(); e != nil {
 			t.Fatal(e)
 		}
 	}
 	if s.Snapshot().Assignments[a.ID].NodeID != a.NodeID {
 		t.Fatal("local writable data silently moved")
+	}
+}
+
+type blockingWorkerFence struct{ entered, release chan struct{} }
+
+func (f *blockingWorkerFence) Fence(_ string, check func() error) error {
+	if e := check(); e != nil {
+		return e
+	}
+	close(f.entered)
+	<-f.release
+	return fmt.Errorf("slow management endpoint failed")
+}
+func TestSlowWorkerFenceDoesNotBlockHealthyLeaseRenewal(t *testing.T) {
+	s, c, _, _ := nativeRecoveryFixture(t)
+	old := loseWorker(t, s)
+	if e := s.PutFleet(realm.Fleet{Name: "healthy", Instances: 1, MinimumAvailable: 1, Template: realm.UnitTemplate{Source: "app", Command: []string{"/bin/app"}}}); e != nil {
+		t.Fatal(e)
+	}
+	fence := &blockingWorkerFence{make(chan struct{}), make(chan struct{})}
+	c.Power = fence
+	done := make(chan error, 1)
+	go func() { done <- c.maintainWorkerFailovers(context.Background()) }()
+	select {
+	case <-fence.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fence did not begin")
+	}
+	renewed := make(chan error, 1)
+	go func() { renewed <- c.Once() }()
+	select {
+	case e := <-renewed:
+		if e != nil {
+			t.Fatal(e)
+		}
+	case <-time.After(time.Second):
+		close(fence.release)
+		t.Fatal("slow fencer held Fleet orchestration/leases")
+	}
+	healthy := false
+	for _, a := range s.Snapshot().Assignments {
+		if a.Fleet == "healthy" && a.NodeID != old.NodeID && a.State == realm.AssignmentActive {
+			healthy = true
+		}
+	}
+	close(fence.release)
+	if e := <-done; e != nil {
+		t.Fatal(e)
+	}
+	if !healthy {
+		t.Fatal("healthy Fleet was not served during blocked fence")
 	}
 }

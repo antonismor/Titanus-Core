@@ -33,6 +33,9 @@ jobs:
           sudo apt-get install -y openssh-server sshpass
           sudo env "PATH=$PATH" TITANUS_SSH_TEST=1 go test ./internal/sshtrust -run TestNativeSSHPasswordBootstrapAndFullMesh -count=1 -v -timeout 180s
 
+      - name: Verify private Native HA fencing package and wizard inventory as root
+        run: sudo env "PATH=$PATH" go test ./internal/setup ./internal/deploy -run 'Test(NativeHAFencingPackagesPrivatePinnedCredentials|WizardSavesNativeHAWithSeparateWorkersAndFencing)' -count=1 -v
+
       - name: Vet
         run: go vet ./...
 

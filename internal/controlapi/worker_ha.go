@@ -32,7 +32,7 @@ func (s *Server) verifyWorkerRecovery(id string) error {
 		return fmt.Errorf("returning Worker identity/schema verification failed")
 	}
 	units, e := s.WorkerRecovery.ListUnits(n.Address)
-	if e != nil || len(units) > 0 {
+	if e != nil || units == nil || len(units) > 0 {
 		return fmt.Errorf("returning Worker must have an empty runtime inventory; independently exclude and clean old Units/mounts before recovery")
 	}
 	return s.Store.CheckLeader()

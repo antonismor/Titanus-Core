@@ -248,6 +248,14 @@ func (s *Server) units(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		if r.URL.Query().Get("strict") == "1" {
+			if err := s.Runtime.EmptyRecoveryInventory(); err != nil {
+				writeError(w, http.StatusConflict, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, []unitruntime.State{})
+			return
+		}
 		items, err := s.Runtime.List()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -388,6 +396,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	state := s.Store.Snapshot()
 	if principal, ok := identity.RequestPrincipal(r); ok && principal.Role == identity.RoleNode {
 		state.StorageFailovers = nil
+		state.WorkerFailovers = nil
 		state.UnitMappings = nil
 		state.Disks = nil
 		state.Secrets = nil

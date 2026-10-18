@@ -108,6 +108,8 @@ func validateWorkerFailoverChange(before, after State) error {
 }
 
 func (s *Store) BeginWorkerFailover(nodeID string) (WorkerFailover, error) {
+	s.Orchestration.Lock()
+	defer s.Orchestration.Unlock()
 	if err := s.CheckLeader(); err != nil {
 		return WorkerFailover{}, err
 	}

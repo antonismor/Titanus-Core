@@ -1,18 +1,45 @@
 package reconcile
 
 import (
+	"context"
 	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"log"
 	"sort"
+	"time"
 )
 
 type WorkerPowerFencer interface {
 	Fence(string, func() error) error
 }
 
-func (c *Controller) maintainWorkerFailovers() error {
+// Power management can take longer than a dispatch lease. Keep it outside
+// the Fleet renewal loop and do not hold Orchestration while waiting on a BMC.
+func (c *Controller) runWorkerFailovers(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := c.maintainWorkerFailovers(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("Worker fencing pending: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+func (c *Controller) maintainWorkerFailovers(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.Store.CheckLeader(); err != nil {
+		return err
+	}
 	state := c.Store.Snapshot()
 	if !state.NativeHA {
 		return nil
@@ -44,7 +71,12 @@ func (c *Controller) maintainWorkerFailovers() error {
 	for _, id := range ids {
 		intent, err := c.Store.BeginWorkerFailover(id)
 		if err == nil && intent.CompletedAt.IsZero() {
-			check := func() error { return c.Store.CheckWorkerFailover(intent) }
+			check := func() error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return c.Store.CheckWorkerFailover(intent)
+			}
 			if err = c.Power.Fence(id, check); err == nil {
 				err = c.Store.CompleteWorkerFailover(intent)
 			}

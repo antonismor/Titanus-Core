@@ -88,6 +88,9 @@ func TestPasswordRefusesRedirectedInput(t *testing.T) {
 }
 
 func TestWizardSavesNativeHAWithSeparateWorkersAndFencing(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root-owned fencing files: covered by dedicated isolated root CI step")
+	}
 	dir := t.TempDir()
 	file := filepath.Join(dir, "plan.json")
 	inventory := filepath.Join(dir, "fencing.json")

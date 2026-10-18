@@ -72,7 +72,7 @@ func TestNativeWorkerRecoveryRequiresIdentityIdleRuntimeAndEvidence(t *testing.T
 	if request() == 200 {
 		t.Fatal("nonempty runtime admitted")
 	}
-	probe.units = nil
+	probe.units = []unitruntime.State{}
 	probe.err = fmt.Errorf("unavailable")
 	if request() == 200 {
 		t.Fatal("unreachable runtime admitted")
