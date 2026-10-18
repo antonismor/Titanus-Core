@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+
+// CommunityNodeLimit counts Realm hosts (VMs or physical servers), not Units,
+// Fleets, containers or applications. Enterprise licensing is not yet implemented.
+const CommunityNodeLimit = 9
+
 type Capability string
 
 const (
@@ -104,6 +109,9 @@ func (p RealmPlan) Validate() error {
 	}
 	if len(p.Nodes) == 0 {
 		return errors.New("at least one node is required")
+	}
+	if len(p.Nodes) > CommunityNodeLimit {
+		return fmt.Errorf("Community Edition supports at most %d Realm nodes (VMs or physical hosts); got %d; applications and Units do not count toward this limit", CommunityNodeLimit, len(p.Nodes))
 	}
 	if err := validateCIDR("Fabric CIDR", p.FabricCIDR); err != nil {
 		return err
