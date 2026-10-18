@@ -32,6 +32,8 @@ func (w *Wizard) Run() (Result, error) {
 	ansi.Clear()
 	ansi.Banner()
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.White, "Create a Titanus Realm"))
+	fmt.Fprintln(w.out, ansi.Paint(ansi.Cyan, fmt.Sprintf("Community Edition: up to %d Realm nodes (VMs/hosts). Workloads do not count.", model.CommunityNodeLimit)))
+	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "Enterprise Edition: unlimited nodes and 90-day trial planned for public launch."))
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "The wizard will build and validate a deployment Plan before changing any host."))
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, "  "+ansi.Paint(ansi.Cyan, "1)")+" Single-node Titanus")
@@ -76,7 +78,7 @@ func (w *Wizard) Run() (Result, error) {
 	if mode != 1 {
 		defaultNodes = 3
 	}
-	nodeCount, err := w.askInt("Number of Titanus nodes", defaultNodes, 1, 256)
+	nodeCount, err := w.askInt("Number of Titanus nodes (Community Edition)", defaultNodes, 1, model.CommunityNodeLimit)
 	if err != nil {
 		return Result{}, err
 	}
