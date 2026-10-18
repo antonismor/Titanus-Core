@@ -287,7 +287,7 @@ func (d *RealmDeployer) ApplyPrepared(plan model.RealmPlan, prepared PreparedIns
 	}
 	check := d.ReleasePreflight
 	if check == nil {
-		check = func(p model.RealmPlan) error { return preflight.Summary(preflight.NewRunner().Run(p)) }
+		check = func(p model.RealmPlan) error { return preflight.Summary((&preflight.Runner{SSH: d.SSH}).Run(p)) }
 	}
 	if err := check(plan); err != nil {
 		return nil, err
@@ -384,7 +384,7 @@ func (d *RealmDeployer) ApplyPrepared(plan model.RealmPlan, prepared PreparedIns
 		}
 	}
 	if prepared.Operation == "install" && plan.Installation.Start && plan.Ceph.Enabled && plan.Ceph.Provision {
-		if _, err := NewCephDeployer().Deploy(plan); err != nil {
+		if _, err := d.cephDeployer().Deploy(plan); err != nil {
 			return results, err
 		}
 	}

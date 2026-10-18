@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/remote"
 	"github.com/antonismor/Titanus-Core/internal/security"
 	"github.com/antonismor/Titanus-Core/internal/setup"
 	"github.com/antonismor/Titanus-Core/internal/source"
@@ -76,6 +78,16 @@ func dispatch(args []string) error {
 		return runOrchestration(args[0], args[1:])
 	case "setup":
 		return runSetup()
+	case "trust":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: titanus trust PLAN")
+		}
+		plan, err := model.LoadPlan(args[1])
+		if err != nil {
+			return err
+		}
+		_, err = setup.RunTrustDefault(context.Background(), plan)
+		return err
 	case "identity":
 		return runIdentity(args[1:])
 	case "realm":
@@ -2027,7 +2039,15 @@ func runSetup() error {
 	}
 	fmt.Println("Prepared private deployment:", result.PlanPath+".deployment")
 	if result.Plan.AutoDeploy {
-		_, err = deploy.NewRealmDeployer().ApplyPrepared(result.Plan, prepared)
+		trust, bootstrapErr := setup.RunTrustDefault(context.Background(), result.Plan)
+		if bootstrapErr != nil {
+			return bootstrapErr
+		}
+		d := deploy.NewRealmDeployer()
+		executor := d.SSH.(*remote.SSHExecutor)
+		executor.IdentityFile = trust.IdentityFile
+		executor.KnownHostsFile = trust.KnownHostsFile
+		_, err = d.ApplyPrepared(result.Plan, prepared)
 		return err
 	}
 
@@ -2200,6 +2220,7 @@ Usage:
   titanus unit logs ID
   titanus unit delete ID
 
+  titanus trust FILE                           Bootstrap SSH trust and verify all directed node pairs
   titanus plan validate FILE                   Validate a Titanus Plan
   titanus plan show FILE                       Display a Titanus Plan
   titanus preflight FILE                       Test all configured nodes

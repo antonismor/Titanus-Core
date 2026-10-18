@@ -15,8 +15,9 @@ import (
 )
 
 type Wizard struct {
-	in  *bufio.Reader
-	out io.Writer
+	in       *bufio.Reader
+	out      io.Writer
+	terminal io.Reader
 }
 
 type Result struct {
@@ -25,7 +26,7 @@ type Result struct {
 }
 
 func New(in io.Reader, out io.Writer) *Wizard {
-	return &Wizard{in: bufio.NewReader(in), out: out}
+	return &Wizard{in: bufio.NewReader(in), out: out, terminal: in}
 }
 
 func (w *Wizard) Run() (Result, error) {
@@ -36,21 +37,34 @@ func (w *Wizard) Run() (Result, error) {
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "Enterprise Edition: Soon Available (planned unlimited nodes, 90-day trial)."))
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "The wizard will build and validate a deployment Plan before changing any host."))
 	fmt.Fprintln(w.out)
-	fmt.Fprintln(w.out, "  "+ansi.Paint(ansi.Cyan, "1)")+" Single-node Titanus")
-	fmt.Fprintln(w.out, "  "+ansi.Paint(ansi.Cyan, "2)")+" Multi-node Titanus Realm")
-	fmt.Fprintln(w.out, "  "+ansi.Paint(ansi.Cyan, "3)")+" Titanus Realm + Ceph")
-	fmt.Fprintln(w.out)
-
-	mode, err := w.askInt("Deployment mode", 3, 1, 3)
+	fmt.Fprintln(w.out, "  1) Standard Titanus Core")
+	fmt.Fprintln(w.out, "  2) Titanus Native HA Cluster (planned; activation requires fencing/failback phase)")
+	fmt.Fprintln(w.out, "  3) Advanced/Custom")
+	profileChoice, err := w.askInt("Installation profile", 1, 1, 3)
 	if err != nil {
 		return Result{}, err
+	}
+	if profileChoice == 2 {
+		return Result{}, fmt.Errorf("Native HA installation is not available in Phase A; no plan or host has been changed")
+	}
+	profile := model.ProfileStandard
+	mode := 2
+	if profileChoice == 3 {
+		profile = model.ProfileCustom
+		ceph, e := w.askBool("Configure distributed Ceph storage", false)
+		if e != nil {
+			return Result{}, e
+		}
+		if ceph {
+			mode = 3
+		}
 	}
 
 	operation, err := w.askInt("Operation: 1 initial install, 2 upgrade, 3 binary rollback", 1, 1, 3)
 	if err != nil {
 		return Result{}, err
 	}
-	install := &model.Installation{Operation: []string{"install", "upgrade", "rollback"}[operation-1], APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242, Start: true}
+	install := &model.Installation{Profile: profile, Operation: []string{"install", "upgrade", "rollback"}[operation-1], APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242, Start: true}
 	plan := model.RealmPlan{
 		Installation: install,
 		Version:      "titanus-plan/v2",
@@ -74,24 +88,29 @@ func (w *Wizard) Run() (Result, error) {
 
 	fmt.Fprintln(w.out, "Controllers use the configured HTTPS origins; register Gateway VIPs separately after exclusion policy is configured.")
 
-	defaultNodes := 1
-	if mode != 1 {
-		defaultNodes = 3
-	}
-	nodeCount, err := w.askInt("Number of Titanus nodes (Community Edition)", defaultNodes, 1, model.CommunityNodeLimit)
+	nodeCount, err := w.askInt("Number of Titanus nodes (Community Edition)", 1, 1, model.CommunityNodeLimit)
 	if err != nil {
 		return Result{}, err
 	}
-
+	sshUser, err := w.ask("Common root SSH username", "root", true)
+	if err != nil {
+		return Result{}, err
+	}
+	sshPort, err := w.askInt("Common SSH port", 22, 1, 65535)
+	if err != nil {
+		return Result{}, err
+	}
 	controlNodes := 1
-	if mode != 1 {
-		defaultControl := 3
-		if nodeCount < defaultControl {
-			defaultControl = nodeCount
-		}
-		controlNodes, err = w.askInt("How many nodes should be CONTROL-capable", defaultControl, 1, nodeCount)
-		if err != nil {
-			return Result{}, err
+	if nodeCount >= 3 {
+		for {
+			controlNodes, err = w.askInt("CONTROL-capable nodes (1, 3 or 5)", 3, 1, nodeCount)
+			if err != nil {
+				return Result{}, err
+			}
+			if controlNodes == 1 || controlNodes == 3 || controlNodes == 5 {
+				break
+			}
+			fmt.Fprintln(w.out, "Choose 1, 3 or 5 CONTROL-capable nodes for a valid voting topology.")
 		}
 	}
 	storageNodesWanted := 0
@@ -113,7 +132,7 @@ func (w *Wizard) Run() (Result, error) {
 
 	for i := 0; i < nodeCount; i++ {
 		fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Cyan, fmt.Sprintf("Node %d/%d", i+1, nodeCount)))
-		n := model.NodeSpec{SSHPort: 22}
+		n := model.NodeSpec{SSHPort: sshPort, SSHUser: sshUser}
 		n.Name, err = w.ask("  Hostname", fmt.Sprintf("titanus%02d", i+1), true)
 		if err != nil {
 			return Result{}, err
@@ -122,21 +141,13 @@ func (w *Wizard) Run() (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		n.FabricIP, err = w.ask("  Fabric IP", "", true)
-		if err != nil {
-			return Result{}, err
-		}
-		n.SSHUser, err = w.ask("  SSH user", "root", true)
-		if err != nil {
-			return Result{}, err
-		}
-		n.SSHPort, err = w.askInt("  SSH port", 22, 1, 65535)
+		n.FabricIP, err = w.ask("  Dedicated Fabric IP (optional)", "", false)
 		if err != nil {
 			return Result{}, err
 		}
 
 		defaultCaps := "EXECUTION"
-		if mode == 1 || i < controlNodes {
+		if i < controlNodes {
 			defaultCaps = "CONTROL,EXECUTION"
 		}
 		if mode == 3 && i < storageNodesWanted {
@@ -219,7 +230,7 @@ func (w *Wizard) Run() (Result, error) {
 		if plan.Ceph.Provision {
 			fmt.Fprintln(w.out)
 			fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Yellow, "Ceph OSD device selection"))
-			fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "Only devices explicitly selected here may be erased by Titanus."))
+			fmt.Fprintln(w.out, ansi.Paint(ansi.Yellow, "Only unused devices without existing signatures may be initialized. Existing data is never erased."))
 			for i := range plan.Nodes {
 				if !hasCapability(plan.Nodes[i], model.CapabilityStorage) {
 					continue
@@ -241,12 +252,12 @@ func (w *Wizard) Run() (Result, error) {
 				}
 			}
 
-			confirmed, confirmErr := w.askBool("I understand the selected Ceph devices WILL BE ERASED during provisioning", false)
+			confirmed, confirmErr := w.askBool("Initialize only the selected unused Ceph devices", false)
 			if confirmErr != nil {
 				return Result{}, confirmErr
 			}
 			if !confirmed {
-				return Result{}, fmt.Errorf("Ceph provisioning cancelled because destructive device use was not confirmed")
+				return Result{}, fmt.Errorf("Ceph provisioning cancelled because device initialization was not confirmed")
 			}
 		}
 	}
@@ -327,6 +338,7 @@ func (w *Wizard) Run() (Result, error) {
 func (w *Wizard) printSummary(plan model.RealmPlan, path string) {
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Green, "Plan validated successfully"))
+	fmt.Fprintf(w.out, "  Profile:        %s\n", plan.Installation.Profile)
 	fmt.Fprintf(w.out, "  Realm:          %s\n", plan.RealmName)
 	fmt.Fprintf(w.out, "  Nodes:          %d\n", len(plan.Nodes))
 	fmt.Fprintf(w.out, "  Control nodes:  %d\n", len(plan.ControlNodes()))

@@ -99,7 +99,7 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		}
 	}
 
-	reports := preflight.NewRunner().Run(plan)
+	reports := (&preflight.Runner{SSH: d.SSH}).Run(plan)
 	if err := preflight.Summary(reports); err != nil {
 		return nil, fmt.Errorf("Realm deployment blocked: %w", err)
 	}
@@ -269,7 +269,7 @@ func (d *RealmDeployer) Deploy(plan model.RealmPlan, opts RealmDeployOptions) ([
 		}
 	}
 	if plan.Ceph.Enabled && plan.Ceph.Provision {
-		cephResult, err := NewCephDeployer().Deploy(plan)
+		cephResult, err := d.cephDeployer().Deploy(plan)
 		if err != nil {
 			return results, fmt.Errorf("Titanus Realm is running but Ceph provisioning failed: %w", err)
 		}
@@ -494,3 +494,14 @@ const realmAgentService = "[Unit]\n" +
 	"PrivateTmp=true\n\n" +
 	"[Install]\n" +
 	"WantedBy=multi-user.target\n"
+
+// Retain the explicit installer identity and host pins for Ceph as well as
+// Realm deployment; never fall back silently to unrelated operator SSH keys.
+func (d *RealmDeployer) cephDeployer() *CephDeployer {
+	c := NewCephDeployer()
+	if e, ok := d.SSH.(*remote.SSHExecutor); ok {
+		c.SSH.IdentityFile = e.IdentityFile
+		c.SSH.KnownHostsFile = e.KnownHostsFile
+	}
+	return c
+}

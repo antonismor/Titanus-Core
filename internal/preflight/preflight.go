@@ -24,7 +24,9 @@ type NodeReport struct {
 }
 
 type Runner struct {
-	SSH *remote.SSHExecutor
+	SSH interface {
+		Run(model.NodeSpec, string) (remote.Result, error)
+	}
 }
 
 func NewRunner() *Runner {
