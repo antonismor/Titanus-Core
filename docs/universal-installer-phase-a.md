@@ -1,5 +1,9 @@
 # Universal Installer — Phase A
 
+This document records Phase A. The later [Phase B](universal-installer-phase-b.md)
+enables the Native HA profile for fresh installations; Standard-to-HA migration
+remains blocked.
+
 Phase A builds on PR #45 (Community limit and Enterprise roadmap). It changes
 source and CI only; it does not deploy to any Proxmox host or existing VM.
 

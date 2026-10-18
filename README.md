@@ -44,10 +44,15 @@ the node ceiling**; practical workload capacity depends on CPU, memory,
 networking and storage resources.
 
 The Community installer and plan validator reject configurations with more
-than nine Realm nodes. The current candidate does **not yet implement**
-the new Native HA installation profile, automatic passwordless SSH mesh
-bootstrap, or an Enterprise entitlement mechanism; these are separate
-development milestones. See [Editions and roadmap](docs/EDITIONS.md).
+than nine Realm nodes. The Universal Installer candidate includes Standard and
+Custom profiles plus approved, directed full-mesh SSH trust bootstrap
+([Phase A](docs/universal-installer-phase-a.md)). The opt-in Native HA profile
+uses 5–9 hosts, separate CONTROL voters/EXECUTION Workers, confirmed out-of-band
+power fencing and explicit verified capacity failback
+([Phase B](docs/universal-installer-phase-b.md)). Existing installations are not
+automatically converted; local storage is never silently moved during failover.
+Enterprise entitlements remain unimplemented. See
+[Editions and roadmap](docs/EDITIONS.md).
 
 **Enterprise Edition — Soon Available.** No edition-imposed Realm node limit
 is planned, subject to available infrastructure and validated scalability.
