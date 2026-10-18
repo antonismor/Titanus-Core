@@ -5,6 +5,26 @@ and binary rollback**. It prepares reviewed files locally by default. No SSH,
 remote discovery, service operation or storage provisioning occurs while
 answering the wizard or preparing a deployment.
 
+## Community Edition node limit
+
+The current Community build accepts **1–9 Realm nodes** for *all*
+installation topologies. A node counts as one VM or physical host participating
+in a Realm, even when it has several roles. Units, Fleets, applications and
+containers do not consume node slots. Both the setup wizard and Realm plan
+validation reject ten or more nodes. The Native HA profile and automatic
+passwordless SSH mesh bootstrap are planned separately; this change only
+enforces the Community edition limit.
+
+**Existing clusters with more than nine nodes:** upgrading using a new
+Community plan will be rejected; the installer does not delete or prune any
+node or Ceph storage. Review a safe migration/edition decision before updating
+an existing 10-node lab.
+
+The Enterprise Edition is planned without an edition-imposed node ceiling,
+with public availability targeted in the coming days and a 90-day trial.
+Enterprise installation and licensing are not yet available in the Community
+installer. See [Editions](EDITIONS.md).
+
 ## Requirements and workflow
 
 Use dedicated Debian-family Linux hosts with native AMD64 or ARM64, cgroups v2,
