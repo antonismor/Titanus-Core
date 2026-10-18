@@ -26,6 +26,10 @@ func taskIdentity(realm, name, salt string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(realm+"\x00"+name+"\x00"+salt)))
 }
 func ValidateSchema(s State) error {
+	if s.HAActivation != nil && (s.SchemaVersion < 4 || !s.NativeHA || !executionID.MatchString(s.HAActivation.ID) || !executionID.MatchString(s.HAActivation.BackupSetID) || s.HAActivation.BeforeRevision >= s.Revision || s.HAActivation.CommittedAt.IsZero()) {
+		return fmt.Errorf("invalid schema-four HA activation receipt")
+	}
+
 	if s.SchemaVersion < 3 && (s.NativeHA || len(s.WorkerFailovers) > 0) {
 		return fmt.Errorf("Native HA recovery state requires schema three")
 	}
@@ -76,6 +80,18 @@ func ValidateSchema(s State) error {
 	return ValidateOrchestrationState(s)
 }
 func ValidateSchemaChange(before, after State) error {
+	if before.HAActivation == nil && after.HAActivation != nil {
+		if before.NativeHA || !after.NativeHA || before.SchemaVersion != 4 || after.SchemaVersion != 4 || after.HAActivation.BeforeRevision != before.Revision || after.Revision != before.Revision+1 {
+			return fmt.Errorf("HA receipt must bind its activation commit")
+		}
+	}
+	if !before.NativeHA && after.NativeHA && after.HAActivation == nil {
+		return fmt.Errorf("online Native HA activation requires a schema-four receipt")
+	}
+	if before.HAActivation != nil && !reflect.DeepEqual(before.HAActivation, after.HAActivation) {
+		return fmt.Errorf("HA activation receipt is immutable")
+	}
+
 	if before.NativeHA && !after.NativeHA {
 		return fmt.Errorf("Native HA policy cannot be downgraded")
 	}

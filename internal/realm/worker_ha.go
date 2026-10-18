@@ -115,7 +115,7 @@ func (s *Store) BeginWorkerFailover(nodeID string) (WorkerFailover, error) {
 	}
 	s.lock()
 	defer s.unlock()
-	if !s.data.NativeHA || s.data.SchemaVersion != 3 {
+	if !s.data.NativeHA || s.data.SchemaVersion < 3 {
 		return WorkerFailover{}, fmt.Errorf("Native HA policy/schema required")
 	}
 	for _, f := range s.data.WorkerFailovers {

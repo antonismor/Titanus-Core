@@ -47,6 +47,7 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 		return CephDeployResult{}, fmt.Errorf("Ceph automatic provisioning is not enabled in this Plan")
 	}
 	storage := plan.StorageNodes()
+	monitors := plan.CephMonitorNodes()
 	if len(storage) == 0 {
 		return CephDeployResult{}, fmt.Errorf("Ceph requires at least one STORAGE node")
 	}
@@ -87,11 +88,11 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	if err := os.WriteFile(confPath, []byte(buildCephConfig(plan, fsid)), 0644); err != nil {
 		return CephDeployResult{}, err
 	}
-	if err := d.distributeConfig(plan.Nodes, confPath); err != nil {
+	if err := d.distributeConfig(plan.Nodes, confPath, plan.NativeHAStorage()); err != nil {
 		return CephDeployResult{}, err
 	}
 
-	if err := d.ensureBootstrapArtifacts(primary, storage, fsid); err != nil {
+	if err := d.ensureBootstrapArtifacts(primary, monitors, fsid); err != nil {
 		return CephDeployResult{}, err
 	}
 
@@ -115,10 +116,10 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 	if err := d.distributeBootstrap(storage, artifacts); err != nil {
 		return CephDeployResult{}, err
 	}
-	if err := d.startMonitors(storage); err != nil {
+	if err := d.startMonitors(monitors); err != nil {
 		return CephDeployResult{}, err
 	}
-	if err := d.waitForQuorum(primary); err != nil {
+	if err := d.waitForQuorum(primary, plan); err != nil {
 		return CephDeployResult{}, err
 	}
 	if err := d.hardenMonitors(primary); err != nil {
@@ -161,8 +162,13 @@ func (d *CephDeployer) Deploy(plan model.RealmPlan) (CephDeployResult, error) {
 		return CephDeployResult{}, err
 	}
 
+	if plan.NativeHAStorage() {
+		if err = d.verifyHACeph(primary, plan); err != nil {
+			return CephDeployResult{}, err
+		}
+	}
 	return CephDeployResult{
-		FSID: fsid, Monitors: len(storage), OSDs: osdCount,
+		FSID: fsid, Monitors: len(monitors), OSDs: osdCount,
 		RawBytes: rawBytes, UsableBytes: usable,
 		RBD: plan.Ceph.EnableRBD, CephFS: plan.Ceph.EnableCephFS, RGW: plan.Ceph.EnableRGW,
 	}, nil
@@ -264,9 +270,17 @@ func (d *CephDeployer) ensureFSID(primary model.NodeSpec) (string, error) {
 	return fsid, nil
 }
 
-func (d *CephDeployer) distributeConfig(nodes []model.NodeSpec, local string) error {
+func (d *CephDeployer) distributeConfig(nodes []model.NodeSpec, local string, nativeHA bool) error {
+	base, e := os.ReadFile(local)
+	if e != nil {
+		return e
+	}
 	for _, node := range nodes {
-		if err := d.SSH.CopyFile(node, local, "/tmp/titanus-ceph.conf"); err != nil {
+		hostConfig := filepath.Join(filepath.Dir(local), "ceph-"+node.Name+".conf")
+		if e := os.WriteFile(hostConfig, []byte(cephHostConfig(string(base), node, nativeHA)), 0644); e != nil {
+			return e
+		}
+		if err := d.SSH.CopyFile(node, hostConfig, "/tmp/titanus-ceph.conf"); err != nil {
 			return err
 		}
 		cmd := cephSudoPrefix + "; $SUDO install -d -m 0755 /etc/ceph; " +
@@ -346,7 +360,10 @@ func cephMonitorCommand(node model.NodeSpec) string {
 		"$SUDO systemctl enable --now ceph-mon@" + shellQuote(node.Name)
 }
 
-func (d *CephDeployer) waitForQuorum(primary model.NodeSpec) error {
+func (d *CephDeployer) waitForQuorum(primary model.NodeSpec, plan model.RealmPlan) error {
+	if plan.NativeHAStorage() {
+		return d.waitForHAQuorum(primary, plan)
+	}
 	cmd := cephSudoPrefix + "; " +
 		"for i in $(seq 1 60); do if $SUDO timeout 10s ceph -s >/dev/null 2>&1; then exit 0; fi; sleep 2; done; " +
 		"$SUDO timeout 10s ceph -s; exit 1"
@@ -429,6 +446,9 @@ func cephOSDCreateCommand(device string) string {
 
 func (d *CephDeployer) configurePools(primary model.NodeSpec, plan model.RealmPlan) error {
 	commands := []string{cephSudoPrefix}
+	if plan.NativeHAStorage() {
+		commands = append(commands, haCrushRuleCommand())
+	}
 	rep := strconv.Itoa(plan.Ceph.Replication)
 	if plan.Ceph.EnableRBD {
 		commands = append(commands,
@@ -445,6 +465,11 @@ func (d *CephDeployer) configurePools(primary model.NodeSpec, plan model.RealmPl
 			"$SUDO ceph osd pool set titanusfs_data size "+rep,
 			"$SUDO ceph fs get titanusfs >/dev/null 2>&1 || $SUDO ceph fs new titanusfs titanusfs_meta titanusfs_data",
 		)
+	}
+	if plan.NativeHAStorage() {
+		for _, pool := range haPools(plan) {
+			commands = append(commands, "$SUDO ceph osd pool set "+pool+" min_size 2", "$SUDO ceph osd pool set "+pool+" crush_rule titanus-ha-host")
+		}
 	}
 	if _, err := d.SSH.Run(primary, strings.Join(commands, "; ")); err != nil {
 		return fmt.Errorf("configure Titanus Ceph pools: %w", err)
@@ -554,17 +579,21 @@ func cephPublicIP(node model.NodeSpec) string {
 }
 
 func buildCephConfig(plan model.RealmPlan, fsid string) string {
-	storage := plan.StorageNodes()
+	storage := plan.CephMonitorNodes()
 	names := make([]string, 0, len(storage))
 	hosts := make([]string, 0, len(storage))
 	for _, node := range storage {
 		names = append(names, node.Name)
 		hosts = append(hosts, cephPublicIP(node))
 	}
-	return fmt.Sprintf(
+	cfg := fmt.Sprintf(
 		"[global]\nfsid = %s\nmon_initial_members = %s\nmon_host = %s\npublic_network = %s\ncluster_network = %s\nauth_cluster_required = cephx\nauth_service_required = cephx\nauth_client_required = cephx\nosd_pool_default_size = %d\nmon_allow_pool_delete = false\n\n",
 		fsid, strings.Join(names, ","), strings.Join(hosts, ","), plan.Ceph.PublicCIDR, plan.Ceph.ClusterCIDR, plan.Ceph.Replication,
 	)
+	if plan.NativeHAStorage() {
+		cfg += "osd_pool_default_min_size = 2\nosd_crush_chooseleaf_type = 1\n"
+	}
+	return cfg
 }
 
 func randomUUID() (string, error) {

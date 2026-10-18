@@ -35,24 +35,31 @@ func TestNativeOfflineQuorumRecovery(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("native recovery requires root")
 	}
-	runNativeOfflineQuorumRecovery(t, false, false)
+	runNativeOfflineQuorumRecovery(t, false, false, false)
 }
 
 func TestNativeClusterRecovery(t *testing.T) {
 	if os.Getenv("TITANUS_BACKUP_NATIVE_TEST") != "1" {
 		t.Skip("opt-in native cluster recovery")
 	}
-	runNativeOfflineQuorumRecovery(t, true, false)
+	runNativeOfflineQuorumRecovery(t, true, false, false)
 }
 
 func TestNativeMigratedQuorumRecovery(t *testing.T) {
 	if os.Getenv("TITANUS_BACKUP_NATIVE_TEST") != "1" {
 		t.Skip("opt-in migrated native quorum recovery")
 	}
-	runNativeOfflineQuorumRecovery(t, false, true)
+	runNativeOfflineQuorumRecovery(t, false, true, false)
 }
 
-func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode, migrated bool) {
+func TestNativeHASeedQuorumRecovery(t *testing.T) {
+	if os.Getenv("TITANUS_BACKUP_NATIVE_TEST") != "1" {
+		t.Skip("opt-in Native HA seed recovery")
+	}
+	runNativeOfflineQuorumRecovery(t, false, false, true)
+}
+
+func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode, migrated, nativeGenesis bool) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "external.key")
 	if e := Keygen(keyPath); e != nil {
@@ -124,6 +131,11 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode, migrated bool) {
 		}
 		if e = store.ConfigureNetwork(realm.RealmNetwork{FabricCIDR: "10.210.0.0/16", ServiceCIDR: "10.220.0.0/16", NodePrefix: 24, VXLANID: 4242}); e != nil {
 			t.Fatal(e)
+		}
+		if nativeGenesis {
+			if e = store.SeedNativeHA(); e != nil {
+				t.Fatal(e)
+			}
 		}
 		stores[i] = store
 		keyring := secrets.Keyring{Active: "one", Keys: map[string][]byte{"one": bytes.Repeat([]byte{7}, 32)}}
@@ -352,7 +364,7 @@ func runNativeOfflineQuorumRecovery(t *testing.T, clusterMode, migrated bool) {
 			}
 			f.attest(t)
 			f.loseRoots(t)
-			if migrated {
+			if migrated || nativeGenesis {
 				if e = os.Remove(f.plan.StateRoot + ".recovery-pending"); e != nil {
 					t.Fatal(e)
 				}

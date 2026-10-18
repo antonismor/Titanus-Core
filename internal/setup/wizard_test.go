@@ -57,7 +57,7 @@ func TestWizardSavesOfflineVersionedLifecyclePlan(t *testing.T) {
 }
 func TestWizardRejectsNativeHAMigrationBeforeSaving(t *testing.T) {
 	var out bytes.Buffer
-	_, err := New(strings.NewReader("2\n2\n"), &out).Run()
+	_, err := New(strings.NewReader("2\nn\n2\n"), &out).Run()
 	if err == nil || !strings.Contains(err.Error(), "fresh install") {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestWizardSavesNativeHAWithSeparateWorkersAndFencing(t *testing.T) {
 	if e := os.WriteFile(inventory, []byte(data), 0600); e != nil {
 		t.Fatal(e)
 	}
-	lines := []string{"2", "1", "LAB", "", "", "5", "", "22", "3"}
+	lines := []string{"2", "n", "1", "LAB", "", "", "5", "", "22", "3"}
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf("node%d", i), fmt.Sprintf("192.0.2.%d", i), "", "")
 	}

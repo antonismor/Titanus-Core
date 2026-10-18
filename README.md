@@ -51,6 +51,11 @@ uses 5–9 hosts, separate CONTROL voters/EXECUTION Workers, confirmed out-of-ba
 power fencing and explicit verified capacity failback
 ([Phase B](docs/universal-installer-phase-b.md)). Existing installations are not
 automatically converted; local storage is never silently moved during failover.
+[Phase C](docs/universal-installer-phase-c.md) adds the optional three-monitor,
+three-copy host-domain Ceph HA policy and an authenticated, backup-bound profile
+transition for existing 3/5-voter Realms with 5–9 hosts. Staging preserves original
+membership/data; explicit quorum activation and guarded rollback are separate
+steps. Single-controller membership conversion remains unsupported.
 Enterprise entitlements remain unimplemented. See
 [Editions and roadmap](docs/EDITIONS.md).
 

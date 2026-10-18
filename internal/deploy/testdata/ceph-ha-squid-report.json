@@ -1,0 +1,273 @@
+{
+  "status": {
+    "fsid": "bc93a170-846b-4404-8b0f-6a23e24ebb58",
+    "health": {
+      "status": "HEALTH_OK",
+      "checks": {},
+      "mutes": []
+    },
+    "pgmap": {
+      "pgs_by_state": [
+        {
+          "state_name": "active+clean",
+          "count": 25
+        }
+      ],
+      "num_pgs": 25,
+      "num_pools": 4,
+      "num_objects": 18,
+      "data_bytes": 461550,
+      "bytes_used": 84434944,
+      "bytes_avail": 12800466944,
+      "bytes_total": 12884901888,
+      "write_bytes_sec": 5649,
+      "read_op_per_sec": 0,
+      "write_op_per_sec": 15
+    }
+  },
+  "quorum": {
+    "quorum_names": [
+      "a",
+      "b",
+      "c"
+    ],
+    "monmap": {
+      "fsid": "bc93a170-846b-4404-8b0f-6a23e24ebb58",
+      "mons": [
+        {
+          "name": "a",
+          "public_addr": "127.0.0.51:6789/0",
+          "public_addrs": {
+            "addrvec": [
+              {
+                "type": "v2",
+                "addr": "127.0.0.51:3300",
+                "nonce": 0
+              },
+              {
+                "type": "v1",
+                "addr": "127.0.0.51:6789",
+                "nonce": 0
+              }
+            ]
+          },
+          "addr": "127.0.0.51:6789/0"
+        },
+        {
+          "name": "b",
+          "public_addr": "127.0.0.52:6789/0",
+          "public_addrs": {
+            "addrvec": [
+              {
+                "type": "v2",
+                "addr": "127.0.0.52:3300",
+                "nonce": 0
+              },
+              {
+                "type": "v1",
+                "addr": "127.0.0.52:6789",
+                "nonce": 0
+              }
+            ]
+          },
+          "addr": "127.0.0.52:6789/0"
+        },
+        {
+          "name": "c",
+          "public_addr": "127.0.0.53:6789/0",
+          "public_addrs": {
+            "addrvec": [
+              {
+                "type": "v2",
+                "addr": "127.0.0.53:3300",
+                "nonce": 0
+              },
+              {
+                "type": "v1",
+                "addr": "127.0.0.53:6789",
+                "nonce": 0
+              }
+            ]
+          },
+          "addr": "127.0.0.53:6789/0"
+        }
+      ]
+    }
+  },
+  "pools": [
+    {
+      "pool_id": 1,
+      "pool_name": "titanus",
+      "size": 3,
+      "min_size": 2,
+      "crush_rule": 1
+    },
+    {
+      "pool_id": 2,
+      "pool_name": "titanusfs_meta",
+      "size": 3,
+      "min_size": 2,
+      "crush_rule": 1
+    },
+    {
+      "pool_id": 3,
+      "pool_name": ".mgr",
+      "size": 3,
+      "min_size": 2,
+      "crush_rule": 0
+    },
+    {
+      "pool_id": 4,
+      "pool_name": "titanusfs_data",
+      "size": 3,
+      "min_size": 2,
+      "crush_rule": 1
+    }
+  ],
+  "rule": {
+    "rule_id": 1,
+    "rule_name": "titanus-ha-host",
+    "type": 1,
+    "steps": [
+      {
+        "op": "take",
+        "item": -1,
+        "item_name": "default"
+      },
+      {
+        "op": "chooseleaf_firstn",
+        "num": 0,
+        "type": "host"
+      },
+      {
+        "op": "emit"
+      }
+    ]
+  },
+  "tree": {
+    "nodes": [
+      {
+        "id": -1,
+        "name": "default",
+        "type": "root",
+        "type_id": 11,
+        "children": [
+          -7,
+          -5,
+          -2
+        ]
+      },
+      {
+        "id": -2,
+        "name": "a",
+        "type": "host",
+        "type_id": 1,
+        "pool_weights": {},
+        "children": [
+          0
+        ]
+      },
+      {
+        "id": 0,
+        "device_class": "hdd",
+        "name": "osd.0",
+        "type": "osd",
+        "type_id": 0,
+        "crush_weight": 1,
+        "depth": 2,
+        "pool_weights": {},
+        "exists": 1,
+        "status": "up",
+        "reweight": 1,
+        "primary_affinity": 1
+      },
+      {
+        "id": -5,
+        "name": "b",
+        "type": "host",
+        "type_id": 1,
+        "pool_weights": {},
+        "children": [
+          1
+        ]
+      },
+      {
+        "id": 1,
+        "device_class": "hdd",
+        "name": "osd.1",
+        "type": "osd",
+        "type_id": 0,
+        "crush_weight": 1,
+        "depth": 2,
+        "pool_weights": {},
+        "exists": 1,
+        "status": "up",
+        "reweight": 1,
+        "primary_affinity": 1
+      },
+      {
+        "id": -7,
+        "name": "c",
+        "type": "host",
+        "type_id": 1,
+        "pool_weights": {},
+        "children": [
+          2
+        ]
+      },
+      {
+        "id": 2,
+        "device_class": "hdd",
+        "name": "osd.2",
+        "type": "osd",
+        "type_id": 0,
+        "crush_weight": 1,
+        "depth": 2,
+        "pool_weights": {},
+        "exists": 1,
+        "status": "up",
+        "reweight": 1,
+        "primary_affinity": 1
+      }
+    ],
+    "stray": []
+  },
+  "mgr": {
+    "active_name": "a",
+    "standbys": [
+      {
+        "name": "b"
+      }
+    ]
+  },
+  "fs": {
+    "filesystems": [
+      {
+        "id": 1,
+        "mdsmap": {
+          "fs_name": "titanusfs",
+          "max_mds": 1,
+          "metadata_pool": 2,
+          "data_pools": [
+            4
+          ],
+          "info": {
+            "gid_34305": {
+              "name": "a",
+              "state": "up:active",
+              "rank": 0
+            }
+          }
+        }
+      }
+    ],
+    "standbys": [
+      {
+        "name": "b",
+        "state": "up:standby",
+        "rank": -1,
+        "join_fscid": -1
+      }
+    ]
+  }
+}

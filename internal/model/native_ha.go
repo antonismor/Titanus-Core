@@ -48,5 +48,13 @@ func (p RealmPlan) validateNativeHA() error {
 			}
 		}
 	}
+	if p.Ceph.Enabled {
+		if len(p.StorageNodes()) < 3 || p.Ceph.Replication != 3 {
+			return fmt.Errorf("Native HA Ceph requires at least three STORAGE hosts, three copies and min_size=2")
+		}
+		if p.Ceph.EnableRGW {
+			return fmt.Errorf("Native HA RGW HA is not implemented; select RBD/CephFS")
+		}
+	}
 	return fencing.ValidateTargets(targets, false)
 }

@@ -80,7 +80,9 @@ func validateHostBoundState(p Plan, roots map[string]string, binding *ClusterBin
 		}
 		configured.Bootstrap = false
 		canonical := state
-		canonical.Revision = 0
+		if !canonical.NativeHA {
+			canonical.Revision = 0
+		}
 		canonical.UpdatedAt = time.Time{}
 		encoded, _ := json.Marshal(canonical)
 		seedDigest := fmt.Sprintf("%x", sha256.Sum256(encoded))

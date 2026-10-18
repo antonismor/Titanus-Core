@@ -33,7 +33,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 || (!(len(os.Args) == 4 && os.Args[1] == "schema" && os.Args[2] == "prepare-floor") && os.Args[1] != "--capabilities-json" && os.Args[1] != "backup" && os.Args[1] != "version" && os.Args[1] != "--version" && os.Args[1] != "-v" && os.Args[1] != "help" && os.Args[1] != "--help" && os.Args[1] != "-h") {
+	if len(os.Args) < 2 || (!(len(os.Args) == 4 && os.Args[1] == "schema" && os.Args[2] == "prepare-floor") && os.Args[1] != "--capabilities-json" && os.Args[1] != "backup" && os.Args[1] != "ha" && os.Args[1] != "version" && os.Args[1] != "--version" && os.Args[1] != "-v" && os.Args[1] != "help" && os.Args[1] != "--help" && os.Args[1] != "-h") {
 		lock, err := offline.Shared()
 		if err != nil {
 			ansi.Error(err.Error())
@@ -67,6 +67,8 @@ func main() {
 
 func dispatch(args []string) error {
 	switch args[0] {
+	case "ha":
+		return runHA(args[1:])
 	case "schema":
 		return runSchema(args[1:])
 	case "--capabilities-json":
@@ -2175,6 +2177,8 @@ func printHelp() {
 Usage:
   titanus                                      Interactive ANSI menu
   titanus setup                                Guided Realm setup
+  titanus ha                                   Verified existing-Realm HA transition menu
+  titanus ha <prepare|stage|readiness|activate|rollback-staging> [flags]
   titanus backup <keygen|create|verify|attest-fence|restore> [flags]
   titanus realm init --name NAME --node ID --address IP
   titanus realm status
