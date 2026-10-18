@@ -1,9 +1,13 @@
 package consensus
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/version"
+	"github.com/hashicorp/raft"
 	"testing"
 	"time"
 )
@@ -61,4 +65,44 @@ func TestNativeWorkerFenceIntentSurvivesMajorityElection(t *testing.T) {
 		t.Fatal("rejoined voter lost completed fence")
 	}
 
+}
+
+func TestNativeHAGenesisRejectsChangedRevisionAndReplay(t *testing.T) {
+	root := t.TempDir()
+	s, e := realm.Open(root, "LAB")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.SeedNativeHA(); e != nil {
+		t.Fatal(e)
+	}
+	seed := s.Snapshot()
+	canonical := clone(seed)
+	canonical.UpdatedAt = time.Time{}
+	encoded, _ := json.Marshal(canonical)
+	hash := fmt.Sprintf("%x", sha256.Sum256(encoded))
+	m := &machine{root: root, data: emptyState("LAB"), nativeSeedHash: hash}
+	apply := func(state realm.State) any {
+		b, e := json.Marshal(state)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return m.Apply(&raft.Log{Data: b})
+	}
+	changed := clone(seed)
+	changed.Revision++
+	if apply(changed) == nil || m.state().Revision != 0 {
+		t.Fatal("genesis accepted changed initial revision")
+	}
+	changed = clone(seed)
+	changed.Network.ServiceCIDR = "10.250.0.0/16"
+	if apply(changed) == nil || m.state().Revision != 0 {
+		t.Fatal("genesis accepted changed prepared seed")
+	}
+	if e := apply(seed); e != nil {
+		t.Fatal("exact genesis refused", e)
+	}
+	if apply(seed) == nil {
+		t.Fatal("committed genesis replayed")
+	}
 }

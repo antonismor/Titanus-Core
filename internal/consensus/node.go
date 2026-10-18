@@ -110,7 +110,9 @@ func Open(root string, cfg Config, seed realm.State, ca, cert, key string) (*Nod
 		return nil, fmt.Errorf("seed Realm does not match consensus Realm")
 	}
 	canonical := clone(seed)
-	canonical.Revision = 0
+	if !canonical.NativeHA {
+		canonical.Revision = 0
+	}
 	canonical.UpdatedAt = time.Time{}
 	encoded, _ := json.Marshal(canonical)
 	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
@@ -343,7 +345,6 @@ func (m *machine) Apply(log *raft.Log) any {
 	genesis := false
 	if m.data.Revision == 0 && next.NativeHA && next.SchemaVersion == 3 {
 		canonical := clone(next)
-		canonical.Revision = 0
 		canonical.UpdatedAt = time.Time{}
 		encoded, _ := json.Marshal(canonical)
 		genesis = fmt.Sprintf("%x", sha256.Sum256(encoded)) == m.nativeSeedHash
