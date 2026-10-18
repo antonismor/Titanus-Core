@@ -49,12 +49,11 @@ the new Native HA installation profile, automatic passwordless SSH mesh
 bootstrap, or an Enterprise entitlement mechanism; these are separate
 development milestones. See [Editions and roadmap](docs/EDITIONS.md).
 
-**Enterprise Edition — planned:** no edition-imposed Realm node limit, subject
-to available infrastructure and validated scalability. We are planning a
-public Enterprise release **in the coming days**, with a **90-day trial**.
-The date, access method and licensing mechanism are not yet finalized;
-this announcement is a roadmap commitment, not a claim that Enterprise or its
-trial is already downloadable. See [Editions and roadmap](docs/EDITIONS.md).
+**Enterprise Edition — Soon Available.** No edition-imposed Realm node limit
+is planned, subject to available infrastructure and validated scalability.
+A **90-day trial** is planned for the Enterprise launch. No release date,
+trial activation, download or licensing mechanism is available yet.
+See [Editions and roadmap](docs/EDITIONS.md).
 
 ## Native Titanus terminology
 
