@@ -32,6 +32,30 @@ The objective is not API compatibility or source compatibility with Docker or Ku
 - **Safe-by-default deployment** with discovery, validation, simulation and confirmation.
 - **No hidden Docker, containerd, Podman or Kubernetes backend.**
 
+## Community & Enterprise editions
+
+**Community Edition — up to 9 Realm nodes.** A *node* is one participating VM
+or physical host, regardless of its capabilities (CONTROL, EXECUTION, STORAGE,
+GATEWAY, etc.). A VM with multiple roles still counts as **one node**.
+The nine-node ceiling applies equally to Standard, Native HA and
+Advanced/Custom installation profiles. The number of Units, Fleets,
+applications or containers running on those nodes **does not count toward
+the node ceiling**; practical workload capacity depends on CPU, memory,
+networking and storage resources.
+
+The Community installer and plan validator reject configurations with more
+than nine Realm nodes. The current candidate does **not yet implement**
+the new Native HA installation profile, automatic passwordless SSH mesh
+bootstrap, or an Enterprise entitlement mechanism; these are separate
+development milestones. See [Editions and roadmap](docs/EDITIONS.md).
+
+**Enterprise Edition — planned:** no edition-imposed Realm node limit, subject
+to available infrastructure and validated scalability. We are planning a
+public Enterprise release **in the coming days**, with a **90-day trial**.
+The date, access method and licensing mechanism are not yet finalized;
+this announcement is a roadmap commitment, not a claim that Enterprise or its
+trial is already downloadable. See [Editions and roadmap](docs/EDITIONS.md).
+
 ## Native Titanus terminology
 
 Titanus deliberately uses its own object model:
