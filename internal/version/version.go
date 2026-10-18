@@ -6,7 +6,7 @@ import (
 	"runtime"
 )
 
-var Version = "0.4.0-rc.16"
+var Version = "0.4.0-rc.17"
 var Revision = "unknown"
 
 const StateProfile = "titanus-state/v3"

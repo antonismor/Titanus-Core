@@ -1,9 +1,17 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.10**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.17**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
+
+The rc.17 candidate integrates Universal Installer Phases A–C: Community's
+nine-host ceiling, secure directed SSH bootstrap, opt-in Native HA Worker
+fencing/recovery, explicit Ceph HA policy and backup-bound transition of supported
+existing 3/5-voter Realms. See [Phase C](universal-installer-phase-c.md) for the
+maintenance sequence, guarded schema-4 activation, supported topology and rollback
+boundaries. Existing schemas remain unchanged until an explicit migration. This
+candidate does not perform or claim deferred VM/physical-host acceptance.
 
 ## Build and packages
 
@@ -55,9 +63,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.10-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.10-linux-amd64.tar.gz
-./titanus-0.4.0-rc.10-linux-amd64/bin/titanus setup
+sha256sum -c titanus-0.4.0-rc.17-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.17-linux-amd64.tar.gz
+./titanus-0.4.0-rc.17-linux-amd64/bin/titanus setup
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
