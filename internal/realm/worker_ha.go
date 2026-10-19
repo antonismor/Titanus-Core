@@ -124,8 +124,21 @@ func (s *Store) BeginWorkerFailover(nodeID string) (WorkerFailover, error) {
 		}
 	}
 	n, ok := s.data.Nodes[nodeID]
-	if !ok || n.State != NodeUnreachable || n.PowerQuarantined || !hasCapability(n.Capabilities, model.CapabilityExecution) || hasCapability(n.Capabilities, model.CapabilityControl) {
-		return WorkerFailover{}, fmt.Errorf("only an unreachable, separate EXECUTION Worker can be fenced")
+	// Gateway exclusion may finish before this loop records the Worker's
+	// assignment cohort. Keep that quarantined owner eligible for a fresh
+	// Worker fence, even after a Pulse; historical Gateway evidence alone
+	// never authorizes retirement or replaces physical power confirmation.
+	gatewayExcluded := false
+	if n.PowerQuarantined {
+		for _, transfer := range s.data.GatewayTransfers {
+			if transfer.Complete && transfer.PowerFenced && transfer.Gateway.Owner == nodeID {
+				gatewayExcluded = true
+				break
+			}
+		}
+	}
+	if !ok || (n.State != NodeUnreachable && !gatewayExcluded) || (n.PowerQuarantined && !gatewayExcluded) || !hasCapability(n.Capabilities, model.CapabilityExecution) || hasCapability(n.Capabilities, model.CapabilityControl) {
+		return WorkerFailover{}, fmt.Errorf("Worker fencing requires an unreachable or Gateway-excluded separate EXECUTION Worker")
 	}
 	if len(s.data.WorkerFailovers) >= 128 {
 		return WorkerFailover{}, fmt.Errorf("Worker fence retention exhausted")
