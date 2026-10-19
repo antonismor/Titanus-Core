@@ -7,13 +7,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/titanus/agent.env
+ExecStartPre=+/bin/sh -c 'umask 077; : >>/run/titanus-offline.lock'
 ExecStart=/usr/local/sbin/titanus-agent --node=${TITANUS_NODE_ID} --address=${TITANUS_NODE_ADDRESS} --fabric-address=${TITANUS_NODE_FABRIC_ADDRESS} --controller=${TITANUS_CONTROLLER} --ca=${TITANUS_CA} --cert=${TITANUS_CERT} --key=${TITANUS_KEY} --capabilities=${TITANUS_CAPABILITIES}
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/titanus /var/log/titanus /etc/titanus/pki /run/titanus-offline.lock
+ReadWritePaths=/var/lib/titanus /var/log/titanus /etc/titanus/pki -/run/titanus-offline.lock
 PrivateTmp=true
 
 [Install]
