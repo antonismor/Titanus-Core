@@ -242,6 +242,10 @@ func TestGatewayFenceBeforeWorkerIntentRecoversAssignmentCohort(t *testing.T) {
 			for _, a := range s.Snapshot().Assignments {
 				old = a
 			}
+			old.LeaseExpiresAt = time.Now().Add(-time.Minute)
+			if e := s.SetAssignments("web", []realm.Assignment{old}); e != nil {
+				t.Fatal(e)
+			}
 			destination := ""
 			for id, n := range s.Snapshot().Nodes {
 				n.Capabilities = append(n.Capabilities, model.CapabilityGateway)
