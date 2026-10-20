@@ -541,3 +541,47 @@
   $("#themeButton").addEventListener("click",()=>document.body.classList.toggle("high-contrast"));
   init();
 })();
+.statusTimer=setInterval(pollNow,1200);
+    model.logTimer=setInterval(pollLogs,900);
+    pollNow(); pollLogs();
+  }
+  function stopPolling(){ if(model.statusTimer)clearInterval(model.statusTimer);if(model.logTimer)clearInterval(model.logTimer);model.statusTimer=null;model.logTimer=null; }
+
+  async function resetInstaller(){
+    try{await api("/api/v1/reset",{method:"POST",body:"{}"});model.plan=makeDefaultPlan(model.meta);model.plan._nodeCount=3;model.plan._controlCount=3;model.plan._sshUser="root";model.plan._sshPort=22;ensureNodes();model.state=null;model.password="";model.currentStep=1;render();}catch(err){showError(err.message);}
+  }
+
+  function showError(message){ const t=$("#toast");t.textContent=message;t.classList.remove("hidden");clearTimeout(showError.timer);showError.timer=setTimeout(()=>t.classList.add("hidden"),6500); }
+
+  async function init() {
+    readAccessToken();
+    try {
+      if (model.token) {
+        await api("/api/v1/session", {method:"POST", body:JSON.stringify({token:model.token})});
+        model.token="";
+      }
+      model.meta=await api("/api/v1/bootstrap");
+      model.state=model.meta.state;
+      model.plan=model.meta.plan || makeDefaultPlan(model.meta);
+      model.plan._nodeCount=model.plan.nodes?.length || 3;
+      model.plan._controlCount=(model.plan.nodes||[]).filter(n=>(n.capabilities||[]).includes("CONTROL")).length || (model.plan._nodeCount>=3?3:1);
+      model.plan._sshUser=model.plan.nodes?.[0]?.ssh_user || "root";
+      model.plan._sshPort=model.plan.nodes?.[0]?.ssh_port || 22;
+      ensureNodes();
+      $("#editionBadge").textContent="COMMUNITY";
+      $("#versionText").textContent=`${model.meta.version} · ${model.meta.state_profile}`;
+      $("#appShell").classList.remove("hidden");
+      const st=model.state.status;
+      if(model.state.running || ["running","fingerprint-review","failed","interrupted"].includes(st)){model.currentStep=5;render();if(model.state.running)beginPolling();}
+      else if(["completed","prepared"].includes(st)){model.currentStep=6;render();}
+      else render();
+    } catch(err) {
+      model.token="";
+      $("#accessGate").classList.remove("hidden");
+      showError(err.message);
+    }
+  }
+
+  $("#themeButton").addEventListener("click",()=>document.body.classList.toggle("high-contrast"));
+  init();
+})();
