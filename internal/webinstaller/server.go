@@ -192,4 +192,202 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/v1/status", s.requireToken(http.HandlerFunc(s.handleStatus)))
 	mux.Handle("/api/v1/logs", s.requireToken(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("/api/v1/validate", s.requireToken(http.HandlerFunc(s.handleValidate)))
-	mux.H
+	mux.Handle("/api/v1/discover", s.requireToken(http.HandlerFunc(s.handleDiscover)))
+	mux.Handle("/api/v1/start", s.requireToken(http.HandlerFunc(s.handleStart)))
+	mux.Handle("/api/v1/reset", s.requireToken(http.HandlerFunc(s.handleReset)))
+	static, _ := fs.Sub(webAssets, "assets")
+	mux.Handle("/", http.FileServer(http.FS(static)))
+	return securityHeaders(mux)
+}
+
+func (s *Server) Serve(ctx context.Context) error {
+	httpServer := &http.Server{
+		Addr:              s.cfg.Listen,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdown)
+	}()
+	certFile, keyFile, err := ensureTLSIdentity(s.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	s.logf("INFO", "Titanus Core mini HTTPS server listening on %s", s.cfg.Listen)
+	err = httpServer.ListenAndServeTLS(certFile, keyFile)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func (s *Server) requireToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided := r.Header.Get("X-Titanus-Installer-Token")
+		if provided == "" {
+			if cookie, err := r.Cookie(sessionCookie); err == nil {
+				provided = cookie.Value
+			}
+		}
+		if provided != s.accessToken {
+			writeError(w, http.StatusUnauthorized, "open the installer using the access URL printed by tuigui")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req sessionRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	if req.Token != s.accessToken {
+		writeError(w, http.StatusUnauthorized, "invalid installer access token")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: s.accessToken, Path: "/", HttpOnly: true, Secure: true,
+		SameSite: http.SameSiteStrictMode, MaxAge: 12 * 60 * 60,
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	s.mu.RLock()
+	state := s.state
+	var plan *model.RealmPlan
+	if s.plan != nil {
+		copy := *s.plan
+		plan = &copy
+	}
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, bootstrapResponse{
+		Product:      "Titanus Core Universal Installer",
+		Edition:      "Community",
+		Enterprise:   "Soon Available",
+		NodeLimit:    model.CommunityNodeLimit,
+		Version:      buildversion.Version,
+		Revision:     buildversion.Revision,
+		StateProfile: buildversion.StateProfile,
+		Listen:       s.cfg.Listen,
+		LocalIPs:     localIPv4s(),
+		Capabilities: []string{"CONTROL", "EXECUTION", "STORAGE", "GATEWAY", "GPU", "BACKUP"},
+		State:        state,
+		Plan:         plan,
+	})
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	s.mu.RLock()
+	state := s.state
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	data, err := os.ReadFile(s.cfg.LogFile)
+	if err != nil && !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, "cannot read installer log")
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > 600 {
+		lines = lines[len(lines)-600:]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+}
+
+func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "an installation is already running")
+		return
+	}
+	s.mu.Unlock()
+
+	var plan model.RealmPlan
+	if err := decodeJSON(w, r, &plan); err != nil {
+		return
+	}
+	plan.Normalize()
+	if err := plan.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if plan.Installation == nil {
+		writeError(w, http.StatusBadRequest, "the Web Installer requires a titanus-plan/v2 installation")
+		return
+	}
+	plan.AutoDeploy = false
+	planPath := filepath.Join(s.cfg.StateDir, "plan.json")
+	if err := plan.Save(planPath); err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot save validated plan")
+		return
+	}
+	s.mu.Lock()
+	s.plan = &plan
+	s.state = InstallerState{
+		SessionID:    newSessionID(),
+		Status:       "validated",
+		Phase:        "Review",
+		Progress:     8,
+		Message:      "Configuration validated successfully. Review SSH host fingerprints before deployment.",
+		PlanPath:     planPath,
+		TotalNodes:   len(plan.Nodes),
+		UpdatedAt:    time.Now().UTC(),
+		Fingerprints: nil,
+	}
+	_ = s.persistStateLocked()
+	state := s.state
+	s.mu.Unlock()
+	s.logf("OK", "Plan validated: realm=%s profile=%s nodes=%d", plan.RealmName, plan.Installation.Profile, len(plan.Nodes))
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	plan, ok := s.currentPlan()
+	if !ok {
+		writeError(w, http.StatusBadRequest, "validate a configuration fir
