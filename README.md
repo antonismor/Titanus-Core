@@ -169,7 +169,21 @@ The setup workflow is designed to ask the administrator what they need rather th
 
 ## Guided setup
 
-Run:
+Run the terminal installer directly with:
+
+```bash
+sudo tuicli
+```
+
+Or start the protected browser installer with:
+
+```bash
+sudo tuigui
+```
+
+`tuigui` starts the embedded mini HTTPS service, detects the local IPv4 address and prints the protected browser URL. Closing or refreshing the browser does not stop an active deployment; progress and verbose status are persisted for reconnect. The browser uses the same `titanus-plan/v2`, validation, SSH trust and verified release deployment engine as the terminal path. Enterprise remains **Soon Available**. See [Web Installer](docs/WEB_INSTALLER.md).
+
+The underlying ANSI/TUI command remains:
 
 ```bash
 titanus setup
