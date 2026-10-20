@@ -422,4 +422,79 @@
     const area=$("#fingerprintArea");
     if(!area) return;
     area.innerHTML=`<div class="card"><h3>SSH Identity Approval</h3><p class="muted small">Verify every Ed25519 fingerprint through an independent trusted console. Scanning alone does not establish host identity.</p><div class="fingerprint-list">${model.fingerprints.map(f=>`<div class="fingerprint"><strong>${esc(f.node)}</strong><span>${esc(f.address)}</span><span>${esc(f.fingerprint)}</span></div>`).join("")}</div><label class="switch-row" style="margin-top:16px"><input id="approveFingerprints" type="checkbox"> I independently verified and approve every fingerprint above.</label><div class="field"><label>Initial SSH Password</label><input id="livePassword" class="input" type="password" value="${esc(model.password)}" autocomplete="new-password"><small>Sent only when you press Start Installation. It is not written to disk or logs.</small></div><div class="toolbar"><span></span><button id="startLive" class="btn primary" disabled>Start Installation&nbsp; →</button></div></div>`;
-    $("#livePasswor
+    $("#livePassword").addEventListener("input",e=>model.password=e.target.value);
+    $("#approveFingerprints").addEventListener("change",e=>$("#startLive").disabled=!e.target.checked);
+    $("#startLive").addEventListener("click", startLiveInstallation);
+  }
+
+  async function startLiveInstallation() {
+    if(!model.password){showError("Enter the initial SSH password before starting deployment.");return;}
+    const approved={}; model.fingerprints.forEach(f=>approved[f.node]=f.fingerprint);
+    try {
+      const state=await api("/api/v1/start",{method:"POST",body:JSON.stringify({password:model.password,apply:true,fingerprints:approved})});
+      model.password="";
+      model.state=state; model.startedAt=Date.now(); model.currentStep=5; render(); beginPolling();
+    } catch(err){showError(err.message);}
+  }
+
+  function renderDeployment() {
+    const s=model.state||{progress:0,message:"Waiting to start…",phase:"Deployment",status:"idle",applied_nodes:0,total_nodes:model.plan.nodes.length};
+    const progress=Math.max(0,Math.min(100,Number(s.progress||0)));
+    const stageIndex=progress<25?0:progress<42?1:progress<90?2:progress<94?3:progress<100?4:5;
+    $("#workspace").innerHTML = header("Installing Titanus Core", "Your deployment is in progress. You can close or refresh this browser and reopen the same protected IP URL to see the persisted installation status.", 5) + `
+      <div class="card progress-card">
+        <div class="progress-head"><h2>Installation Progress</h2><span id="elapsed" class="time-info">Elapsed Time: ${elapsedText(s.started_at)}</span></div>
+        <div class="progress-row"><div class="progress-track"><div id="progressBar" class="progress-bar" style="width:${progress}%"></div></div><div id="progressValue" class="progress-value">${progress}%</div></div>
+        <div class="progress-meta"><span id="progressMessage">${esc(s.message||"")}</span><span id="nodeCounter">${s.total_nodes?`${s.applied_nodes||0}/${s.total_nodes} nodes`:""}</span></div>
+        <div class="install-steps">${["Validate Infrastructure","Prepare Environment","Deploy Components","Configure Services","Run Health Checks","Finalize Deployment"].map((name,idx)=>`<div class="install-step ${idx<stageIndex?"done":idx===stageIndex?"active":""}"><div class="dot">${idx<stageIndex?"✓":idx+1}</div>${name}</div>`).join("")}</div>
+        <details class="verbose" open><summary><span>▣&nbsp; Verbose Installation Output</span><span class="live-pill">● Live output</span></summary><pre id="terminal" class="terminal">Connecting to installer log…</pre></details>
+      </div>
+      ${s.error?`<div class="notice error"><strong>Installation stopped:</strong> ${esc(s.error)}</div>`:""}
+      <div class="toolbar"><button id="returnReview" class="btn" ${s.running?"disabled":""}>← Review</button><button id="refreshNow" class="btn">Refresh Status</button></div>`;
+    $("#returnReview").addEventListener("click",()=>{model.currentStep=4;render();});
+    $("#refreshNow").addEventListener("click",pollNow);
+    pollLogs();
+  }
+
+  function renderComplete() {
+    const s=model.state||{};
+    const ok=s.status==="completed"||s.status==="prepared";
+    $("#workspace").innerHTML = header(ok?(s.prepared_only?"Deployment Prepared":"Titanus Core Ready"):"Installation Status", ok?(s.prepared_only?"The verified deployment is prepared and no remote host was changed.":"The installation workflow completed successfully."):"The last persisted installer state is shown below.", 6) + `
+      <div class="card"><div class="choice ${ok?"active":""}" style="min-height:150px"><div class="choice-icon">${ok?"✓":"!"}</div><h3>${esc(s.message||s.status||"Status")}</h3><p>Status: <strong>${esc(s.status||"unknown")}</strong><br>Progress: <strong>${Number(s.progress||0)}%</strong><br>${s.deployment_path?`Prepared deployment: <code>${esc(s.deployment_path)}</code><br>`:""}${s.plan_path?`Plan: <code>${esc(s.plan_path)}</code>`:""}</p></div>${s.error?`<div class="notice error" style="margin-top:14px">${esc(s.error)}</div>`:""}<div class="toolbar"><button id="newInstall" class="btn">New Installation</button><button id="showLogs" class="btn primary">View Verbose Output</button></div></div>`;
+    $("#showLogs").addEventListener("click",()=>{model.currentStep=5;render();});
+    $("#newInstall").addEventListener("click",resetInstaller);
+  }
+
+  function elapsedText(startedAt) {
+    const start=startedAt?Date.parse(startedAt):(model.startedAt||Date.now());
+    const secs=Math.max(0,Math.floor((Date.now()-start)/1000));
+    const m=Math.floor(secs/60), s=secs%60;
+    return `${m}m ${String(s).padStart(2,"0")}s`;
+  }
+
+  async function pollNow() {
+    try {
+      model.state=await api("/api/v1/status");
+      if(model.state.status==="completed"||model.state.status==="prepared") { model.currentStep=6; stopPolling(); render(); return; }
+      if(model.state.status==="failed") { stopPolling(); }
+      if(model.currentStep===5) renderDeployment();
+      updateSummaryProgress();
+    } catch(err){ showError(err.message); }
+  }
+
+  function updateSummaryProgress() {
+    if(model.currentStep!==5 || !model.state) return;
+    $("#summaryDetails").innerHTML=`<h3>Current Progress</h3><div class="progress-track" style="height:10px"><div class="progress-bar" style="width:${Number(model.state.progress||0)}%"></div></div><div class="status-list"><div class="status-line">Phase <b>${esc(model.state.phase||"-")}</b></div><div class="status-line">Status <b>${esc(model.state.status||"-")}</b></div><div class="status-line">Nodes <b>${model.state.applied_nodes||0}/${model.state.total_nodes||model.plan.nodes.length}</b></div></div>`;
+  }
+
+  async function pollLogs() {
+    try {
+      const data=await api("/api/v1/logs");
+      const terminal=$("#terminal");
+      if(terminal){terminal.textContent=(data.lines||[]).join("\n")||"No verbose output yet.";terminal.scrollTop=terminal.scrollHeight;}
+    } catch(_){/* status polling surfaces auth/network errors */}
+  }
+
+  function beginPolling() {
+    stopPolling();
+    model
