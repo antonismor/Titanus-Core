@@ -193,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/v1/status", s.requireToken(http.HandlerFunc(s.handleStatus)))
 	mux.Handle("/api/v1/logs", s.requireToken(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("/api/v1/validate", s.requireToken(http.HandlerFunc(s.handleValidate)))
+	mux.Handle("/api/v1/plan", s.requireToken(http.HandlerFunc(s.handlePlan)))
 	mux.Handle("/api/v1/discover", s.requireToken(http.HandlerFunc(s.handleDiscover)))
 	mux.Handle("/api/v1/start", s.requireToken(http.HandlerFunc(s.handleStart)))
 	mux.Handle("/api/v1/reset", s.requireToken(http.HandlerFunc(s.handleReset)))
@@ -330,6 +331,34 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		lines = lines[len(lines)-600:]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+}
+
+func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	s.mu.RLock()
+	var plan *model.RealmPlan
+	if s.plan != nil {
+		copy := *s.plan
+		plan = &copy
+	}
+	state := s.state
+	s.mu.RUnlock()
+	if plan == nil || state.PlanPath == "" {
+		writeError(w, http.StatusNotFound, "no validated installation plan is available")
+		return
+	}
+	data, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot encode validated installation plan")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="titanus-plan.json"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(data, '\n'))
 }
 
 func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
