@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Titanus Core Universal Installer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><span></span></div>
+      <div><strong>TITANUS CORE</strong><small>UNIVERSAL INSTALLER</small></div>
+    </div>
+    <div class="top-actions"><span id="editionBadge" class="badge">COMMUNITY</span><span id="versionText">loading…</span><button id="themeButton" class="icon-button" aria-label="Toggle contrast">◐</button></div>
+  </header>
+
+  <div id="accessGate" class="access-gate hidden">
+    <div class="access-card">
+      <div class="brand-mark large"><span></span></div>
+      <h1>Titanus Core Installer</h1>
+      <p>Open this page using the protected access URL printed by <code>tuigui</code>.</p>
+      <p class="muted">The protected access URL establishes an HttpOnly browser session. The token is never written into the installation Plan.</p>
+    </div>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <nav id="stepNav" class="steps" aria-label="Installation steps"></nav>
+      <div class="mountain-panel">
+        <svg viewBox="0 0 320 260" role="img" aria-label="Titanus mountain motif">
+          <defs><linearGradient id="mtn" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#dbeafe"/><stop offset="1" stop-color="#ffffff"/></linearGradient></defs>
+          <path d="M0 215 L45 168 75 190 118 108 148 151 187 76 224 145 257 116 320 206 320 260 0 260Z" fill="url(#mtn)" stroke="#cbdcf3" stroke-width="2"/>
+          <path d="M130 205 L159 162 184 205Z" fill="#1f84ff" opacity=".12"/>
+          <path d="M148 211 L160 170 172 211Z" fill="#1f84ff" opacity=".52"/>
+          <path d="M160 170 L172 211 186 202 174 164Z" fill="#0b68e9" opacity=".35"/>
+        </svg>
+        <div class="motto"><span>• BUILD</span><span>• DEPLOY</span><span>• SCALE</span></div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section id="workspace" class="workspace"></section>
+    </main>
+
+    <aside class="summary-panel">
+      <div class="summary-card">
+        <h3>Installation Summary</h3>
+        <dl id="summaryList"></dl>
+        <hr>
+        <div id="summaryDetails"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
