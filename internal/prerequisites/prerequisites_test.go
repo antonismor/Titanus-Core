@@ -74,10 +74,78 @@ type recordingRunner struct {
 
 func (r *recordingRunner) Run(n model.NodeSpec, c string) (remote.Result, error) {
 	r.calls = append(r.calls, n.Name+":"+c)
-	if r.failGuard && strings.Contains(c, "for path in") || r.failInstall && strings.Contains(c, "apt-get update") {
+	if r.failGuard && strings.Contains(c, "for path in") || r.failInstall && strings.Contains(c, "TITANUS_DEPENDENCIES_OK") {
 		return remote.Result{}, fmt.Errorf("injected failure")
 	}
 	return remote.Result{}, nil
+}
+
+func TestAutomaticDependencyRepairIsBoundedAndRejectsUnsafeFailures(t *testing.T) {
+	for _, scenario := range []struct {
+		name, failure               string
+		enabled, persistent, module bool
+		wantOK                      bool
+		wantAttempts                int
+	}{
+		{"network-recovers", "Temporary failure resolving 'deb.example'", true, false, false, true, 3},
+		{"lock-recovers", "Could not get lock /var/lib/dpkg/lock-frontend", true, false, false, true, 3},
+		{"network-exhausted", "Unable to connect to deb.example", true, true, false, false, 2},
+		{"repair-disabled", "Temporary failure resolving 'deb.example'", false, false, false, false, 1},
+		{"signature-failure", "NO_PUBKEY; Temporary failure resolving 'deb.example'", true, false, false, false, 1},
+		{"checksum-failure", "Hash Sum mismatch", true, false, false, false, 1},
+		{"package-script-failure", "dpkg: error processing; Unable to connect", true, false, false, false, 1},
+		{"unknown-failure", "Unrecognized failure", true, false, false, false, 1},
+		{"module-index-recovers", "", true, false, true, true, 2},
+		{"module-exhausted", "", true, true, true, false, 2},
+		{"module-repair-disabled", "", false, false, true, false, 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			dir := t.TempDir()
+			write := func(name, body string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("id", "echo 0\n")
+			write("sleep", "exit 0\n")
+			write("dpkg-query", "exit 1\n")
+			write("apt-get", `echo "$*" >> "$FIXTURE/apt.log"
+if [ -n "$FAILURE" ] && { [ "$PERSISTENT" = true ] || [ ! -f "$FIXTURE/failed" ]; }; then
+ touch "$FIXTURE/failed"; echo "$FAILURE" >&2; exit 100
+fi
+`)
+			write("modprobe", `echo "$*" >> "$FIXTURE/module.log"; test "$PERSISTENT" != true && test -f "$FIXTURE/index-fixed"`)
+			write("depmod", `touch "$FIXTURE/index-fixed"`)
+			packages := []string{"nftables"}
+			var modules []string
+			if scenario.module {
+				packages = nil
+				modules = []string{"overlay"}
+			}
+			command := dependencyScript(packages, modules, filepath.Join(dir, "modules.conf"), scenario.enabled, false)
+			cmd := exec.Command("sh", "-c", command)
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "FIXTURE="+dir, "FAILURE="+scenario.failure, fmt.Sprintf("PERSISTENT=%t", scenario.persistent))
+			out, err := cmd.CombinedOutput()
+			if (err == nil) != scenario.wantOK {
+				t.Fatalf("success=%v wanted=%v: %s", err == nil, scenario.wantOK, out)
+			}
+			log := "apt.log"
+			if scenario.module {
+				log = "module.log"
+			}
+			calls, _ := os.ReadFile(filepath.Join(dir, log))
+			if strings.Count(string(calls), "\n") != scenario.wantAttempts {
+				t.Fatalf("unexpected attempts %s; output=%s", calls, out)
+			}
+			if !scenario.enabled && strings.Contains(string(out), "TITANUS_REPAIR") {
+				t.Fatal("repair ran while disabled", string(out))
+			}
+			if !scenario.wantOK && strings.Contains(string(out), "TITANUS_DEPENDENCIES_OK") {
+				t.Fatal("failure reported success", string(out))
+			}
+		})
+	}
 }
 
 func TestAllFreshGuardsPrecedeAnyDependencyMutation(t *testing.T) {

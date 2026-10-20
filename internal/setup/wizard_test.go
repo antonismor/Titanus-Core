@@ -102,7 +102,7 @@ func TestWizardSavesNativeHAWithSeparateWorkersAndFencing(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf("node%d", i), fmt.Sprintf("192.0.2.%d", i), "", "")
 	}
-	lines = append(lines, inventory, "0.4.0-rc.13", strings.Repeat("a", 40), "amd.tar.gz", strings.Repeat("b", 64), "arm.tar.gz", strings.Repeat("c", 64), "", "", "", "", "", "y", "n", file, "")
+	lines = append(lines, inventory, "0.4.0-rc.13", strings.Repeat("a", 40), "amd.tar.gz", strings.Repeat("b", 64), "arm.tar.gz", strings.Repeat("c", 64), "", "", "", "", "", "y", "y", "n", file, "")
 	var out bytes.Buffer
 	result, e := New(strings.NewReader(strings.Join(lines, "\n")), &out).Run()
 	if e != nil {
@@ -112,7 +112,7 @@ func TestWizardSavesNativeHAWithSeparateWorkersAndFencing(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if plan.Installation.Profile != model.ProfileNativeHA || len(plan.Installation.PowerFencing) != 2 || len(plan.ControlNodes()) != 3 {
+	if plan.Installation.Profile != model.ProfileNativeHA || len(plan.Installation.PowerFencing) != 2 || len(plan.ControlNodes()) != 3 || !plan.Installation.AutoRepair {
 		t.Fatal("HA profile lost policy")
 	}
 	for _, n := range plan.ControlNodes() {

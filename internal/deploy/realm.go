@@ -41,6 +41,7 @@ type RealmDeployer struct {
 		CopyFile(model.NodeSpec, string, string) error
 	}
 	ReleasePreflight func(model.RealmPlan) error
+	RepairLog        func(string, ...any)
 }
 
 func NewRealmDeployer() *RealmDeployer {

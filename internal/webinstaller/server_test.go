@@ -138,6 +138,7 @@ func TestAccessFragmentCanEstablishReconnectCookie(t *testing.T) {
 func TestBootstrapIncludesPersistedPlanForReconnect(t *testing.T) {
 	s := testServer(t)
 	plan := validPlan()
+	plan.Installation.AutoRepair = true
 	body, _ := json.Marshal(plan)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/validate", bytes.NewReader(body))
 	req.Header.Set("X-Titanus-Installer-Token", s.accessToken)
@@ -150,7 +151,7 @@ func TestBootstrapIncludesPersistedPlanForReconnect(t *testing.T) {
 	req.Header.Set("X-Titanus-Installer-Token", s.accessToken)
 	res = httptest.NewRecorder()
 	s.Handler().ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"realm_name":"TEST-REALM"`) {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"realm_name":"TEST-REALM"`) || !strings.Contains(res.Body.String(), `"auto_repair":true`) {
 		t.Fatalf("bootstrap did not restore plan: %s", res.Body.String())
 	}
 }

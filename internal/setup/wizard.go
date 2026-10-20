@@ -360,6 +360,13 @@ func (w *Wizard) Run() (Result, error) {
 			return Result{}, err
 		}
 	}
+	if install.Operation != "rollback" {
+		fmt.Fprintln(w.out, "Automatic repair uses bounded remedies for APT transport/lock failures, missing runtime tools and module indexes. Every pre-flight check must pass before continuing.")
+		install.AutoRepair, err = w.askBool("Enable automatic repair of supported installation failures", false)
+		if err != nil {
+			return Result{}, err
+		}
+	}
 	plan.AutoDeploy, err = w.askBool("Apply the verified deployment to hosts after saving and preparing the Plan", false)
 	if err != nil {
 		return Result{}, err
@@ -385,6 +392,7 @@ func (w *Wizard) printSummary(plan model.RealmPlan, path string) {
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Green, "Plan validated successfully"))
 	fmt.Fprintf(w.out, "  Profile:        %s\n", plan.Installation.Profile)
+	fmt.Fprintf(w.out, "  Auto repair:    %t\n", plan.Installation.AutoRepair)
 	fmt.Fprintf(w.out, "  Realm:          %s\n", plan.RealmName)
 	fmt.Fprintf(w.out, "  Nodes:          %d\n", len(plan.Nodes))
 	fmt.Fprintf(w.out, "  Control nodes:  %d\n", len(plan.ControlNodes()))

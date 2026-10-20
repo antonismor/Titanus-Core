@@ -34,9 +34,13 @@ type Installation struct {
 	NodePrefix     int                       `json:"node_prefix"`
 	VXLANID        int                       `json:"vxlan_id"`
 	Start          bool                      `json:"start"`
+	AutoRepair     bool                      `json:"auto_repair,omitempty"`
 }
 
 func (i Installation) Validate() error {
+	if i.AutoRepair && i.Operation == "rollback" {
+		return fmt.Errorf("automatic repair is unavailable for binary rollback")
+	}
 	switch i.Profile {
 	case "", ProfileStandard, ProfileCustom:
 	case ProfileNativeHA:

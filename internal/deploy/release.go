@@ -317,12 +317,12 @@ func (d *RealmDeployer) ApplyPrepared(plan model.RealmPlan, prepared PreparedIns
 			return nil, fmt.Errorf("prepared node order mismatch")
 		}
 	}
-	if err := prerequisites.EnsureNodes(d.SSH, plan); err != nil {
+	if err := prerequisites.EnsureNodesWithLog(d.SSH, plan, d.RepairLog); err != nil {
 		return nil, err
 	}
 	check := d.ReleasePreflight
 	if check == nil {
-		check = func(p model.RealmPlan) error { return preflight.Summary((&preflight.Runner{SSH: d.SSH}).Run(p)) }
+		check = func(p model.RealmPlan) error { return (&preflight.Runner{SSH: d.SSH}).Ensure(p, d.RepairLog) }
 	}
 	if err := check(plan); err != nil {
 		return nil, err

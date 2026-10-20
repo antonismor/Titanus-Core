@@ -53,6 +53,7 @@ The browser workflow exposes the installation choices from `titanus setup`:
 - PKI directory, API/Raft ports, per-node subnet prefix, VXLAN ID and service
   activation choice
 - offline validate/prepare-only mode or explicitly authorized live apply
+- optional automatic repair with bounded attempts and mandatory revalidation
 - protected browser download of the validated `titanus-plan/v2` JSON for the same review/export purpose as the TUI Plan output
 
 Enterprise is visible in the common installer shell as **Soon Available**. The
@@ -129,6 +130,41 @@ Actual `tuicli` / `titanus setup` startup captured through a pseudo-terminal and
 rendered with its ANSI colors. The isolated capture reports systemd inactive and
 stops at the first prompt, before any Plan or host changes.
 
+## Optional automatic repair
+
+Both `tuicli` and Step 3 of `tuigui` offer **Automatically repair supported
+installation failures**. It defaults to disabled; the choice is stored as
+`installation.auto_repair` in the same `titanus-plan/v2` Plan and shown at review.
+An omitted field in an older Plan keeps repair disabled. Binary rollback does
+not support this option.
+
+With repair enabled, explicit live installation can:
+
+- wait two seconds and retry a failed APT command once when its output identifies
+  a temporary DNS/connection or package-lock failure;
+- regenerate module indexes with `depmod -a` and retry a failed runtime module
+  load once;
+- reinstall only the package for a failed `iproute2`, `nftables` or `nsenter`
+  pre-flight check, or reload/persist OverlayFS, once per failed check.
+
+After pre-flight repair, every check runs again on **all** selected nodes.
+Deployment continues only when the full pre-flight succeeds. Failed repairs,
+remaining failures and unsupported checks stop with their node/check identified.
+TUI output and the persistent Web Installer verbose log record attempts and
+verification. APT success and module loading are also required before continuing.
+
+This option does not bypass SSH identity approval, signature/checksum validation,
+disk guards, existing Realm protection or package authentication. It does not
+delete package locks, change repositories, run generic package fixes, replay
+release activation/Ceph provisioning, or resume an interrupted process. Discovery
+and **Validate & Prepare Only** remain free of remote changes even when the option
+is selected.
+
+![Automatic repair option in Step 3](images/tuigui-auto-repair.png)
+
+Actual isolated HTTPS browser capture with repair selected, using documentation
+addresses; no target installation is performed by this screenshot fixture.
+
 ## Progress, verbose output and reconnect behavior
 
 The Deployment screen follows the light Titanus Enterprise Installer reference:
@@ -173,7 +209,8 @@ are chosen from the Plan; Native HA provider tools are installed on CONTROL
 nodes when required. Existing packages are not upgraded. The runtime modules
 `overlay`, `bridge`, `veth` and `vxlan` are loaded and persisted in
 `/etc/modules-load.d/titanus-runtime.conf`. Package/network failures stop with
-the affected node identified; a retry installs only what is still missing.
+the affected node identified unless the optional bounded repair succeeds;
+a later explicit attempt installs only what is still missing.
 
 The apply path requires root or passwordless sudo and reachable configured APT
 repositories. Existing Realm guards run across all nodes before remote package

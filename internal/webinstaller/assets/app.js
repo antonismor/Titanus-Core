@@ -75,7 +75,8 @@
         raft_port: 9444,
         node_prefix: 24,
         vxlan_id: 4242,
-        start: true
+        start: true,
+        auto_repair: false
       }
     };
   }
@@ -146,7 +147,7 @@
       p.ceph = {enabled:false, replication:1, enable_rbd:true, enable_cephfs:true, enable_rgw:false, provision:false};
       p.nodes.forEach(n => { delete n.ceph_public_ip; delete n.ceph_cluster_ip; delete n.ceph_devices; n.capabilities = n.capabilities.filter(c => c !== "STORAGE"); });
     }
-    if (install.operation === "rollback") delete install.archives;
+    if (install.operation === "rollback") { delete install.archives; install.auto_repair=false; }
     else if (!install.archives) install.archives = {amd64:{path:"",sha256:""},arm64:{path:"",sha256:""}};
     if (install.profile !== "native-ha") delete install.power_fencing;
     delete install._fencing_raw;
@@ -312,7 +313,7 @@
       }
       ensureNodes(); render();
     }));
-    $("#operation").addEventListener("change", e => { model.plan.installation.operation = e.target.value; render(); });
+    $("#operation").addEventListener("change", e => { model.plan.installation.operation = e.target.value; if(e.target.value==="rollback") model.plan.installation.auto_repair=false; render(); });
     $("#nodeCount").addEventListener("change", e => { model.plan._nodeCount = Number(e.target.value); ensureNodes(); updateSummary(); });
     bindText("realmName", v => { model.plan.realm_name=v; if (!model.plan.installation.pki_dir || model.plan.installation.pki_dir.includes("/pki/")) model.plan.installation.pki_dir=`/var/lib/titanus/installer-web/pki/${v}`; });
     bindText("pkiDir", v => model.plan.installation.pki_dir=v);
@@ -414,6 +415,11 @@
         <div class="grid-3">${field("mTLS API Port","apiPort",i.api_port,"Default 9443.","number")}${field("mTLS Raft Port","raftPort",i.raft_port,"Default 9444; distinct from API.","number")}${field("Fabric VXLAN ID","vxlanID",i.vxlan_id,"1–16777215.","number")}</div>
         <div class="grid-2">${field("Per-node Unit Subnet Prefix","nodePrefix",i.node_prefix,"16–30.","number")}<div class="field"><label>Activation</label><label class="switch-row"><input id="startServices" type="checkbox" ${i.start?"checked":""} ${i.operation!=="install"?"disabled":""}> Start services when installation is applied</label><small>Same final TUI choice.</small></div></div>
       </div>
+      <div class="card"><h3>Automatic Repair</h3>
+        <label class="switch-row"><input id="autoRepair" type="checkbox" ${i.auto_repair?"checked":""} ${i.operation==="rollback"?"disabled":""}> <strong>Automatically repair supported installation failures</strong></label>
+        <p class="muted small">During live installation, retry temporary APT connection/lock failures once, repair module indexes if loading fails, and reinstall missing pre-flight tools. Every pre-flight check must pass before deployment continues. Attempts and verification appear in the installation output. Unresolved or unsupported errors stop installation.</p>
+        ${i.operation==="rollback"?`<div class="notice">Binary rollback keeps its existing offline behavior; automatic repair is unavailable.</div>`:""}
+      </div>
       <div class="toolbar"><button class="btn" id="backInfrastructure">← Back</button><button class="btn primary" id="toReview">Review&nbsp; →</button></div>`;
     bindComponents();
   }
@@ -445,6 +451,7 @@
     $("#apiPort")?.addEventListener("input",e=>i.api_port=Number(e.target.value)); $("#raftPort")?.addEventListener("input",e=>i.raft_port=Number(e.target.value));
     $("#vxlanID")?.addEventListener("input",e=>i.vxlan_id=Number(e.target.value)); $("#nodePrefix")?.addEventListener("input",e=>i.node_prefix=Number(e.target.value));
     $("#startServices")?.addEventListener("change",e=>i.start=e.target.checked);
+    $("#autoRepair")?.addEventListener("change",e=>{i.auto_repair=e.target.checked;model.validated=false;});
     $("#backInfrastructure").addEventListener("click",()=>{model.currentStep=2;render();});
     $("#toReview").addEventListener("click",()=>{model.currentStep=4;render();});
   }
@@ -454,6 +461,7 @@
     $("#workspace").innerHTML = header("Review Installation", "Validate the complete plan before any host is changed. Preparation is offline; live deployment requires explicit SSH fingerprint approval and the bootstrap password.", 4) + `
       <div class="card"><h3>Safety Review</h3><div class="notice">The Web Installer uses the same <code>titanus-plan/v2</code> model, release verifier, SSH full-mesh bootstrap and deployment engine as the TUI path. The existing TUI remains unchanged and usable through <code>tuicli</code>.</div>
       <div class="status-list"><div class="status-line"><span class="checkdot">✓</span> Community node limit <b>${model.plan.nodes.length}/${model.meta.community_node_limit}</b></div><div class="status-line"><span class="checkdot">✓</span> Selected profile <b>${esc(profileLabel())}</b></div><div class="status-line"><span class="checkdot">✓</span> Password persistence <b>Disabled</b></div><div class="status-line"><span class="checkdot">✓</span> Browser reconnect status <b>Persistent</b></div></div></div>
+      <div class="card"><div class="status-line">Automatic repair <b id="autoRepairStatus">${model.plan.installation.auto_repair?"Enabled — bounded attempts and verification":"Disabled"}</b></div></div>
       <details class="card flat"><summary><strong>Plan Preview</strong></summary><pre class="code-preview">${esc(preview)}</pre></details>
       <div id="validationResult"></div>
       <div id="fingerprintArea"></div>

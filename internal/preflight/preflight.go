@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/prerequisites"
 	"github.com/antonismor/Titanus-Core/internal/remote"
 )
 
@@ -39,6 +40,50 @@ func (r *Runner) Run(plan model.RealmPlan) []NodeReport {
 		reports = append(reports, r.checkNode(node))
 	}
 	return reports
+}
+
+// Ensure is used only by explicit deployment. Run remains read-only. Recognized
+// failures get one fixed remedy followed by a new full pre-flight; unsupported
+// failures block repair admission across the whole Plan.
+func (r *Runner) Ensure(plan model.RealmPlan, logf func(string, ...any)) error {
+	reports := r.Run(plan)
+	initial := Summary(reports)
+	if initial == nil || !prerequisites.RepairEnabled(plan) {
+		return initial
+	}
+	for _, report := range reports {
+		for _, check := range report.Checks {
+			if !check.Passed {
+				if _, ok := prerequisites.RepairScript(check.Name); !ok {
+					return fmt.Errorf("%w; automatic repair has no safe remedy for %s on %s", initial, check.Name, report.Node)
+				}
+			}
+		}
+	}
+	for index, report := range reports {
+		for _, check := range report.Checks {
+			if check.Passed {
+				continue
+			}
+			command, _ := prerequisites.RepairScript(check.Name)
+			if logf != nil {
+				logf("[%s] Auto repair: %s; applying targeted remedy, attempt 1/1", report.Node, check.Name)
+			}
+			if _, err := r.SSH.Run(plan.Nodes[index], command); err != nil {
+				return fmt.Errorf("automatic repair of %s on %s failed: %w; original failure: %v", check.Name, report.Node, err, initial)
+			}
+		}
+	}
+	if logf != nil {
+		logf("Auto repair: re-running every pre-flight check on all %d nodes", len(plan.Nodes))
+	}
+	if err := Summary(r.Run(plan)); err != nil {
+		return fmt.Errorf("automatic repair exhausted; verification failed: %w", err)
+	}
+	if logf != nil {
+		logf("Auto repair verified: all pre-flight checks passed; continuing installation")
+	}
+	return nil
 }
 
 func (r *Runner) checkNode(node model.NodeSpec) NodeReport {

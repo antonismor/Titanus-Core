@@ -666,7 +666,8 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 	var trust sshtrust.Report
 	if apply {
 		s.setState("running", "Prepare Environment", 27, "Installing required tools on the installer host.", "")
-		output, err := prerequisites.EnsureInstaller(context.Background())
+		output, err := prerequisites.EnsureInstallerWithRepair(context.Background(), prerequisites.RepairEnabled(plan))
+		prerequisites.LogRepairs("installer", output, func(format string, args ...any) { s.logf("REPAIR", format, args...) })
 		if output != "" {
 			s.logf("OUTPUT", "Installer dependencies: %s", compactLog(output, 4096))
 		}
@@ -744,6 +745,10 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 	verbose := &verboseSSH{inner: executor, logf: s.logf}
 	deployer := deploy.NewRealmDeployer()
 	deployer.SSH = verbose
+	deployer.RepairLog = func(format string, args ...any) { s.logf("REPAIR", format, args...) }
+	if prerequisites.RepairEnabled(plan) {
+		s.logf("INFO", "Automatic repair enabled: bounded dependency/pre-flight remedies with mandatory verification")
+	}
 
 	s.setState("running", "Prepare Environment", 46, "Installing required node dependencies and loading runtime kernel modules before pre-flight.", "")
 	s.logf("INFO", "Installing required packages/modules, then applying the verified release to %d nodes serially", len(plan.Nodes))

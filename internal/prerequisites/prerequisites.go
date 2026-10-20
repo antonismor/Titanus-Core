@@ -56,21 +56,63 @@ func Packages(plan model.RealmPlan, node model.NodeSpec) []string {
 }
 
 func script(packages, modules []string, moduleFile string) string {
+	return dependencyScript(packages, modules, moduleFile, false, false)
+}
+
+func dependencyScript(packages, modules []string, moduleFile string, autoRepair, reinstall bool) string {
 	// Package/module names are fixed internal constants, never operator input.
+	repair := "0"
+	if autoRepair {
+		repair = "1"
+	}
+	reinstallFlag := ""
+	if reinstall {
+		reinstallFlag = "--reinstall "
+	}
 	s := `set -eu
+export LC_ALL=C
 test "$(id -u)" = 0 || { echo 'Dependency installation requires root or passwordless sudo' >&2; exit 1; }
 test "$(uname -s)" = Linux && test -r /etc/debian_version || { echo 'Automatic dependencies require a Debian-family Linux host' >&2; exit 1; }
 command -v apt-get >/dev/null && command -v dpkg-query >/dev/null
+auto_repair=` + repair + `
+# Only APT transport/lock failures are retried, once. Never remove locks, alter
+# repositories, disable verification or replay failing package maintainer scripts.
+titanus_apt() {
+    apt_log=$(mktemp)
+    apt_attempt=0
+    while :; do
+        if DEBIAN_FRONTEND=noninteractive apt-get "$@" -o DPkg::Lock::Timeout=120 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 >"$apt_log" 2>&1; then
+            cat "$apt_log"
+            rm -f "$apt_log"
+            if [ "$apt_attempt" = 1 ]; then echo 'TITANUS_REPAIR APT retry succeeded'; fi
+            return 0
+        else
+            apt_status=$?
+        fi
+        cat "$apt_log" >&2
+        if [ "$auto_repair" = 1 ] && [ "$apt_attempt" = 0 ] &&
+           grep -Eiq 'Temporary failure resolving|Could not resolve|Could not connect|Unable to connect|Connection (failed|timed out|refused)|Could not get lock|Unable to acquire.*lock|is another process using it' "$apt_log" &&
+           ! grep -Eiq 'NO_PUBKEY|not signed|signature|Hash Sum mismatch|Certificate verification failed|Authentication failed|dpkg:|error processing|Sub-process' "$apt_log"; then
+            echo 'TITANUS_REPAIR APT transient transport/lock failure; waiting 2s, retry 1/1'
+            apt_attempt=1
+            sleep 2
+        else
+            if [ "$apt_attempt" = 1 ]; then echo 'TITANUS_REPAIR APT retry exhausted; installation blocked'; fi
+            rm -f "$apt_log"
+            return "$apt_status"
+        fi
+    done
+}
 set --
 for package in ` + strings.Join(packages, " ") + `; do
-    if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
+    if [ '` + fmt.Sprint(reinstall) + `' = true ] || [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
         set -- "$@" "$package"
     fi
 done
 if [ "$#" -gt 0 ]; then
     printf 'Installing required packages:'; printf ' %s' "$@"; printf '\n'
-    apt-get update -qq -o APT::Update::Error-Mode=any
-    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends --no-upgrade "$@"
+    titanus_apt update -qq -o APT::Update::Error-Mode=any
+    titanus_apt install -y --no-install-recommends --no-upgrade ` + reinstallFlag + `"$@"
 else
     printf 'All required packages are already installed.\n'
 fi
@@ -79,7 +121,16 @@ fi
 		s += `test ! -L '` + moduleFile + `' || { echo 'Refusing symlinked Titanus module configuration' >&2; exit 1; }
 install -d -m 0755 "$(dirname '` + moduleFile + `')"
 for module in ` + strings.Join(modules, " ") + `; do
-    modprobe "$module"
+    if ! modprobe "$module"; then
+        if [ "$auto_repair" != 1 ]; then exit 1; fi
+        echo "TITANUS_REPAIR Module $module failed; rebuild module indexes and retry 1/1"
+        depmod -a
+        if ! modprobe "$module"; then
+            echo "TITANUS_REPAIR Module $module retry exhausted; installation blocked"
+            exit 1
+        fi
+        echo "TITANUS_REPAIR Module $module loaded after index repair"
+    fi
     if ! test -f '` + moduleFile + `' || ! grep -qxF "$module" '` + moduleFile + `'; then
         printf '%s\n' "$module" >> '` + moduleFile + `'
     fi
@@ -95,13 +146,17 @@ func InstallerScript() string {
 }
 
 func TargetScript(plan model.RealmPlan, node model.NodeSpec) string {
-	return script(Packages(plan, node), []string{"overlay", "bridge", "veth", "vxlan"}, "/etc/modules-load.d/titanus-runtime.conf")
+	return dependencyScript(Packages(plan, node), []string{"overlay", "bridge", "veth", "vxlan"}, "/etc/modules-load.d/titanus-runtime.conf", RepairEnabled(plan), false)
 }
 
 func EnsureInstaller(ctx context.Context) (string, error) {
+	return EnsureInstallerWithRepair(ctx, false)
+}
+
+func EnsureInstallerWithRepair(ctx context.Context, enabled bool) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "sh", "-c", InstallerScript()).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "sh", "-c", dependencyScript([]string{"ca-certificates", "openssh-client", "python3", "sshpass", "util-linux"}, nil, "", enabled, false)).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("installer-host dependency installation failed: %w", err)
 	}
@@ -115,6 +170,10 @@ type Runner interface {
 // EnsureNodes runs only during explicit apply. Guard all selected nodes against
 // overwriting an existing Realm before any package or kernel-module changes.
 func EnsureNodes(runner Runner, plan model.RealmPlan) error {
+	return EnsureNodesWithLog(runner, plan, nil)
+}
+
+func EnsureNodesWithLog(runner Runner, plan model.RealmPlan, logf func(string, ...any)) error {
 	if plan.Installation != nil && plan.Installation.Operation == "rollback" {
 		return nil
 	}
@@ -127,10 +186,44 @@ func EnsureNodes(runner Runner, plan model.RealmPlan) error {
 		}
 	}
 	for _, node := range plan.Nodes {
-		command := `set -eu; if [ "$(id -u)" = 0 ]; then SUDO=''; else SUDO='sudo -n'; fi; $SUDO sh -c '` + strings.ReplaceAll(TargetScript(plan, node), "'", "'\"'\"'") + `'`
-		if _, err := runner.Run(node, command); err != nil {
+		result, err := runner.Run(node, SudoScript(TargetScript(plan, node)))
+		LogRepairs(node.Name, result.Stdout, logf)
+		if err != nil {
 			return fmt.Errorf("dependency installation on %s: %w", node.Name, err)
 		}
 	}
 	return nil
+}
+
+func RepairEnabled(plan model.RealmPlan) bool {
+	return plan.Installation != nil && plan.Installation.AutoRepair && plan.Installation.Operation != "rollback"
+}
+
+// RepairScript accepts only named checks with a fixed, idempotent remedy. The
+// caller must re-run the complete pre-flight after repair, before any payload.
+func RepairScript(check string) (string, bool) {
+	packages := map[string]string{"iproute2": "iproute2", "nftables": "nftables", "nsenter": "util-linux"}
+	if pkg, ok := packages[check]; ok {
+		return SudoScript(dependencyScript([]string{pkg}, nil, "", false, true)), true
+	}
+	if check == "OverlayFS" {
+		return SudoScript(dependencyScript(nil, []string{"overlay"}, "/etc/modules-load.d/titanus-runtime.conf", false, false)), true
+	}
+	return "", false
+}
+
+func SudoScript(script string) string {
+	return `set -eu; if [ "$(id -u)" = 0 ]; then SUDO=''; else SUDO='sudo -n'; fi; $SUDO sh -c '` + strings.ReplaceAll(script, "'", "'\"'\"'") + `'`
+}
+
+// Preserve concise repair events even when verbose package output is truncated.
+func LogRepairs(node, output string, logf func(string, ...any)) {
+	if logf == nil {
+		return
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "TITANUS_REPAIR ") {
+			logf("[%s] %s", node, line)
+		}
+	}
 }

@@ -202,3 +202,49 @@ func TestCustomAPIPortIsAdvertised(t *testing.T) {
 		t.Fatal("custom node API port lost")
 	}
 }
+
+type repairingReleaseSSH struct {
+	releaseSSHFixture
+	fixed, persistent bool
+	repairs           int
+}
+
+func (f *repairingReleaseSSH) Run(node model.NodeSpec, command string) (remote.Result, error) {
+	if command == "command -v nft" && !f.fixed {
+		return remote.Result{}, fmt.Errorf("missing nft executable")
+	}
+	if strings.Contains(command, "--reinstall") {
+		f.repairs++
+		f.fixed = !f.persistent
+	}
+	return f.releaseSSHFixture.Run(node, command)
+}
+
+func TestApplyRepairsBeforePayloadAndNeverIgnoresFailedVerification(t *testing.T) {
+	for _, persistent := range []bool{false, true} {
+		t.Run(fmt.Sprint(persistent), func(t *testing.T) {
+			plan := model.RealmPlan{Version: "titanus-plan/v2", RealmName: "LAB", FabricCIDR: "10.210.0.0/16", ServiceCIDR: "10.220.0.0/16", Nodes: []model.NodeSpec{{Name: "control", ManagementIP: "192.0.2.1", SSHUser: "root", SSHPort: 22, Capabilities: []model.Capability{model.CapabilityControl}}}, Installation: &model.Installation{Operation: "install", AutoRepair: true, ReleaseVersion: "0.4.0-rc.17", Revision: strings.Repeat("a", 40), APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242, Archives: map[string]model.Archive{"amd64": {Path: "fixture-amd64", SHA256: strings.Repeat("b", 64)}, "arm64": {Path: "fixture-arm64", SHA256: strings.Repeat("c", 64)}}}}
+			// A prepared identity fixture isolates apply admission and ordering; its
+			// SSH runner never copies files, installs packages or executes a payload.
+			prepared := PreparedInstallation{Version: plan.Installation.ReleaseVersion, Revision: plan.Installation.Revision, Operation: "install", PlanSHA256: planDigest(plan), ResultsPath: filepath.Join(t.TempDir(), "results.json"), Nodes: []PreparedNode{{Node: "control"}}}
+			ssh := &repairingReleaseSSH{persistent: persistent}
+			d := &RealmDeployer{SSH: ssh}
+			plan.Installation.AutoRepair = false
+			if _, err := d.ApplyPrepared(plan, prepared); err == nil || len(ssh.calls) != 0 {
+				t.Fatal("repair policy changed after preparation was accepted")
+			}
+			plan.Installation.AutoRepair = true
+			results, err := d.ApplyPrepared(plan, prepared)
+			if persistent {
+				if err == nil || ssh.copies != 0 || len(results) != 0 {
+					t.Fatalf("failed verification reached payload: %v copies=%d", err, ssh.copies)
+				}
+			} else if err != nil || ssh.copies == 0 || len(results) != 1 {
+				t.Fatalf("verified repair did not continue: %v", err)
+			}
+			if ssh.repairs != 1 {
+				t.Fatalf("unbounded repair: %d", ssh.repairs)
+			}
+		})
+	}
+}
