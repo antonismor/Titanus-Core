@@ -503,7 +503,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 
 	plan.AutoDeploy = req.Apply
 	if err := plan.Save(filepath.Join(s.cfg.StateDir, "plan.json")); err != nil {
-		s.finishRun(false)
+		s.fail("Cannot save deployment mode: " + err.Error())
 		writeError(w, http.StatusInternalServerError, "cannot save deployment mode")
 		return
 	}
