@@ -565,4 +565,217 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 		return
 	}
 	s.mu.Lock()
-	s.state.De
+	s.state.DeploymentPath = deploymentPath
+	s.state.UpdatedAt = time.Now().UTC()
+	_ = s.persistStateLocked()
+	s.mu.Unlock()
+	s.logf("OK", "Verified private deployment prepared at %s", deploymentPath)
+	if !apply {
+		s.mu.Lock()
+		s.state.Status = "prepared"
+		s.state.Phase = "Complete"
+		s.state.Progress = 100
+		s.state.Completed = true
+		s.state.PreparedOnly = true
+		s.state.Message = "Deployment prepared successfully. No remote host was changed."
+		s.state.FinishedAt = time.Now().UTC()
+		s.state.UpdatedAt = time.Now().UTC()
+		_ = s.persistStateLocked()
+		s.mu.Unlock()
+		s.logf("OK", "Prepare-only workflow completed; no remote host was changed")
+		return
+	}
+
+	executor := remote.NewSSHExecutor()
+	executor.CommandTimeout = 3 * time.Minute
+	executor.IdentityFile = trust.IdentityFile
+	executor.KnownHostsFile = trust.KnownHostsFile
+	verbose := &verboseSSH{inner: executor, logf: s.logf}
+	deployer := deploy.NewRealmDeployer()
+	deployer.SSH = verbose
+
+	s.setState("running", "Deploy Components", 52, "Applying the verified release to Titanus nodes.", "")
+	s.logf("INFO", "Applying release to %d nodes serially", len(plan.Nodes))
+	watchDone := make(chan struct{})
+	go s.watchResults(prepared.ResultsPath, len(plan.Nodes), watchDone)
+	results, err := deployer.ApplyPrepared(plan, prepared)
+	close(watchDone)
+	if err != nil {
+		s.fail("Deployment failed: " + err.Error())
+		return
+	}
+	for _, result := range results {
+		s.logf("OK", "Node %s (%s) %s", result.Node, result.Address, result.Message)
+	}
+
+	s.setState("running", "Run Health Checks", 94, "Verifying Titanus services on every installed node.", "")
+	for _, node := range plan.Nodes {
+		if _, err := verbose.Run(node, "systemctl --no-pager is-active titanusd.service titanus-agent.service"); err != nil {
+			s.fail("Service health check failed on " + node.Name + ": " + err.Error())
+			return
+		}
+		s.logf("OK", "Service health check passed on %s", node.Name)
+	}
+	if plan.Ceph.Enabled && plan.Ceph.Provision {
+		s.logf("OK", "Ceph provisioning returned successfully through the verified deployment engine")
+	}
+
+	s.mu.Lock()
+	s.state.Status = "completed"
+	s.state.Phase = "Complete"
+	s.state.Progress = 100
+	s.state.Completed = true
+	s.state.PreparedOnly = false
+	s.state.AppliedNodes = len(plan.Nodes)
+	s.state.Message = "Titanus Core installation completed successfully."
+	s.state.FinishedAt = time.Now().UTC()
+	s.state.UpdatedAt = time.Now().UTC()
+	_ = s.persistStateLocked()
+	s.mu.Unlock()
+	s.logf("OK", "Titanus Core installation completed successfully")
+}
+
+func (s *Server) watchResults(path string, total int, done <-chan struct{}) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	seen := 0
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			var results []deploy.RealmNodeResult
+			if json.Unmarshal(data, &results) != nil || len(results) <= seen {
+				continue
+			}
+			for _, result := range results[seen:] {
+				s.logf("OK", "Installed node %s (%s)", result.Node, result.Address)
+			}
+			seen = len(results)
+			progress := 52
+			if total > 0 {
+				progress = 52 + (seen*36)/total
+			}
+			if progress > 88 {
+				progress = 88
+			}
+			s.mu.Lock()
+			s.state.AppliedNodes = seen
+			s.state.Progress = progress
+			s.state.Message = fmt.Sprintf("Installed %d of %d Titanus nodes.", seen, total)
+			s.state.UpdatedAt = time.Now().UTC()
+			_ = s.persistStateLocked()
+			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *Server) bootstrapFor(plan model.RealmPlan) sshtrust.Bootstrap {
+	knownHosts := filepath.Join("/root", ".ssh", "known_hosts")
+	if _, err := os.Stat(knownHosts); err != nil {
+		knownHosts = ""
+	}
+	return sshtrust.Bootstrap{
+		Runner:             sshtrust.ExecRunner{},
+		Directory:          filepath.Join(s.cfg.StateDir, "ssh", sshtrust.RealmID(plan.RealmName)),
+		ExistingKnownHosts: knownHosts,
+	}
+}
+
+func (s *Server) currentPlan() (model.RealmPlan, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.plan == nil {
+		return model.RealmPlan{}, false
+	}
+	return *s.plan, true
+}
+
+func (s *Server) setState(status, phase string, progress int, message, errorText string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Status = status
+	s.state.Phase = phase
+	s.state.Progress = progress
+	s.state.Message = message
+	s.state.Error = errorText
+	s.state.UpdatedAt = time.Now().UTC()
+	_ = s.persistStateLocked()
+}
+
+func (s *Server) fail(message string) {
+	s.mu.Lock()
+	s.state.Status = "failed"
+	s.state.Phase = "Deployment"
+	s.state.Running = false
+	s.state.Completed = false
+	s.state.Error = message
+	s.state.Message = "Installation stopped safely. Review the verbose output before retrying."
+	s.state.FinishedAt = time.Now().UTC()
+	s.state.UpdatedAt = time.Now().UTC()
+	s.running = false
+	_ = s.persistStateLocked()
+	s.mu.Unlock()
+	s.logf("ERROR", "%s", message)
+}
+
+func (s *Server) finishRun(onlyIfRunning bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if onlyIfRunning && !s.running {
+		return
+	}
+	s.running = false
+	s.state.Running = false
+	s.state.UpdatedAt = time.Now().UTC()
+	_ = s.persistStateLocked()
+}
+
+func (s *Server) sessionID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.SessionID
+}
+
+func (s *Server) persistStateLocked() error {
+	data, err := json.MarshalIndent(s.state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(s.cfg.StateDir, "state.json"), append(data, '\n'), 0600)
+}
+
+func (s *Server) loadState() error {
+	data, err := os.ReadFile(filepath.Join(s.cfg.StateDir, "state.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var state InstallerState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("decode installer state: %w", err)
+	}
+	s.state = state
+	return nil
+}
+
+func (s *Server) loadPlan() error {
+	path := filepath.Join(s.cfg.StateDir, "plan.json")
+	plan, err := model.LoadPlan(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return nil
+	}
+	s.plan = &plan
+	return nil
+}
+
+func atomicWrite(path string, data []byte, m
