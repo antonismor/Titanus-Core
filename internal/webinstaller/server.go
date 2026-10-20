@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -235,7 +236,7 @@ func (s *Server) requireToken(next http.Handler) http.Handler {
 				provided = cookie.Value
 			}
 		}
-		if provided != s.accessToken {
+		if !tokenMatches(provided, s.accessToken) {
 			writeError(w, http.StatusUnauthorized, "open the installer using the access URL printed by tuigui")
 			return
 		}
@@ -252,7 +253,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
 	}
-	if req.Token != s.accessToken {
+	if !tokenMatches(req.Token, s.accessToken) {
 		writeError(w, http.StatusUnauthorized, "invalid installer access token")
 		return
 	}
@@ -263,13 +264,13 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func tokenMatches(provided, expected string) bool {\n\treturn len(provided) == len(expected) && subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1\n}\n\nfunc securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
