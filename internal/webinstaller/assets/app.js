@@ -25,7 +25,9 @@
     cephConfirmed: false,
     polling: false,
     readingLogs: false,
-    verboseOpen: true
+    verboseOpen: true,
+    autoQuery: null,
+    querying: false
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -42,7 +44,7 @@
     const headers = Object.assign({}, options.headers || {});
     if (model.token) headers["X-Titanus-Installer-Token"] = model.token;
     if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-    const response = await fetch(path, Object.assign({}, options, {headers, cache: "no-store", signal: AbortSignal.timeout(path.endsWith("/discover")?110000:15000)}));
+    const response = await fetch(path, Object.assign({}, options, {headers, cache: "no-store", signal: AbortSignal.timeout((path.endsWith("/discover")||path.endsWith("/autofill"))?110000:15000)}));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
     return payload;
@@ -103,8 +105,13 @@
       node.ssh_port = Number(model.plan._sshPort || node.ssh_port || 22);
       if (!node.capabilities || !node.capabilities.length) node.capabilities = ["EXECUTION"];
       if (model.plan.installation.profile === "native-ha") {
-        node.capabilities = i < controls ? ["CONTROL"] : Array.from(new Set(node.capabilities.filter(c => c !== "CONTROL").concat("EXECUTION")));
-        if (i < controls) node.capabilities = node.capabilities.filter(c => c !== "EXECUTION");
+        if (i < controls) {
+          node.capabilities = node.capabilities.filter(c => c !== "EXECUTION");
+          if (!node.capabilities.includes("CONTROL")) node.capabilities.unshift("CONTROL");
+        } else {
+          node.capabilities = node.capabilities.filter(c => c !== "CONTROL");
+          if (!node.capabilities.length) node.capabilities = ["EXECUTION"];
+        }
       } else {
         if (i < controls && !node.capabilities.includes("CONTROL")) node.capabilities.push("CONTROL");
         if (i >= controls) node.capabilities = node.capabilities.filter(c => c !== "CONTROL");
@@ -155,6 +162,50 @@
     ensureNodes();
     const copy = JSON.parse(JSON.stringify(model.plan));
     return normalizePlanForAPI(copy);
+  }
+
+  function clonePlanForAutoQuery() {
+    if(model.plan.installation?._fencing_error) throw new Error("Native HA fencing JSON is invalid: "+model.plan.installation._fencing_error);
+    ensureNodes();
+    const p=JSON.parse(JSON.stringify(model.plan));
+    p.created_at=new Date().toISOString();
+    delete p._nodeCount; delete p._controlCount; delete p._sshUser; delete p._sshPort;
+    if(p.installation){ delete p.installation._fencing_raw; delete p.installation._fencing_error; }
+    return p;
+  }
+
+  function hydrateQueriedPlan(plan) {
+    plan._nodeCount=plan.nodes?.length||1;
+    plan._controlCount=(plan.nodes||[]).filter(n=>(n.capabilities||[]).includes("CONTROL")).length||1;
+    plan._sshUser=plan.nodes?.[0]?.ssh_user||"root";
+    plan._sshPort=plan.nodes?.[0]?.ssh_port||22;
+    if(plan.installation?.power_fencing) plan.installation._fencing_raw=JSON.stringify(plan.installation.power_fencing,null,2);
+    return plan;
+  }
+
+  async function runAutoQuery() {
+    if(model.querying) return;
+    if(!model.password){ showError("Enter the Initial SSH Password in Step 2 before running read-only auto-query."); return; }
+    model.querying=true;
+    const controls=$$("input,select,textarea,button");
+    const enabled=controls.filter(el=>!el.disabled);
+    enabled.forEach(el=>el.disabled=true);
+    const button=$("#autoQueryButton");
+    if(button) button.textContent="Querying…";
+    try {
+      const result=await api("/api/v1/autofill",{method:"POST",body:JSON.stringify({plan:clonePlanForAutoQuery(),password:model.password})});
+      model.plan=hydrateQueriedPlan(result.plan);
+      model.validated=false; model.cephConfirmed=false; model.fingerprints=[];
+      model.autoQuery={findings:result.findings||[],warnings:result.warnings||[]};
+      render();
+    } catch(err) {
+      model.autoQuery={findings:[],warnings:[err.message]};
+      render();
+      showError(err.message);
+    } finally {
+      model.querying=false;
+      enabled.forEach(el=>el.disabled=false);
+    }
   }
 
   function stepNav() {
@@ -336,7 +387,9 @@
   function renderComponents() {
     const p=model.plan, i=p.installation, c=p.ceph;
     const isNative=i.profile==="native-ha";
+    const querySummary=model.autoQuery ? `<div class="notice ${model.autoQuery.warnings?.length?"warning":""}"><strong>Auto-query result</strong>${(model.autoQuery.findings||[]).map(x=>`<div>✓ ${esc(x)}</div>`).join("")}${(model.autoQuery.warnings||[]).map(x=>`<div>⚠ ${esc(x)}</div>`).join("")}</div>` : "";
     $("#workspace").innerHTML = header("Components & Advanced Settings", "Configure Ceph, release identity, ports, Fabric parameters and Native HA fencing. These are the same installation inputs exposed by the TUI.", 3) + `
+      <div class="card auto-query-card"><div class="toolbar" style="margin-top:0"><div><h3 style="margin-bottom:6px">Infrastructure Query & Auto-fill</h3><p class="muted small" style="margin:0">Read-only discovery checks the nodes over SSH and fills verified Ceph networks, unused devices, Worker UUIDs, server-side fencing profile data and matching local release archives/checksums. It never wipes, formats, provisions or powers off a node.</p></div><button class="btn primary" id="autoQueryButton" type="button">Query Infrastructure & Auto-fill</button></div>${querySummary}</div>
       <div class="card">
         <h3>Distributed Storage</h3>
         <label class="switch-row"><input id="cephEnabled" type="checkbox" ${c.enabled?"checked":""} ${i.profile==="standard"?"disabled":""}> <strong>Configure distributed Ceph storage</strong></label>${i.profile==="standard"?`<div class="notice">Standard profile does not configure Ceph in the TUI. Choose Native HA or Advanced / Custom to configure distributed storage.</div>`:""}
@@ -367,6 +420,7 @@
 
   function bindComponents() {
     const p=model.plan, i=p.installation, c=p.ceph;
+    $("#autoQueryButton")?.addEventListener("click",runAutoQuery);
     $("#cephEnabled").addEventListener("change",e=>{model.cephConfirmed=false;c.enabled=e.target.checked; if(c.enabled){c.public_cidr=c.public_cidr||"10.230.0.0/24";c.cluster_cidr=c.cluster_cidr||"10.231.0.0/24";c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;} render();});
     bindText("cephPublicCIDR",v=>c.public_cidr=v); bindText("cephClusterCIDR",v=>c.cluster_cidr=v);
     $("#requestedTB")?.addEventListener("input",e=>c.requested_usable_tb=Number(e.target.value));

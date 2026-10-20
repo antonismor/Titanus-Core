@@ -41,9 +41,38 @@ const {setTimeout:delay}=require('node:timers/promises');
   assert.equal(new URL(page.url()).hash,'','access fragment was retained');
   assert((await context.cookies()).some(c=>c.name==='titanus_installer_session'&&c.httpOnly&&c.secure&&c.sameSite==='Strict'));
   assert((await page.locator('body').innerText()).includes('SOON AVAILABLE'));
+  // Native HA must preserve explicitly selected STORAGE-only nodes across rerenders.
+  await page.click('[data-profile="native-ha"]');await page.selectOption('#nodeCount','9');await page.click('#toInfrastructure');
+  const storageCap=page.locator('input[data-cap-index="6"][data-cap="STORAGE"]');
+  const executionCap=page.locator('input[data-cap-index="6"][data-cap="EXECUTION"]');
+  await storageCap.check();await executionCap.uncheck();await page.click('#backConfig');await page.click('#toInfrastructure');
+  assert.equal(await storageCap.isChecked(),true);assert.equal(await executionCap.isChecked(),false);
+  for(let n=0;n<9;n++){
+   await page.fill(`#nodeName${n}`,n<3?`ctl0${n+1}`:n<6?`wrk0${n-2}`:`ceph0${n-5}`);
+   await page.fill(`#nodeMgmt${n}`,`192.0.2.${10+n}`);
+   if(n>=6){await page.locator(`input[data-cap-index="${n}"][data-cap="STORAGE"]`).check();await page.locator(`input[data-cap-index="${n}"][data-cap="EXECUTION"]`).uncheck();}
+  }
+  await page.fill('#sshPassword','BROWSER_PASSWORD_CANARY');await page.click('#toComponents');
+  await page.locator('#cephEnabled').check();
+  await page.locator('#toast').waitFor({state:'hidden'});
+  await page.screenshot({path:'/tmp/titanus-web-installer-step3.png',fullPage:false});
+  // Simulated probe response checks browser hydration only; no target hosts are contacted.
+  await page.route('**/api/v1/autofill',async route=>{
+   const request=route.request().postDataJSON();assert.equal(request.password,'BROWSER_PASSWORD_CANARY');
+   assert.equal(request.plan._nodeCount,undefined);
+   request.plan.ceph.public_cidr='192.0.2.0/24';request.plan.ceph.cluster_cidr='192.0.2.0/24';
+   await route.fulfill({json:{plan:request.plan,findings:['Browser fixture: common storage network detected'],warnings:[]}});
+  });
+  await page.click('#autoQueryButton');await page.waitForFunction(()=>document.querySelector('#cephPublicCIDR').value==='192.0.2.0/24');
+  assert.equal(await page.locator('#autoQueryButton').isEnabled(),true);
+  await page.unroute('**/api/v1/autofill');
+  await page.click('#backInfrastructure');
+  for(let n=6;n<9;n++) assert.equal(await page.locator(`input[data-cap-index="${n}"][data-cap="EXECUTION"]`).isChecked(),false);
+  await page.click('#backConfig');await page.click('[data-profile="standard"]');
   await page.selectOption('#nodeCount','1');await page.fill('#realmName','BROWSER-REALM');
   await page.click('#toInfrastructure');await page.fill('#nodeMgmt0','192.0.2.10');
   await page.fill('#sshPassword','BROWSER_PASSWORD_CANARY');await page.click('#toComponents');
+  assert.equal(await page.locator('#autoQueryButton').isVisible(),true,'Step 3 auto-query button missing');
   await page.fill('#releaseVersion','0.4.0-rc.17');await page.fill('#revision','a'.repeat(40));
   await page.fill('#amd64Path',path.join(directory,'absent-amd64.tar.gz'));await page.fill('#amd64SHA','b'.repeat(64));
   await page.fill('#arm64Path',path.join(directory,'absent-arm64.tar.gz'));await page.fill('#arm64SHA','c'.repeat(64));

@@ -59,6 +59,76 @@ Enterprise is visible in the common installer shell as **Soon Available**. The
 current Community build does not implement Enterprise entitlements or remove the
 Community node ceiling.
 
+## Read-only infrastructure query and auto-fill
+
+Step 3 includes **Query Infrastructure & Auto-fill**. It performs a read-only
+query before validation and never initializes storage, changes networking,
+powers off a node or starts a Titanus deployment. The query uses the node
+inventory and the in-memory SSH bootstrap password from Step 2 to:
+
+- detect the common IPv4 network actually used by STORAGE nodes and fill Ceph
+  public/cluster CIDRs when they can be proven from the selected interfaces;
+- list only whole block devices that are unmounted, have no filesystem/storage
+  signatures and have no child mappings, preferring stable `/dev/disk/by-id/`
+  paths for Ceph selection;
+- refresh DMI UUIDs for Native HA EXECUTION Workers;
+- merge those UUIDs into an optional root-owned server-side fencing provider
+  profile without returning credential contents to the browser;
+- find matching local AMD64/ARM64 release archives for the exact requested
+  version/revision, calculate their full-file SHA-256 values, and run the common
+  release verifier against the executable inventory and internal checksums;
+- warn about existing Titanus/Ceph configuration or active services, changed
+  network values, missing networks and conflicts with configured fencing UUIDs.
+
+Existing device selections, fencing identities and archive checksum pins are
+preserved for explicit review. A checksum calculated from a newly discovered
+local archive establishes integrity against that reviewed local file; it does
+not establish the origin of the file. Obtain candidates from trusted release
+artifacts. Query results must be reviewed and validated before any deployment.
+
+The optional provider profile is `/etc/titanus/installer-discovery.json`. It must
+be a root-owned regular file with mode `0600`. Example (credential contents are
+not stored here):
+
+```json
+{
+  "power_fencing": {
+    "worker01": {
+      "provider": "proxmox",
+      "address": "https://proxmox.example:8006/api2/json/nodes/pve/qemu/2003",
+      "user": "titanus-fencer@pve!native-ha",
+      "credential_file": "/root/titanus-fencing/proxmox-token",
+      "ca_file": "/root/titanus-fencing/proxmox-ca.pem"
+    }
+  },
+  "release_dirs": ["/root/titanus-web-candidate"]
+}
+```
+
+The Worker UUID is intentionally omitted from the profile: auto-query reads the
+current machine identity and fills it. If a provider profile or one of the two
+native release archives is unavailable, the installer reports a warning and
+leaves that field for explicit operator review rather than inventing a value.
+The SSH password is held only for the request and is zeroed after the query.
+
+## Installer screenshots
+
+### `tuigui`
+
+![Titanus Core Web Installer Step 3](images/tuigui-step3-autofill.png)
+
+Actual HTTPS Web Installer captured by `scripts/ci-web-installer.cjs`, with a
+nine-node documentation-address fixture before running the query. This shows
+the Step 3 query control and Native HA settings; it is not live-install evidence.
+
+### `tuicli`
+
+![Titanus Core terminal installer](images/tuicli-start.png)
+
+Actual `tuicli` / `titanus setup` startup captured through a pseudo-terminal and
+rendered with its ANSI colors. The isolated capture reports systemd inactive and
+stops at the first prompt, before any Plan or host changes.
+
 ## Progress, verbose output and reconnect behavior
 
 The Deployment screen follows the light Titanus Enterprise Installer reference:

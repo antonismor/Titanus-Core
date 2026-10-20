@@ -199,6 +199,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/v1/status", s.requireToken(http.HandlerFunc(s.handleStatus)))
 	mux.Handle("/api/v1/logs", s.requireToken(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("/api/v1/validate", s.requireToken(http.HandlerFunc(s.handleValidate)))
+	mux.Handle("/api/v1/autofill", s.requireToken(http.HandlerFunc(s.handleAutoQuery)))
 	mux.Handle("/api/v1/plan", s.requireToken(http.HandlerFunc(s.handlePlan)))
 	mux.Handle("/api/v1/discover", s.requireToken(http.HandlerFunc(s.handleDiscover)))
 	mux.Handle("/api/v1/start", s.requireToken(http.HandlerFunc(s.handleStart)))
