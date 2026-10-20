@@ -21,7 +21,8 @@
     statusTimer: null,
     logTimer: null,
     state: null,
-    plan: null
+    plan: null,
+    cephConfirmed: false
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -122,6 +123,9 @@
     p.created_at = new Date().toISOString();
     p.realm_name = (p.realm_name || "TITANUS-REALM").trim();
     install.pki_dir = install.pki_dir || `/var/lib/titanus/installer-web/pki/${p.realm_name}`;
+    if (install.profile === "standard") {
+      p.ceph = {enabled:false, replication:1, enable_rbd:true, enable_cephfs:true, enable_rgw:false, provision:false};
+    }
     if (install.profile === "native-ha") {
       if (install._fencing_error) throw new Error("Native HA fencing JSON is invalid: " + install._fencing_error);
       install.operation = "install";
@@ -246,6 +250,11 @@
         model.plan.installation.operation = "install";
         model.plan._nodeCount = Math.max(5, Number(model.plan._nodeCount || 5));
         model.plan._controlCount = 3;
+      }
+      if (el.dataset.profile === "standard") {
+        model.plan.ceph.enabled = false;
+        model.plan.ceph.provision = false;
+        model.cephConfirmed = false;
       }
       ensureNodes(); render();
     }));
@@ -400,11 +409,13 @@
   function safePreviewPlan() {
     const p=JSON.parse(JSON.stringify(model.plan));
     delete p._nodeCount; delete p._controlCount; delete p._sshUser; delete p._sshPort;
+    if (p.installation) { delete p.installation._fencing_raw; delete p.installation._fencing_error; }
     return p;
   }
 
   async function validatePlan(forLive) {
     try {
+      if (model.plan.ceph?.enabled && model.plan.ceph?.provision && !model.cephConfirmed) throw new Error("Confirm initialization of only the explicitly selected unused Ceph devices before continuing.");
       const p=clonePlanForAPI();
       const state=await api("/api/v1/validate",{method:"POST",body:JSON.stringify(p)});
       model.validated=true; model.state=state;
