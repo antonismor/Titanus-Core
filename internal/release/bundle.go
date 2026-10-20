@@ -95,6 +95,17 @@ func Verify(filename, digest, wantVersion, revision, arch string) (version.Build
 	for _, n := range []string{"bin/titanus", "bin/titanusd", "bin/titanus-agent", "bin/titanus-init", "systemd/titanusd.service", "systemd/titanus-agent.service", "scripts/install-release.py", "scripts/install-release.sh", "docs/RELEASE.md", "LICENSE", "manifest.json"} {
 		expected[n] = true
 	}
+	webInstaller := []string{"bin/titanus-installer-web", "systemd/titanus-installer-web.service", "scripts/tuigui", "scripts/tuicli", "docs/WEB_INSTALLER.md"}
+	webCount := 0
+	for _, n := range webInstaller {
+		if _, present := files[n]; present {
+			expected[n] = true
+			webCount++
+		}
+	}
+	if webCount != 0 && webCount != len(webInstaller) {
+		return meta, fmt.Errorf("incomplete optional Web Installer bundle")
+	}
 	if _, present := files["scripts/maintenance_transaction.py"]; present {
 		expected["scripts/maintenance_transaction.py"] = true
 	}
@@ -127,7 +138,11 @@ func Verify(filename, digest, wantVersion, revision, arch string) (version.Build
 	} else if arch != "amd64" {
 		return meta, fmt.Errorf("unsupported architecture")
 	}
-	for _, name := range []string{"titanus", "titanusd", "titanus-agent", "titanus-init"} {
+	binaries := []string{"titanus", "titanusd", "titanus-agent", "titanus-init"}
+	if webCount == len(webInstaller) {
+		binaries = append(binaries, "titanus-installer-web")
+	}
+	for _, name := range binaries {
 		binary, e := elf.NewFile(bytes.NewReader(files["bin/"+name]))
 		if e != nil {
 			return meta, e
