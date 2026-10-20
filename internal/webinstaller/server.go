@@ -778,4 +778,208 @@ func (s *Server) loadPlan() error {
 	return nil
 }
 
-func atomicWrite(path string, data []byte, m
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+func (s *Server) logf(level, format string, args ...any) {
+	line := fmt.Sprintf("[%s] [%s] %s\n", time.Now().UTC().Format(time.RFC3339), level, fmt.Sprintf(format, args...))
+	f, err := os.OpenFile(s.cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	_, _ = io.WriteString(f, line)
+	_ = f.Close()
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON request: "+err.Error())
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "trailing JSON content")
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func methodNotAllowed(w http.ResponseWriter) {
+	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+}
+
+func localIPv4s() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err != nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			value := ip.String()
+			if !seen[value] {
+				seen[value] = true
+				out = append(out, value)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func loadAccessToken(stateDir string) (string, error) {
+	path := filepath.Join(stateDir, "access.token")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			return "", fmt.Errorf("unsafe Web Installer access token file")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		token := strings.TrimSpace(string(data))
+		if len(token) != 64 {
+			return "", fmt.Errorf("invalid Web Installer access token")
+		}
+		if _, err := hex.DecodeString(token); err != nil {
+			return "", fmt.Errorf("invalid Web Installer access token")
+		}
+		return token, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(raw[:])
+	if err := atomicWrite(path, []byte(token+"\n"), 0600); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func compactLog(value string, max int) string {
+	value = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > max {
+		value = value[:max] + "…"
+	}
+	return value
+}
+
+func ensureTLSIdentity(stateDir string) (string, string, error) {
+	certPath := filepath.Join(stateDir, "https.crt")
+	keyPath := filepath.Join(stateDir, "https.key")
+	if certInfo, certErr := os.Lstat(certPath); certErr == nil {
+		keyInfo, keyErr := os.Lstat(keyPath)
+		if keyErr == nil && certInfo.Mode().IsRegular() && keyInfo.Mode().IsRegular() && keyInfo.Mode().Perm()&0077 == 0 {
+			if _, err := tlsKeyPairFiles(certPath, keyPath); err == nil {
+				return certPath, keyPath, nil
+			}
+		}
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return "", "", err
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: "Titanus Core Web Installer"},
+		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(397 * 24 * time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true, DNSNames: []string{"localhost", "titanus-installer.local"},
+	}
+	template.IPAddresses = append(template.IPAddresses, net.ParseIP("127.0.0.1"))
+	for _, value := range localIPv4s() {
+		if ip := net.ParseIP(value); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return "", "", err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := atomicWrite(certPath, certPEM, 0644); err != nil {
+		return "", "", err
+	}
+	if err := atomicWrite(keyPath, keyPEM, 0600); err != nil {
+		return "", "", err
+	}
+	if _, err := tlsKeyPairFiles(certPath, keyPath); err != nil {
+		return "", "", err
+	}
+	return certPath, keyPath, nil
+}
+
+func tlsKeyPairFiles(certPath, keyPath string) (*x509.Certificate, error) {
+	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, fmt.Errorf("invalid Web Installer TLS identity")
+	}
+	cert, err := x509.ParseCertificate(pair.Certifi
