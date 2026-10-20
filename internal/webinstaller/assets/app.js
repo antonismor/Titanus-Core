@@ -308,7 +308,7 @@
       bindText(`nodeFabric${idx}`,v=> { if(v) node.fabric_ip=v; else delete node.fabric_ip; });
       bindText(`cephPublic${idx}`,v=> { if(v) node.ceph_public_ip=v; else delete node.ceph_public_ip; });
       bindText(`cephCluster${idx}`,v=> { if(v) node.ceph_cluster_ip=v; else delete node.ceph_cluster_ip; });
-      bindText(`cephDevices${idx}`,v=> node.ceph_devices=v.split(",").map(x=>x.trim()).filter(Boolean));
+      bindText(`cephDevices${idx}`,v=> { node.ceph_devices=v.split(",").map(x=>x.trim()).filter(Boolean); model.cephConfirmed=false; });
     });
     $$('[data-cap-index]').forEach(el=>el.addEventListener("change",()=>{
       const node=model.plan.nodes[Number(el.dataset.capIndex)], cap=el.dataset.cap;
@@ -327,7 +327,7 @@
     $("#workspace").innerHTML = header("Components & Advanced Settings", "Configure Ceph, release identity, ports, Fabric parameters and Native HA fencing. These are the same installation inputs exposed by the TUI.", 3) + `
       <div class="card">
         <h3>Distributed Storage</h3>
-        <label class="switch-row"><input id="cephEnabled" type="checkbox" ${c.enabled?"checked":""}> <strong>Configure distributed Ceph storage</strong></label>
+        <label class="switch-row"><input id="cephEnabled" type="checkbox" ${c.enabled?"checked":""} ${i.profile==="standard"?"disabled":""}> <strong>Configure distributed Ceph storage</strong></label>${i.profile==="standard"?`<div class="notice">Standard profile does not configure Ceph in the TUI. Choose Native HA or Advanced / Custom to configure distributed storage.</div>`:""}
         ${c.enabled ? `<div class="grid-3">
           ${field("Ceph Public CIDR","cephPublicCIDR",c.public_cidr||"10.230.0.0/24","Client/public network.")}
           ${field("Ceph Cluster CIDR","cephClusterCIDR",c.cluster_cidr||"10.231.0.0/24","Replication network.")}
@@ -335,7 +335,7 @@
         </div><div class="grid-3">
           ${field("Replication Copies","replication",isNative?3:(c.replication||3),isNative?"Native HA requires three copies.":"Must not exceed STORAGE nodes.","number")}
           <div class="field"><label>Storage Services</label><div class="capabilities"><label class="cap"><input id="rbd" type="checkbox" ${c.enable_rbd?"checked":""}>RBD</label><label class="cap"><input id="cephfs" type="checkbox" ${c.enable_cephfs?"checked":""}>CephFS</label><label class="cap"><input id="rgw" type="checkbox" ${c.enable_rgw?"checked":""} ${isNative?"disabled":""}>RGW</label></div><small>Native HA RGW HA remains unavailable.</small></div>
-          <div class="field"><label>Provisioning</label><label class="switch-row"><input id="provisionCeph" type="checkbox" ${c.provision?"checked":""} ${i.operation!=="install"?"disabled":""}> Provision a new Ceph cluster</label><small>Only explicitly selected unused devices may be initialized.</small></div>
+          <div class="field"><label>Provisioning</label><label class="switch-row"><input id="provisionCeph" type="checkbox" ${c.provision?"checked":""} ${i.operation!=="install"?"disabled":""}> Provision a new Ceph cluster</label><small>Only explicitly selected unused devices may be initialized.</small>${c.provision?`<label class="switch-row"><input id="confirmCephInit" type="checkbox" ${model.cephConfirmed?"checked":""}> I confirm Titanus may initialize only the explicitly selected unused Ceph devices.</label>`:""}</div>
         </div>` : `<p class="muted small">Ceph can be enabled for Custom and Native HA profiles. Existing TUI safety rules remain enforced.</p>`}
       </div>
       ${isNative ? `<div class="card"><h3>Native HA Power Fencing</h3><div class="field"><label>Private Fencing Inventory JSON</label><textarea id="fencingJSON" spellcheck="false" placeholder='{"worker01":{"provider":"proxmox","uuid":"...","address":"https://...","user":"...","credential_file":"/root/...","ca_file":"/root/..."}}'>${esc(i._fencing_raw !== undefined ? i._fencing_raw : (i.power_fencing ? JSON.stringify(i.power_fencing,null,2) : ""))}</textarea><small>Same Target schema as the TUI inventory. Credential file contents are never placed in the Plan or browser.</small></div></div>` : ""}
@@ -347,7 +347,7 @@
       <div class="card">
         <h3>Advanced Network & Lifecycle</h3>
         <div class="grid-3">${field("mTLS API Port","apiPort",i.api_port,"Default 9443.","number")}${field("mTLS Raft Port","raftPort",i.raft_port,"Default 9444; distinct from API.","number")}${field("Fabric VXLAN ID","vxlanID",i.vxlan_id,"1–16777215.","number")}</div>
-        <div class="grid-2">${field("Per-node Unit Subnet Prefix","nodePrefix",i.node_prefix,"16–30.","number")}<div class="field"><label>Activation</label><label class="switch-row"><input id="startServices" type="checkbox" ${i.start?"checked":""}> Start services when installation is applied</label><small>Same final TUI choice.</small></div></div>
+        <div class="grid-2">${field("Per-node Unit Subnet Prefix","nodePrefix",i.node_prefix,"16–30.","number")}<div class="field"><label>Activation</label><label class="switch-row"><input id="startServices" type="checkbox" ${i.start?"checked":""} ${i.operation!=="install"?"disabled":""}> Start services when installation is applied</label><small>Same final TUI choice.</small></div></div>
       </div>
       <div class="toolbar"><button class="btn" id="backInfrastructure">← Back</button><button class="btn primary" id="toReview">Review&nbsp; →</button></div>`;
     bindComponents();
@@ -355,12 +355,12 @@
 
   function bindComponents() {
     const p=model.plan, i=p.installation, c=p.ceph;
-    $("#cephEnabled").addEventListener("change",e=>{c.enabled=e.target.checked; if(c.enabled){c.public_cidr=c.public_cidr||"10.230.0.0/24";c.cluster_cidr=c.cluster_cidr||"10.231.0.0/24";c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;} render();});
+    $("#cephEnabled").addEventListener("change",e=>{model.cephConfirmed=false;c.enabled=e.target.checked; if(c.enabled){c.public_cidr=c.public_cidr||"10.230.0.0/24";c.cluster_cidr=c.cluster_cidr||"10.231.0.0/24";c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;} render();});
     bindText("cephPublicCIDR",v=>c.public_cidr=v); bindText("cephClusterCIDR",v=>c.cluster_cidr=v);
     $("#requestedTB")?.addEventListener("input",e=>c.requested_usable_tb=Number(e.target.value));
     $("#replication")?.addEventListener("input",e=>c.replication=i.profile==="native-ha"?3:Number(e.target.value));
     $("#rbd")?.addEventListener("change",e=>c.enable_rbd=e.target.checked); $("#cephfs")?.addEventListener("change",e=>c.enable_cephfs=e.target.checked); $("#rgw")?.addEventListener("change",e=>c.enable_rgw=e.target.checked);
-    $("#provisionCeph")?.addEventListener("change",e=>c.provision=e.target.checked);
+    $("#provisionCeph")?.addEventListener("change",e=>{c.provision=e.target.checked;model.cephConfirmed=false;render();});\n    $("#confirmCephInit")?.addEventListener("change",e=>model.cephConfirmed=e.target.checked);
     bindText("fencingJSON",v=>{
       i._fencing_raw=v;
       try {
