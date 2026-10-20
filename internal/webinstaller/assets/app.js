@@ -540,9 +540,22 @@
       $("#versionText").textContent=`${model.meta.version} · ${model.meta.state_profile}`;
       $("#appShell").classList.remove("hidden");
       const st=model.state.status;
-      if(model.state.running || ["running","fingerprint-review","failed","interrupted"].includes(st)){model.currentStep=5;render();if(model.state.running)beginPolling();}
-      else if(["completed","prepared"].includes(st)){model.currentStep=6;render();}
-      else render();
+      if(st==="fingerprint-review"){
+        model.fingerprints=model.state.fingerprints||[];
+        model.currentStep=4;
+        render();
+        renderFingerprintApproval();
+      } else if(st==="validated"){
+        model.currentStep=4;
+        render();
+      } else if(model.state.running || ["running","discovering","failed","interrupted"].includes(st)){
+        model.currentStep=5;
+        render();
+        if(model.state.running)beginPolling();
+      } else if(["completed","prepared"].includes(st)){
+        model.currentStep=6;
+        render();
+      } else render();
     } catch(err) {
       model.token="";
       $("#accessGate").classList.remove("hidden");
