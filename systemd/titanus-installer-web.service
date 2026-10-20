@@ -1,0 +1,18 @@
+[Unit]
+Description=Titanus Core Web Installer HTTPS Service
+Documentation=https://github.com/antonismor/Titanus-Core
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/titanus-installer-web
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
