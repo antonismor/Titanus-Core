@@ -18,6 +18,20 @@ if ! command -v titanus-installer-web >/dev/null 2>&1; then
   echo "titanus-installer-web is not installed. Install a Titanus Core release that includes Web Installer support." >&2
   exit 1
 fi
+if ! command -v titanus >/dev/null 2>&1; then
+  echo "Titanus Core CLI is not installed." >&2
+  exit 1
+fi
+if ! python3 - "$(titanus version --json)" "$(titanus-installer-web --version-json)" <<'PY'
+import json,sys
+core=json.loads(sys.argv[1]); web=json.loads(sys.argv[2])
+keys=('version','revision','state_profile')
+raise SystemExit(0 if all(core.get(k)==web.get(k) for k in keys) else 1)
+PY
+then
+  echo "The installed Web Installer does not match the active Titanus Core release. Use 'tuicli' or install a matching release before starting tuigui." >&2
+  exit 1
+fi
 
 systemctl daemon-reload
 systemctl start "$SERVICE"
