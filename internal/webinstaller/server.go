@@ -390,4 +390,179 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, ok := s.currentPlan()
 	if !ok {
-		writeError(w, http.StatusBadRequest, "validate a configuration fir
+		writeError(w, http.StatusBadRequest, "validate a configuration first")
+		return
+	}
+	if err := sshtrust.CheckTools(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.setState("discovering", "Infrastructure", 15, "Discovering Ed25519 SSH host keys. No remote change is made.", "")
+	bootstrap := s.bootstrapFor(plan)
+	hosts, err := bootstrap.Discover(r.Context(), plan.Nodes)
+	if err != nil {
+		s.fail("SSH host-key discovery failed: " + err.Error())
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	fingerprints := make([]Fingerprint, 0, len(hosts))
+	for _, host := range hosts {
+		fingerprints = append(fingerprints, Fingerprint{Node: host.Node.Name, Address: host.Node.ManagementIP, Fingerprint: host.Fingerprint})
+		s.logf("INFO", "SSH fingerprint %s (%s): %s", host.Node.Name, host.Node.ManagementIP, host.Fingerprint)
+	}
+	s.mu.Lock()
+	s.state.Status = "fingerprint-review"
+	s.state.Phase = "Infrastructure"
+	s.state.Progress = 20
+	s.state.Message = "Verify every SSH fingerprint through a trusted console, then approve them to continue."
+	s.state.Fingerprints = fingerprints
+	s.state.UpdatedAt = time.Now().UTC()
+	_ = s.persistStateLocked()
+	state := s.state
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req startRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+	plan, ok := s.currentPlan()
+	if !ok {
+		writeError(w, http.StatusBadRequest, "validate a configuration first")
+		return
+	}
+	if req.Apply {
+		if req.Password == "" || len(req.Password) > 4096 || strings.ContainsAny(req.Password, "\x00\r\n") {
+			writeError(w, http.StatusBadRequest, "a non-empty single-line bootstrap password is required")
+			return
+		}
+		if len(req.Fingerprints) != len(plan.Nodes) {
+			writeError(w, http.StatusBadRequest, "approve every discovered SSH fingerprint before deployment")
+			return
+		}
+	}
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "an installation is already running")
+		return
+	}
+	s.running = true
+	s.state.Running = true
+	s.state.Completed = false
+	s.state.PreparedOnly = !req.Apply
+	s.state.Status = "running"
+	s.state.Phase = "Deployment"
+	s.state.Progress = 22
+	s.state.Message = "Starting the validated Titanus installation workflow."
+	s.state.Error = ""
+	s.state.StartedAt = time.Now().UTC()
+	s.state.FinishedAt = time.Time{}
+	s.state.AppliedNodes = 0
+	s.state.TotalNodes = len(plan.Nodes)
+	s.state.UpdatedAt = time.Now().UTC()
+	_ = s.persistStateLocked()
+	state := s.state
+	s.mu.Unlock()
+
+	plan.AutoDeploy = req.Apply
+	if err := plan.Save(filepath.Join(s.cfg.StateDir, "plan.json")); err != nil {
+		s.finishRun(false)
+		writeError(w, http.StatusInternalServerError, "cannot save deployment mode")
+		return
+	}
+	password := []byte(req.Password)
+	approved := make(map[string]string, len(req.Fingerprints))
+	for k, v := range req.Fingerprints {
+		approved[k] = v
+	}
+	go s.runInstallation(plan, password, approved, req.Apply)
+	writeJSON(w, http.StatusAccepted, state)
+}
+
+func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		writeError(w, http.StatusConflict, "cannot reset while an installation is running")
+		return
+	}
+	_ = os.Remove(filepath.Join(s.cfg.StateDir, "plan.json"))
+	s.plan = nil
+	s.state = InstallerState{Status: "idle", Phase: "Configuration", Progress: 0, Message: "Ready to configure Titanus Core.", UpdatedAt: time.Now().UTC()}
+	_ = s.persistStateLocked()
+	s.logf("INFO", "Installer session reset by operator")
+	writeJSON(w, http.StatusOK, s.state)
+}
+
+func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved map[string]string, apply bool) {
+	defer func() {
+		for i := range password {
+			password[i] = 0
+		}
+		s.finishRun(true)
+	}()
+
+	s.logf("INFO", "Starting Titanus Core installation session %s", s.sessionID())
+	if err := plan.Validate(); err != nil {
+		s.fail("Plan validation failed: " + err.Error())
+		return
+	}
+	s.setState("running", "Validate Infrastructure", 25, "Validated Titanus plan and safety constraints.", "")
+	s.logf("OK", "Plan safety validation passed")
+
+	var trust sshtrust.Report
+	if apply {
+		if err := sshtrust.CheckTools(); err != nil {
+			s.fail(err.Error())
+			return
+		}
+		s.setState("running", "SSH Trust Bootstrap", 30, "Re-checking approved SSH identities before authentication.", "")
+		bootstrap := s.bootstrapFor(plan)
+		hosts, err := bootstrap.Discover(context.Background(), plan.Nodes)
+		if err != nil {
+			s.fail("SSH host-key discovery failed: " + err.Error())
+			return
+		}
+		for _, host := range hosts {
+			if approved[host.Node.Name] != host.Fingerprint {
+				s.fail("SSH fingerprint changed or was not approved for " + host.Node.Name)
+				return
+			}
+		}
+		s.logf("OK", "All %d approved SSH fingerprints match the current hosts", len(hosts))
+		s.setState("running", "SSH Trust Bootstrap", 34, "Establishing Realm-scoped passwordless SSH and verifying the directed full mesh.", "")
+		trust, err = bootstrap.Apply(context.Background(), plan.RealmName, hosts, password)
+		if err != nil {
+			s.fail("SSH trust bootstrap failed: " + err.Error())
+			return
+		}
+		s.logf("OK", "SSH full-mesh verified: %d/%d directed node pairs", trust.Verified, trust.Expected)
+	}
+
+	s.setState("running", "Prepare Environment", 42, "Preparing the checksum-pinned versioned deployment.", "")
+	deploymentPath := filepath.Join(s.cfg.StateDir, "deployments", s.sessionID())
+	if err := os.MkdirAll(filepath.Dir(deploymentPath), 0700); err != nil {
+		s.fail("Cannot create deployment directory: " + err.Error())
+		return
+	}
+	if _, err := os.Lstat(deploymentPath); err == nil {
+		deploymentPath += "-" + time.Now().UTC().Format("150405")
+	}
+	prepared, err := deploy.PrepareRelease(plan, deploymentPath)
+	if err != nil {
+		s.fail("Deployment preparation failed: " + err.Error())
+		return
+	}
+	s.mu.Lock()
+	s.state.De
