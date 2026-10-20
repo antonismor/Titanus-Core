@@ -356,4 +356,70 @@
   function bindComponents() {
     const p=model.plan, i=p.installation, c=p.ceph;
     $("#cephEnabled").addEventListener("change",e=>{c.enabled=e.target.checked; if(c.enabled){c.public_cidr=c.public_cidr||"10.230.0.0/24";c.cluster_cidr=c.cluster_cidr||"10.231.0.0/24";c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;} render();});
-    bindText("cephPublicCIDR",v=>c.pub
+    bindText("cephPublicCIDR",v=>c.public_cidr=v); bindText("cephClusterCIDR",v=>c.cluster_cidr=v);
+    $("#requestedTB")?.addEventListener("input",e=>c.requested_usable_tb=Number(e.target.value));
+    $("#replication")?.addEventListener("input",e=>c.replication=i.profile==="native-ha"?3:Number(e.target.value));
+    $("#rbd")?.addEventListener("change",e=>c.enable_rbd=e.target.checked); $("#cephfs")?.addEventListener("change",e=>c.enable_cephfs=e.target.checked); $("#rgw")?.addEventListener("change",e=>c.enable_rgw=e.target.checked);
+    $("#provisionCeph")?.addEventListener("change",e=>c.provision=e.target.checked);
+    bindText("fencingJSON",v=>{
+      i._fencing_raw=v;
+      try {
+        i.power_fencing=v.trim()?JSON.parse(v):undefined;
+        i._fencing_error="";
+      } catch(err) {
+        i._fencing_error=err.message || "Invalid JSON";
+      }
+    });
+    bindText("releaseVersion",v=>i.release_version=v); bindText("revision",v=>i.revision=v);
+    bindText("amd64Path",v=>{i.archives=i.archives||{};i.archives.amd64=i.archives.amd64||{};i.archives.amd64.path=v;});
+    bindText("amd64SHA",v=>{i.archives=i.archives||{};i.archives.amd64=i.archives.amd64||{};i.archives.amd64.sha256=v;});
+    bindText("arm64Path",v=>{i.archives=i.archives||{};i.archives.arm64=i.archives.arm64||{};i.archives.arm64.path=v;});
+    bindText("arm64SHA",v=>{i.archives=i.archives||{};i.archives.arm64=i.archives.arm64||{};i.archives.arm64.sha256=v;});
+    $("#apiPort")?.addEventListener("input",e=>i.api_port=Number(e.target.value)); $("#raftPort")?.addEventListener("input",e=>i.raft_port=Number(e.target.value));
+    $("#vxlanID")?.addEventListener("input",e=>i.vxlan_id=Number(e.target.value)); $("#nodePrefix")?.addEventListener("input",e=>i.node_prefix=Number(e.target.value));
+    $("#startServices")?.addEventListener("change",e=>i.start=e.target.checked);
+    $("#backInfrastructure").addEventListener("click",()=>{model.currentStep=2;render();});
+    $("#toReview").addEventListener("click",()=>{model.currentStep=4;render();});
+  }
+
+  function renderReview() {
+    const preview=JSON.stringify(safePreviewPlan(),null,2);
+    $("#workspace").innerHTML = header("Review Installation", "Validate the complete plan before any host is changed. Preparation is offline; live deployment requires explicit SSH fingerprint approval and the bootstrap password.", 4) + `
+      <div class="card"><h3>Safety Review</h3><div class="notice">The Web Installer uses the same <code>titanus-plan/v2</code> model, release verifier, SSH full-mesh bootstrap and deployment engine as the TUI path. The existing TUI remains unchanged and usable through <code>tuicli</code>.</div>
+      <div class="status-list"><div class="status-line"><span class="checkdot">✓</span> Community node limit <b>${model.plan.nodes.length}/${model.meta.community_node_limit}</b></div><div class="status-line"><span class="checkdot">✓</span> Selected profile <b>${esc(profileLabel())}</b></div><div class="status-line"><span class="checkdot">✓</span> Password persistence <b>Disabled</b></div><div class="status-line"><span class="checkdot">✓</span> Browser reconnect status <b>Persistent</b></div></div></div>
+      <details class="card flat"><summary><strong>Plan Preview</strong></summary><pre class="code-preview">${esc(preview)}</pre></details>
+      <div id="validationResult"></div>
+      <div id="fingerprintArea"></div>
+      <div class="toolbar"><button class="btn" id="backComponents">← Back</button><div class="inline-actions"><button class="btn" id="prepareOnly">Validate & Prepare Only</button><button class="btn primary" id="validateLive">Validate for Live Installation</button></div></div>`;
+    $("#backComponents").addEventListener("click",()=>{model.currentStep=3;render();});
+    $("#prepareOnly").addEventListener("click",()=>validatePlan(false));
+    $("#validateLive").addEventListener("click",()=>validatePlan(true));
+  }
+
+  function safePreviewPlan() {
+    const p=JSON.parse(JSON.stringify(model.plan));
+    delete p._nodeCount; delete p._controlCount; delete p._sshUser; delete p._sshPort;
+    return p;
+  }
+
+  async function validatePlan(forLive) {
+    try {
+      const p=clonePlanForAPI();
+      const state=await api("/api/v1/validate",{method:"POST",body:JSON.stringify(p)});
+      model.validated=true; model.state=state;
+      $("#validationResult").innerHTML=`<div class="notice"><strong>Plan validated successfully.</strong><br>${esc(state.message)}</div>`;
+      if(!forLive){
+        const prepared=await api("/api/v1/start",{method:"POST",body:JSON.stringify({password:"",apply:false})});
+        model.state=prepared; model.currentStep=5; render(); beginPolling(); return;
+      }
+      const discovered=await api("/api/v1/discover",{method:"POST",body:"{}"});
+      model.state=discovered; model.fingerprints=discovered.fingerprints||[];
+      renderFingerprintApproval();
+    } catch(err){ showError(err.message); }
+  }
+
+  function renderFingerprintApproval() {
+    const area=$("#fingerprintArea");
+    if(!area) return;
+    area.innerHTML=`<div class="card"><h3>SSH Identity Approval</h3><p class="muted small">Verify every Ed25519 fingerprint through an independent trusted console. Scanning alone does not establish host identity.</p><div class="fingerprint-list">${model.fingerprints.map(f=>`<div class="fingerprint"><strong>${esc(f.node)}</strong><span>${esc(f.address)}</span><span>${esc(f.fingerprint)}</span></div>`).join("")}</div><label class="switch-row" style="margin-top:16px"><input id="approveFingerprints" type="checkbox"> I independently verified and approve every fingerprint above.</label><div class="field"><label>Initial SSH Password</label><input id="livePassword" class="input" type="password" value="${esc(model.password)}" autocomplete="new-password"><small>Sent only when you press Start Installation. It is not written to disk or logs.</small></div><div class="toolbar"><span></span><button id="startLive" class="btn primary" disabled>Start Installation&nbsp; →</button></div></div>`;
+    $("#livePasswor
