@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${EUID} -ne 0 ]]; then
+  echo "tuicli must run as root." >&2
+  exit 1
+fi
+if ! command -v titanus >/dev/null 2>&1; then
+  echo "Titanus Core CLI is not installed." >&2
+  exit 1
+fi
+STATE=/var/lib/titanus/installer-web/state.json
+if systemctl is-active --quiet titanus-installer-web.service 2>/dev/null; then
+  if [[ -f "$STATE" ]] && python3 - "$STATE" <<'PY2'
+import json,sys
+try:
+    state=json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if state.get("running") else 1)
+PY2
+  then
+    echo "A Titanus Web Installer deployment is currently running. Wait for it to finish before switching to tuicli." >&2
+    exit 1
+  fi
+  systemctl stop titanus-installer-web.service
+fi
+echo "Starting Titanus Core terminal-only installer..."
+exec titanus setup "$@"
