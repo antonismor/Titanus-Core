@@ -236,4 +236,73 @@
   }
 
   function field(label, id, value, help, type="text") {
-    return `<div class="field"><label for="${id}">${label}</label><input id="${id}" class="input" type="${type}" value="${esc(value || "")}" autocomplete="off"><small>${help}</small></div>
+    return `<div class="field"><label for="${id}">${label}</label><input id="${id}" class="input" type="${type}" value="${esc(value || "")}" autocomplete="off"><small>${help}</small></div>`;
+  }
+
+  function bindConfiguration() {
+    $$('[data-profile]').forEach(el => el.addEventListener("click", () => {
+      model.plan.installation.profile = el.dataset.profile;
+      if (el.dataset.profile === "native-ha") {
+        model.plan.installation.operation = "install";
+        model.plan._nodeCount = Math.max(5, Number(model.plan._nodeCount || 5));
+        model.plan._controlCount = 3;
+      }
+      ensureNodes(); render();
+    }));
+    $("#operation").addEventListener("change", e => { model.plan.installation.operation = e.target.value; render(); });
+    $("#nodeCount").addEventListener("change", e => { model.plan._nodeCount = Number(e.target.value); ensureNodes(); updateSummary(); });
+    bindText("realmName", v => { model.plan.realm_name=v; if (!model.plan.installation.pki_dir || model.plan.installation.pki_dir.includes("/pki/")) model.plan.installation.pki_dir=`/var/lib/titanus/installer-web/pki/${v}`; });
+    bindText("pkiDir", v => model.plan.installation.pki_dir=v);
+    bindText("fabricCIDR", v => model.plan.fabric_cidr=v);
+    bindText("serviceCIDR", v => model.plan.service_cidr=v);
+    $("#toInfrastructure").addEventListener("click", () => { ensureNodes(); model.currentStep=2; render(); });
+  }
+
+  function bindText(id, fn) { $("#"+id)?.addEventListener("input", e => { fn(e.target.value); model.validated=false; updateSummary(); }); }
+
+  function renderInfrastructure() {
+    ensureNodes();
+    const p = model.plan;
+    const controls = validControlCount(Number(p._controlCount || 3), p.nodes.length);
+    const controlOptions = [1,3,5].filter(n => n <= p.nodes.length && (p.installation.profile !== "native-ha" || (n>=3 && n<=p.nodes.length-2)));
+    $("#workspace").innerHTML = header("Infrastructure", "Add every VM or physical host, set SSH credentials, addresses and Titanus-native capabilities. Passwords stay only in browser memory until deployment starts.", 2) + `
+      <div class="card">
+        <div class="grid-3">
+          <div class="field"><label>Common SSH Username</label><input id="sshUser" class="input" value="${esc(p._sshUser||"root")}" autocomplete="username"><small>Must resolve to UID 0 on every selected node.</small></div>
+          <div class="field"><label>Common SSH Port</label><input id="sshPort" class="input" type="number" min="1" max="65535" value="${Number(p._sshPort||22)}"><small>Used for discovery, trust bootstrap and deployment.</small></div>
+          <div class="field"><label>Initial SSH Password</label><input id="sshPassword" class="input" type="password" value="${esc(model.password)}" autocomplete="new-password"><small>Never written to the Plan, log, URL, environment or disk.</small></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label>CONTROL-capable Nodes</label><select id="controlCount" class="select">${controlOptions.map(n=>`<option value="${n}" ${controls===n?"selected":""}>${n}</option>`).join("")}</select><small>Voting topology must use 1, 3 or 5 CONTROL nodes.</small></div>
+          <div class="field"><label>Node Count</label><input class="input" value="${p.nodes.length} / ${model.meta.community_node_limit}" disabled><small>Each VM or physical host counts once regardless of capabilities.</small></div>
+        </div>
+        ${p.installation.profile === "native-ha" ? `<div class="notice">Native HA separates CONTROL voters from EXECUTION Workers. The Web Installer enforces the same topology and fencing validation as the TUI.</div>` : ""}
+      </div>
+      <div id="nodesArea">${p.nodes.map((n,idx)=>nodeCard(n,idx)).join("")}</div>
+      <div class="toolbar"><button class="btn" id="backConfig">← Back</button><button class="btn primary" id="toComponents">Next&nbsp; →</button></div>`;
+    bindInfrastructure();
+  }
+
+  function nodeCard(node, idx) {
+    const allCaps=["CONTROL","EXECUTION","STORAGE","GATEWAY","GPU","BACKUP"];
+    const native=model.plan.installation.profile === "native-ha";
+    return `<div class="node-card"><div class="node-head"><strong>Node ${idx+1} / ${model.plan.nodes.length}</strong><span class="muted small">${esc(node.name||"")}</span></div>
+      <div class="grid-3">
+        ${field("Hostname",`nodeName${idx}`,node.name,"Titanus node identity.")}
+        ${field("Management IP",`nodeMgmt${idx}`,node.management_ip,"IPv4 address used by the installer.")}
+        ${field("Dedicated Fabric IP (optional)",`nodeFabric${idx}`,node.fabric_ip||"","Leave blank to use management routing.")}
+      </div>
+      <div class="field"><label>Capabilities</label><div class="capabilities">${allCaps.map(cap=>`<label class="cap"><input type="checkbox" data-cap-index="${idx}" data-cap="${cap}" ${node.capabilities.includes(cap)?"checked":""} ${(native&&((idx<model.plan._controlCount&&(cap==="EXECUTION"))||(idx>=model.plan._controlCount&&(cap==="CONTROL"))))?"disabled":""}>${cap}</label>`).join("")}</div></div>
+      ${model.plan.ceph.enabled && node.capabilities.includes("STORAGE") ? `<div class="grid-3">${field("Ceph Public IP",`cephPublic${idx}`,node.ceph_public_ip||"","Public storage network address.")}${field("Ceph Cluster IP",`cephCluster${idx}`,node.ceph_cluster_ip||"","Replication network address.")}${field("Ceph Devices",`cephDevices${idx}`,(node.ceph_devices||[]).join(","),"Comma-separated /dev/... paths.")}</div>` : ""}
+    </div>`;
+  }
+
+  function bindInfrastructure() {
+    bindText("sshUser", v => { model.plan._sshUser=v; model.plan.nodes.forEach(n=>n.ssh_user=v); });
+    $("#sshPort").addEventListener("input", e => { const v=Number(e.target.value||22); model.plan._sshPort=v; model.plan.nodes.forEach(n=>n.ssh_port=v); });
+    $("#sshPassword").addEventListener("input", e => model.password=e.target.value);
+    $("#controlCount").addEventListener("change", e => { model.plan._controlCount=Number(e.target.value); ensureNodes(); render(); });
+    model.plan.nodes.forEach((node,idx)=>{
+      bindText(`nodeName${idx}`,v=>node.name=v);
+      bindText(`nodeMgmt${idx}`,v=>node.management_ip=v);
+      bindText
