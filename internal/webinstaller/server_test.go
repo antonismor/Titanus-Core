@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -153,7 +155,6 @@ func TestBootstrapIncludesPersistedPlanForReconnect(t *testing.T) {
 	}
 }
 
-
 func TestValidatedPlanCanBeDownloaded(t *testing.T) {
 	s := testServer(t)
 	body, _ := json.Marshal(validPlan())
@@ -181,5 +182,168 @@ func TestValidatedPlanCanBeDownloaded(t *testing.T) {
 	}
 	if plan.RealmName != "TEST-REALM" || len(plan.Nodes) != 1 {
 		t.Fatalf("unexpected downloaded plan: %+v", plan)
+	}
+}
+
+func requestJSON(t *testing.T, s *Server, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(method, path, bytes.NewReader(data))
+	req.Header.Set("X-Titanus-Installer-Token", s.accessToken)
+	res := httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, req)
+	return res
+}
+
+func TestMutationsCannotReplaceActiveDeployment(t *testing.T) {
+	s := testServer(t)
+	if res := requestJSON(t, s, http.MethodPost, "/api/v1/validate", validPlan()); res.Code != 200 {
+		t.Fatal(res.Body.String())
+	}
+	s.mu.Lock()
+	s.running = true
+	s.state.Running = true
+	s.state.Progress = 63
+	s.mu.Unlock()
+	for _, path := range []string{"/api/v1/validate", "/api/v1/reset", "/api/v1/discover", "/api/v1/start", "/api/v1/quiesce"} {
+		var body any = map[string]bool{"apply": false}
+		if strings.HasSuffix(path, "validate") {
+			body = validPlan()
+		}
+		if res := requestJSON(t, s, http.MethodPost, path, body); res.Code != http.StatusConflict {
+			t.Fatalf("%s: %d %s", path, res.Code, res.Body.String())
+		}
+	}
+	if s.state.Progress != 63 || !s.running {
+		t.Fatal("active state was replaced")
+	}
+	if res := requestJSON(t, s, http.MethodGet, "/api/v1/status", nil); res.Code != 200 {
+		t.Fatal("monitoring must remain available")
+	}
+}
+
+func TestQuiesceClosesAdmissionBeforeTerminalSwitch(t *testing.T) {
+	s := testServer(t)
+	if res := requestJSON(t, s, http.MethodPost, "/api/v1/quiesce", nil); res.Code != 200 {
+		t.Fatal(res.Body.String())
+	}
+	for _, path := range []string{"/api/v1/validate", "/api/v1/discover", "/api/v1/start", "/api/v1/reset"} {
+		if res := requestJSON(t, s, http.MethodPost, path, validPlan()); res.Code != http.StatusConflict {
+			t.Fatalf("%s: %d", path, res.Code)
+		}
+	}
+	if res := requestJSON(t, s, http.MethodGet, "/api/v1/status", nil); res.Code != 200 {
+		t.Fatal("quiesce hid persisted status")
+	}
+}
+
+func TestStartRequiresDurableLaunchStatus(t *testing.T) {
+	s := testServer(t)
+	if res := requestJSON(t, s, http.MethodPost, "/api/v1/validate", validPlan()); res.Code != 200 {
+		t.Fatal(res.Body.String())
+	}
+	path := filepath.Join(s.cfg.StateDir, "state.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	res := requestJSON(t, s, http.MethodPost, "/api/v1/start", map[string]bool{"apply": false})
+	if res.Code != 500 || s.running || s.state.Running {
+		t.Fatalf("launch not blocked: %d %+v", res.Code, s.state)
+	}
+	if _, err := os.Stat(filepath.Join(s.cfg.StateDir, "deployments")); !os.IsNotExist(err) {
+		t.Fatal("deployment started despite persistence failure")
+	}
+}
+
+func TestValidationDoesNotPublishUnpersistedPlan(t *testing.T) {
+	s := testServer(t)
+	if err := os.Mkdir(filepath.Join(s.cfg.StateDir, "state.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if res := requestJSON(t, s, http.MethodPost, "/api/v1/validate", validPlan()); res.Code != 500 {
+		t.Fatal(res.Body.String())
+	}
+	if _, ok := s.currentPlan(); ok {
+		t.Fatal("unpersisted validation accepted")
+	}
+	if res := requestJSON(t, s, http.MethodPost, "/api/v1/start", map[string]bool{"apply": false}); res.Code != 400 {
+		t.Fatal(res.Body.String())
+	}
+}
+
+func TestLogTailIsBoundedAndProtected(t *testing.T) {
+	s := testServer(t)
+	data := strings.Repeat("old log entry\n", maxLogBytes/5) + "LATEST-EVENT\n"
+	if err := os.WriteFile(s.cfg.LogFile, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tail, err := tailLog(s.cfg.LogFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tail) > maxLogBytes || !bytes.Contains(tail, []byte("LATEST-EVENT")) {
+		t.Fatal("invalid log tail")
+	}
+	res := requestJSON(t, s, http.MethodGet, "/api/v1/logs", nil)
+	var payload struct {
+		Lines []string `json:"lines"`
+	}
+	json.Unmarshal(res.Body.Bytes(), &payload)
+	if res.Code != 200 || len(payload.Lines) > 600 || payload.Lines[len(payload.Lines)-1] != "LATEST-EVENT" {
+		t.Fatal("latest bounded events missing")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs", nil)
+	res = httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusUnauthorized {
+		t.Fatal("verbose log exposed without session")
+	}
+}
+
+func TestConcurrentQuiesceAndValidationCannotReopenAdmission(t *testing.T) {
+	s := testServer(t)
+	var group sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		group.Add(1)
+		go func() { defer group.Done(); requestJSON(t, s, http.MethodPost, "/api/v1/validate", validPlan()) }()
+	}
+	group.Add(1)
+	go func() { defer group.Done(); requestJSON(t, s, http.MethodPost, "/api/v1/quiesce", nil) }()
+	group.Wait()
+	if res := requestJSON(t, s, http.MethodPost, "/api/v1/start", nil); res.Code != 409 {
+		t.Fatalf("admission reopened: %d", res.Code)
+	}
+}
+
+func TestCompletedOrInterruptedDeploymentRequiresRevalidation(t *testing.T) {
+	for _, status := range []string{"completed", "prepared", "failed", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			s := testServer(t)
+			requestJSON(t, s, http.MethodPost, "/api/v1/validate", validPlan())
+			s.state.Status = status
+			if res := requestJSON(t, s, http.MethodPost, "/api/v1/start", map[string]bool{"apply": false}); res.Code != 409 {
+				t.Fatalf("replayed deployment: %d", res.Code)
+			}
+		})
+	}
+}
+
+func TestFailureKeepsRunReservedUntilCleanupFinishes(t *testing.T) {
+	s := testServer(t)
+	s.running = true
+	s.state.Running = true
+	s.fail("injected deployment error")
+	if !s.running || !s.state.Running {
+		t.Fatal("failure released run before password cleanup")
+	}
+	s.finishRun(true)
+	if s.running || s.state.Running {
+		t.Fatal("completed cleanup retained running flag")
 	}
 }

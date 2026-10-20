@@ -22,6 +22,10 @@ if ! command -v titanus >/dev/null 2>&1; then
   echo "Titanus Core CLI is not installed." >&2
   exit 1
 fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required by the Titanus installer launch commands." >&2
+  exit 1
+fi
 if ! python3 - "$(titanus version --json)" "$(titanus-installer-web --version-json)" <<'PY'
 import json,sys
 core=json.loads(sys.argv[1]); web=json.loads(sys.argv[2])
@@ -52,10 +56,29 @@ if [[ ! -s "$TOKEN_FILE" ]]; then
   exit 1
 fi
 
-IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')
-if [[ -z "$IP" ]]; then
-  IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-fi
+IP=$(python3 - <<'PYIP'
+import ipaddress,json,subprocess
+
+def ip_json(*args):
+    try:
+        result=subprocess.run(['ip','-j','-4',*args],capture_output=True,text=True,timeout=5)
+        return json.loads(result.stdout) if result.returncode==0 else []
+    except (OSError,ValueError,subprocess.TimeoutExpired):
+        return []
+
+def usable(value):
+    try:
+        address=ipaddress.IPv4Address(value)
+        return not (address.is_loopback or address.is_unspecified or address.is_multicast or address.is_link_local)
+    except ValueError:
+        return False
+
+candidates=[route.get('prefsrc','') for route in ip_json('route','get','1.1.1.1')]
+candidates += [a.get('local','') for interface in ip_json('address','show','up')
+               for a in interface.get('addr_info',[]) if a.get('scope')=='global']
+print(next((value for value in candidates if usable(value)),''))
+PYIP
+)
 if [[ -z "$IP" ]]; then
   echo "Titanus Core Web Installer is running, but no non-loopback IPv4 address could be detected." >&2
   echo "Run 'ip -4 addr' and open https://<this-host-ip>:$PORT/ in your browser." >&2

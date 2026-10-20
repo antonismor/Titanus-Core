@@ -22,7 +22,10 @@
     logTimer: null,
     state: null,
     plan: null,
-    cephConfirmed: false
+    cephConfirmed: false,
+    polling: false,
+    readingLogs: false,
+    verboseOpen: true
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -39,7 +42,7 @@
     const headers = Object.assign({}, options.headers || {});
     if (model.token) headers["X-Titanus-Installer-Token"] = model.token;
     if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-    const response = await fetch(path, Object.assign({}, options, {headers, cache: "no-store"}));
+    const response = await fetch(path, Object.assign({}, options, {headers, cache: "no-store", signal: AbortSignal.timeout(path.endsWith("/discover")?110000:15000)}));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
     return payload;
@@ -474,16 +477,17 @@
     const s=model.state||{progress:0,message:"Waiting to start…",phase:"Deployment",status:"idle",applied_nodes:0,total_nodes:model.plan.nodes.length};
     const progress=Math.max(0,Math.min(100,Number(s.progress||0)));
     const stageIndex=progress<25?0:progress<42?1:progress<90?2:progress<94?3:progress<100?4:5;
-    $("#workspace").innerHTML = header("Installing Titanus Core", "Your deployment is in progress. You can close or refresh this browser and reopen the same protected IP URL to see the persisted installation status.", 5) + `
+    $("#workspace").innerHTML = header(s.running?"Installing Titanus Core":"Titanus Core Installation Status", "You can close or refresh this browser and reopen the same protected IP URL to see the persisted installation status.", 5) + `
       <div class="card progress-card">
         <div class="progress-head"><h2>Installation Progress</h2><span id="elapsed" class="time-info">Elapsed Time: ${elapsedText(s.started_at)}</span></div>
-        <div class="progress-row"><div class="progress-track"><div id="progressBar" class="progress-bar" style="width:${progress}%"></div></div><div id="progressValue" class="progress-value">${progress}%</div></div>
+        <div class="progress-row"><div class="progress-track" role="progressbar" aria-label="Installation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><div id="progressBar" class="progress-bar" style="width:${progress}%"></div></div><div id="progressValue" class="progress-value">${progress}%</div></div>
         <div class="progress-meta"><span id="progressMessage">${esc(s.message||"")}</span><span id="nodeCounter">${s.total_nodes?`${s.applied_nodes||0}/${s.total_nodes} nodes`:""}</span></div>
         <div class="install-steps">${["Validate Infrastructure","Prepare Environment","Deploy Components","Configure Services","Run Health Checks","Finalize Deployment"].map((name,idx)=>`<div class="install-step ${idx<stageIndex?"done":idx===stageIndex?"active":""}"><div class="dot">${idx<stageIndex?"✓":idx+1}</div>${name}</div>`).join("")}</div>
-        <details class="verbose" open><summary><span>▣&nbsp; Verbose Installation Output</span><span class="live-pill">● Live output</span></summary><pre id="terminal" class="terminal">Connecting to installer log…</pre></details>
+        <details class="verbose" ${model.verboseOpen?"open":""}><summary><span>▣&nbsp; Verbose Installation Output</span><span id="logMode" class="live-pill">${s.running?"● Live output":"Saved output"}</span></summary><pre id="terminal" class="terminal">Connecting to installer log…</pre></details>
       </div>
-      ${s.error?`<div class="notice error"><strong>Installation stopped:</strong> ${esc(s.error)}</div>`:""}
+      ${s.error?`<div id="deploymentError" class="notice error"><strong>Installation stopped:</strong> ${esc(s.error)}</div>`:""}
       <div class="toolbar"><button id="returnReview" class="btn" ${s.running?"disabled":""}>← Review</button><button id="refreshNow" class="btn">Refresh Status</button></div>`;
+    $(".verbose").addEventListener("toggle",e=>model.verboseOpen=e.target.open);
     $("#returnReview").addEventListener("click",()=>{model.currentStep=4;render();});
     $("#refreshNow").addEventListener("click",pollNow);
     pollLogs();
@@ -499,20 +503,51 @@
   }
 
   function elapsedText(startedAt) {
-    const start=startedAt?Date.parse(startedAt):(model.startedAt||Date.now());
-    const secs=Math.max(0,Math.floor((Date.now()-start)/1000));
+    const end=model.state?.finished_at && !model.state.running?Date.parse(model.state.finished_at):Date.now();
+    const start=startedAt && !startedAt.startsWith("0001-")?Date.parse(startedAt):(model.startedAt||end);
+    const secs=Math.max(0,Math.floor((end-start)/1000));
     const m=Math.floor(secs/60), s=secs%60;
     return `${m}m ${String(s).padStart(2,"0")}s`;
   }
 
   async function pollNow() {
+    if(model.polling) return;
+    model.polling=true;
     try {
       model.state=await api("/api/v1/status");
-      if(model.state.status==="completed"||model.state.status==="prepared") { model.currentStep=6; stopPolling(); render(); return; }
-      if(model.state.status==="failed") { stopPolling(); }
-      if(model.currentStep===5) renderDeployment();
+      if($("#toast").textContent.startsWith("Connection interrupted.")) $("#toast").classList.add("hidden");
+      if(!model.state.running && (model.state.status==="completed"||model.state.status==="prepared")) { model.currentStep=6; stopPolling(); render(); return; }
+      if(!model.state.running && ["failed","interrupted"].includes(model.state.status)) { stopPolling(); }
+      if(model.currentStep===5) updateDeployment();
       updateSummaryProgress();
-    } catch(err){ showError(err.message); }
+    } catch(err){ showError("Connection interrupted. Retrying installation status… " + err.message); }
+    finally { model.polling=false; }
+  }
+
+  // Update live fields without replacing the verbose panel or its scroll position.
+  function updateDeployment() {
+    const s=model.state;
+    const progress=Math.max(0,Math.min(100,Number(s.progress||0)));
+    $("#progressBar").style.width=`${progress}%`;
+    $("#progressBar").parentElement.setAttribute("aria-valuenow",progress);
+    $("#progressValue").textContent=`${progress}%`;
+    $("#progressMessage").textContent=s.message||"";
+    $("#nodeCounter").textContent=s.total_nodes?`${s.applied_nodes||0}/${s.total_nodes} nodes`:"";
+    $("#elapsed").textContent=`Elapsed Time: ${elapsedText(s.started_at)}`;
+    $("#returnReview").disabled=Boolean(s.running);
+    $("#logMode").textContent=s.running?"● Live output":"Saved output";
+    const stage=progress<25?0:progress<42?1:progress<90?2:progress<94?3:progress<100?4:5;
+    $$(".install-step").forEach((el,idx)=>{
+      el.classList.toggle("done",idx<stage);
+      el.classList.toggle("active",idx===stage);
+      $(".dot",el).textContent=idx<stage?"✓":idx+1;
+    });
+    let notice=$("#deploymentError");
+    if(s.error && !notice){
+      notice=document.createElement("div");notice.id="deploymentError";notice.className="notice error";
+      $(".progress-card").after(notice);
+    }
+    if(notice) notice.textContent=s.error?`Installation stopped: ${s.error}`:"";
   }
 
   function updateSummaryProgress() {
@@ -521,11 +556,18 @@
   }
 
   async function pollLogs() {
+    if(model.readingLogs) return;
+    model.readingLogs=true;
     try {
       const data=await api("/api/v1/logs");
       const terminal=$("#terminal");
-      if(terminal){terminal.textContent=(data.lines||[]).join("\n")||"No verbose output yet.";terminal.scrollTop=terminal.scrollHeight;}
+      if(terminal){
+        const atEnd=terminal.scrollHeight-terminal.scrollTop-terminal.clientHeight<32;
+        const content=(data.lines||[]).join("\n")||"No verbose output yet.";
+        if(terminal.textContent!==content){terminal.textContent=content;if(atEnd)terminal.scrollTop=terminal.scrollHeight;}
+      }
     } catch(_){/* status polling surfaces auth/network errors */}
+    finally { model.readingLogs=false; }
   }
 
   function beginPolling() {
@@ -537,7 +579,7 @@
   function stopPolling(){ if(model.statusTimer)clearInterval(model.statusTimer);if(model.logTimer)clearInterval(model.logTimer);model.statusTimer=null;model.logTimer=null; }
 
   async function resetInstaller(){
-    try{await api("/api/v1/reset",{method:"POST",body:"{}"});model.plan=makeDefaultPlan(model.meta);model.plan._nodeCount=3;model.plan._controlCount=3;model.plan._sshUser="root";model.plan._sshPort=22;ensureNodes();model.state=null;model.password="";model.currentStep=1;render();}catch(err){showError(err.message);}
+    try{await api("/api/v1/reset",{method:"POST",body:"{}"});stopPolling();model.validated=false;model.fingerprints=[];model.cephConfirmed=false;model.plan=makeDefaultPlan(model.meta);model.plan._nodeCount=3;model.plan._controlCount=3;model.plan._sshUser="root";model.plan._sshPort=22;ensureNodes();model.state=null;model.password="";model.currentStep=1;render();}catch(err){showError(err.message);}
   }
 
   function showError(message){ const t=$("#toast");t.textContent=message;t.classList.remove("hidden");clearTimeout(showError.timer);showError.timer=setTimeout(()=>t.classList.add("hidden"),6500); }
@@ -560,6 +602,7 @@
       ensureNodes();
       $("#editionBadge").textContent="COMMUNITY";
       $("#versionText").textContent=`${model.meta.version} · ${model.meta.state_profile}`;
+      $("#accessGate").classList.add("hidden");
       $("#appShell").classList.remove("hidden");
       const st=model.state.status;
       if(st==="fingerprint-review"){
@@ -586,5 +629,8 @@
   }
 
   $("#themeButton").addEventListener("click",()=>document.body.classList.toggle("high-contrast"));
+  window.addEventListener("hashchange",()=>{
+    if(new URLSearchParams(location.hash.slice(1)).has("access")) init();
+  });
   init();
 })();

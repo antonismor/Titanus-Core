@@ -14,7 +14,7 @@ sudo tuigui
 
 `tuigui` starts `titanus-installer-web.service`, detects a local
 IPv4 address and prints a protected HTTPS URL in English. The URL contains a
-one-time browser bootstrap fragment. After that first successful sign-in, the
+protected browser bootstrap fragment. After that first successful sign-in, the
 browser keeps an HttpOnly, Secure, SameSite=Strict installer session cookie, so
 reopening the same `https://IP:8088/` address in that browser restores the
 current status.
@@ -90,3 +90,46 @@ started only when an administrator runs `tuigui` (or explicitly starts the
 systemd unit). `tuicli` stops an idle Web Installer service before entering the
 terminal-only setup and refuses to interrupt an active Web Installer deployment. Use it only from a trusted management network and verify the
 browser certificate fingerprint out of band when appropriate.
+
+
+## Live-test candidate from this branch
+
+Build and package the exact checked-out commit on Linux AMD64 and Linux ARM64
+with `make release`. Both archives and their published `.sha256` files must
+refer to that same commit; do not mix the branch Web Installer with rc.17
+binaries from another revision. The native CI jobs keep verified release
+packages as `release-ubuntu-24.04` and `release-ubuntu-24.04-arm` artifacts.
+These branch artifacts are test candidates, not a newly published stable release.
+
+On the selected installer host, install the matching native bundle using the
+included `scripts/install-release.sh`. This installs the launch commands and
+service unit without starting a deployment. Run `sudo tuigui`, open its printed
+protected URL, and confirm the light six-step installer. Start with **Validate
+& Prepare Only** and the two verified archive paths/checksums; this mode does
+not authenticate to or change the target hosts.
+
+For the later authorized live test, revalidate, approve the independently
+verified SSH fingerprints and press **Start Installation**. Refresh the page,
+close/reopen it at the same IP, and temporarily disconnect the browser while
+monitoring: the backend deployment must continue and the displayed progress
+must recover. Collapsing verbose output or scrolling back in it must survive
+status updates. A restart of the service itself preserves the checkpoint as
+`interrupted`; another start requires explicit revalidation.
+
+`tuicli` requests an authenticated, atomic idle confirmation from the loopback
+Web API before stopping the Web service. Once accepted, the API refuses new
+installation requests. If the service is busy or cannot confirm its state,
+`tuicli` fails without stopping it. This prevents a new Web installation from
+racing with a terminal-mode switch.
+
+## Automated verification
+
+The standard five-job CI includes Web Installer race tests, isolated launch
+command checks and `scripts/ci-web-installer.cjs`. The browser smoke uses the
+real HTTPS service and session cookie to verify access, Plan validation/export,
+missing-archive failure reporting, saved progress recovery after service
+restart, collapsible output and recovery after a failed status request. Its
+checkpoint is a fixture; it does not perform a live installation or contact
+the documentation-only node addresses. Browser evidence is kept in the
+`web-installer-browser` workflow artifact. Full live deployment and HA
+acceptance remain a separate step on explicitly selected hosts.

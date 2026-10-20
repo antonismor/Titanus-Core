@@ -1,6 +1,7 @@
 package webinstaller
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -37,6 +38,7 @@ import (
 const (
 	defaultListen   = "0.0.0.0:8088"
 	maxRequestBytes = 2 << 20
+	maxLogBytes     = 256 << 10
 	sessionCookie   = "titanus_installer_session"
 )
 
@@ -134,6 +136,8 @@ type Server struct {
 	cfg         Config
 	accessToken string
 	mu          sync.RWMutex
+	operationMu sync.Mutex // Serialize plan changes, discovery, starts and shutdown admission.
+	quiescing   bool
 	state       InstallerState
 	plan        *model.RealmPlan
 	running     bool
@@ -180,7 +184,9 @@ func New(cfg Config) (*Server, error) {
 		s.state.Status = "interrupted"
 		s.state.Message = "The installer service restarted. The last persisted installation status is preserved; validate the configuration before resuming."
 		s.state.UpdatedAt = time.Now().UTC()
-		_ = s.persistStateLocked()
+		if err := s.persistStateLocked(); err != nil {
+			return nil, fmt.Errorf("persist interrupted installation: %w", err)
+		}
 	}
 	_ = s.loadPlan()
 	return s, nil
@@ -196,6 +202,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/v1/plan", s.requireToken(http.HandlerFunc(s.handlePlan)))
 	mux.Handle("/api/v1/discover", s.requireToken(http.HandlerFunc(s.handleDiscover)))
 	mux.Handle("/api/v1/start", s.requireToken(http.HandlerFunc(s.handleStart)))
+	mux.Handle("/api/v1/quiesce", s.requireToken(http.HandlerFunc(s.handleQuiesce)))
 	mux.Handle("/api/v1/reset", s.requireToken(http.HandlerFunc(s.handleReset)))
 	static, _ := fs.Sub(webAssets, "assets")
 	mux.Handle("/", http.FileServer(http.FS(static)))
@@ -208,7 +215,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       60 * time.Second,
 	}
 	go func() {
@@ -325,8 +332,8 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	data, err := os.ReadFile(s.cfg.LogFile)
-	if err != nil && !os.IsNotExist(err) {
+	data, err := tailLog(s.cfg.LogFile)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot read installer log")
 		return
 	}
@@ -370,6 +377,16 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if r.Context().Err() != nil {
+		return
+	}
+	if s.quiescing {
+		writeError(w, http.StatusConflict, "installer is switching to terminal-only mode")
+		return
+	}
+
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -393,7 +410,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	plan.AutoDeploy = false
 	planPath := filepath.Join(s.cfg.StateDir, "plan.json")
-	if err := plan.Save(planPath); err != nil {
+	if err := savePlan(planPath, plan); err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot save validated plan")
 		return
 	}
@@ -410,7 +427,13 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:    time.Now().UTC(),
 		Fingerprints: nil,
 	}
-	_ = s.persistStateLocked()
+	if err := s.persistStateLocked(); err != nil {
+		s.plan = nil
+		s.state.PlanPath = ""
+		s.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "cannot persist validated installation status; revalidate before starting")
+		return
+	}
 	state := s.state
 	s.mu.Unlock()
 	s.logf("OK", "Plan validated: realm=%s profile=%s nodes=%d", plan.RealmName, plan.Installation.Profile, len(plan.Nodes))
@@ -422,6 +445,24 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if r.Context().Err() != nil {
+		return
+	}
+	if s.quiescing {
+		writeError(w, http.StatusConflict, "installer is switching to terminal-only mode")
+		return
+	}
+
+	s.mu.RLock()
+	busy := s.running
+	s.mu.RUnlock()
+	if busy {
+		writeError(w, http.StatusConflict, "an installation is already running")
+		return
+	}
+
 	plan, ok := s.currentPlan()
 	if !ok {
 		writeError(w, http.StatusBadRequest, "validate a configuration first")
@@ -462,6 +503,16 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if r.Context().Err() != nil {
+		return
+	}
+	if s.quiescing {
+		writeError(w, http.StatusConflict, "installer is switching to terminal-only mode")
+		return
+	}
+
 	var req startRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		return
@@ -487,6 +538,12 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "an installation is already running")
 		return
 	}
+	if s.state.Status != "validated" && s.state.Status != "fingerprint-review" {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "revalidate the configuration before starting another installation attempt")
+		return
+	}
+
 	s.running = true
 	s.state.Running = true
 	s.state.Completed = false
@@ -501,13 +558,22 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	s.state.AppliedNodes = 0
 	s.state.TotalNodes = len(plan.Nodes)
 	s.state.UpdatedAt = time.Now().UTC()
-	_ = s.persistStateLocked()
+	if err := s.persistStateLocked(); err != nil {
+		s.running = false
+		s.state.Running = false
+		s.state.Status = "failed"
+		s.state.Error = "Cannot persist installation launch status. No installation was started."
+		s.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "cannot persist installation launch status; no installation was started")
+		return
+	}
 	state := s.state
 	s.mu.Unlock()
 
 	plan.AutoDeploy = req.Apply
-	if err := plan.Save(filepath.Join(s.cfg.StateDir, "plan.json")); err != nil {
+	if err := savePlan(filepath.Join(s.cfg.StateDir, "plan.json"), plan); err != nil {
 		s.fail("Cannot save deployment mode: " + err.Error())
+		s.finishRun(false)
 		writeError(w, http.StatusInternalServerError, "cannot save deployment mode")
 		return
 	}
@@ -525,6 +591,16 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if r.Context().Err() != nil {
+		return
+	}
+	if s.quiescing {
+		writeError(w, http.StatusConflict, "installer is switching to terminal-only mode")
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
@@ -537,6 +613,29 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	_ = s.persistStateLocked()
 	s.logf("INFO", "Installer session reset by operator")
 	writeJSON(w, http.StatusOK, s.state)
+}
+
+// handleQuiesce closes admission before tuicli stops an idle systemd service.
+// A file-only running check cannot prevent a start request racing with that stop.
+func (s *Server) handleQuiesce(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if r.Context().Err() != nil {
+		return
+	}
+	s.mu.RLock()
+	busy := s.running
+	s.mu.RUnlock()
+	if busy {
+		writeError(w, http.StatusConflict, "an installation is already running; wait before switching to tuicli")
+		return
+	}
+	s.quiescing = true
+	writeJSON(w, http.StatusOK, map[string]bool{"quiesced": true})
 }
 
 func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved map[string]string, apply bool) {
@@ -631,9 +730,14 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 	s.setState("running", "Deploy Components", 52, "Applying the verified release to Titanus nodes.", "")
 	s.logf("INFO", "Applying release to %d nodes serially", len(plan.Nodes))
 	watchDone := make(chan struct{})
-	go s.watchResults(prepared.ResultsPath, len(plan.Nodes), watchDone)
+	watchExited := make(chan struct{})
+	go func() {
+		defer close(watchExited)
+		s.watchResults(prepared.ResultsPath, len(plan.Nodes), watchDone)
+	}()
 	results, err := deployer.ApplyPrepared(plan, prepared)
 	close(watchDone)
+	<-watchExited
 	if err != nil {
 		s.fail("Deployment failed: " + err.Error())
 		return
@@ -644,6 +748,10 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 
 	s.setState("running", "Run Health Checks", 94, "Verifying Titanus services on every installed node.", "")
 	for _, node := range plan.Nodes {
+		if !plan.Installation.Start {
+			s.logf("INFO", "Service activation was not requested; skipping active-service check on %s", node.Name)
+			continue
+		}
 		if _, err := verbose.Run(node, "systemctl --no-pager is-active titanusd.service titanus-agent.service"); err != nil {
 			s.fail("Service health check failed on " + node.Name + ": " + err.Error())
 			return
@@ -745,13 +853,12 @@ func (s *Server) fail(message string) {
 	s.mu.Lock()
 	s.state.Status = "failed"
 	s.state.Phase = "Deployment"
-	s.state.Running = false
+	s.state.Running = s.running
 	s.state.Completed = false
 	s.state.Error = message
 	s.state.Message = "Installation stopped safely. Review the verbose output before retrying."
 	s.state.FinishedAt = time.Now().UTC()
 	s.state.UpdatedAt = time.Now().UTC()
-	s.running = false
 	_ = s.persistStateLocked()
 	s.mu.Unlock()
 	s.logf("ERROR", "%s", message)
@@ -801,6 +908,9 @@ func (s *Server) loadState() error {
 
 func (s *Server) loadPlan() error {
 	path := filepath.Join(s.cfg.StateDir, "plan.json")
+	if s.state.PlanPath != path {
+		return nil
+	}
 	plan, err := model.LoadPlan(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -834,7 +944,52 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func savePlan(path string, plan model.RealmPlan) error {
+	data, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, append(data, '\n'), 0600)
+}
+
+// Tail a bounded byte window even when an installer has accumulated a large log.
+func tailLog(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	truncated := info.Size() > maxLogBytes
+	if truncated {
+		if _, err := f.Seek(-maxLogBytes, io.SeekEnd); err != nil {
+			return nil, err
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxLogBytes))
+	if truncated {
+		if end := bytes.IndexByte(data, '\n'); end >= 0 {
+			data = data[end+1:]
+		}
+	}
+	return data, err
 }
 
 func (s *Server) logf(level, format string, args ...any) {
