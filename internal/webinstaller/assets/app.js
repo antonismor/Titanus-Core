@@ -305,4 +305,55 @@
     model.plan.nodes.forEach((node,idx)=>{
       bindText(`nodeName${idx}`,v=>node.name=v);
       bindText(`nodeMgmt${idx}`,v=>node.management_ip=v);
-      bindText
+      bindText(`nodeFabric${idx}`,v=> { if(v) node.fabric_ip=v; else delete node.fabric_ip; });
+      bindText(`cephPublic${idx}`,v=> { if(v) node.ceph_public_ip=v; else delete node.ceph_public_ip; });
+      bindText(`cephCluster${idx}`,v=> { if(v) node.ceph_cluster_ip=v; else delete node.ceph_cluster_ip; });
+      bindText(`cephDevices${idx}`,v=> node.ceph_devices=v.split(",").map(x=>x.trim()).filter(Boolean));
+    });
+    $$('[data-cap-index]').forEach(el=>el.addEventListener("change",()=>{
+      const node=model.plan.nodes[Number(el.dataset.capIndex)], cap=el.dataset.cap;
+      if(el.checked && !node.capabilities.includes(cap)) node.capabilities.push(cap);
+      if(!el.checked) node.capabilities=node.capabilities.filter(x=>x!==cap);
+      model.validated=false;
+      if(cap==="STORAGE") render(); else updateSummary();
+    }));
+    $("#backConfig").addEventListener("click",()=>{model.currentStep=1;render();});
+    $("#toComponents").addEventListener("click",()=>{ model.currentStep=3; render(); });
+  }
+
+  function renderComponents() {
+    const p=model.plan, i=p.installation, c=p.ceph;
+    const isNative=i.profile==="native-ha";
+    $("#workspace").innerHTML = header("Components & Advanced Settings", "Configure Ceph, release identity, ports, Fabric parameters and Native HA fencing. These are the same installation inputs exposed by the TUI.", 3) + `
+      <div class="card">
+        <h3>Distributed Storage</h3>
+        <label class="switch-row"><input id="cephEnabled" type="checkbox" ${c.enabled?"checked":""}> <strong>Configure distributed Ceph storage</strong></label>
+        ${c.enabled ? `<div class="grid-3">
+          ${field("Ceph Public CIDR","cephPublicCIDR",c.public_cidr||"10.230.0.0/24","Client/public network.")}
+          ${field("Ceph Cluster CIDR","cephClusterCIDR",c.cluster_cidr||"10.231.0.0/24","Replication network.")}
+          ${field("Requested Usable TB","requestedTB",c.requested_usable_tb||10,"Capacity planning target.","number")}
+        </div><div class="grid-3">
+          ${field("Replication Copies","replication",isNative?3:(c.replication||3),isNative?"Native HA requires three copies.":"Must not exceed STORAGE nodes.","number")}
+          <div class="field"><label>Storage Services</label><div class="capabilities"><label class="cap"><input id="rbd" type="checkbox" ${c.enable_rbd?"checked":""}>RBD</label><label class="cap"><input id="cephfs" type="checkbox" ${c.enable_cephfs?"checked":""}>CephFS</label><label class="cap"><input id="rgw" type="checkbox" ${c.enable_rgw?"checked":""} ${isNative?"disabled":""}>RGW</label></div><small>Native HA RGW HA remains unavailable.</small></div>
+          <div class="field"><label>Provisioning</label><label class="switch-row"><input id="provisionCeph" type="checkbox" ${c.provision?"checked":""} ${i.operation!=="install"?"disabled":""}> Provision a new Ceph cluster</label><small>Only explicitly selected unused devices may be initialized.</small></div>
+        </div>` : `<p class="muted small">Ceph can be enabled for Custom and Native HA profiles. Existing TUI safety rules remain enforced.</p>`}
+      </div>
+      ${isNative ? `<div class="card"><h3>Native HA Power Fencing</h3><div class="field"><label>Private Fencing Inventory JSON</label><textarea id="fencingJSON" spellcheck="false" placeholder='{"worker01":{"provider":"proxmox","uuid":"...","address":"https://...","user":"...","credential_file":"/root/...","ca_file":"/root/..."}}'>${esc(i._fencing_raw !== undefined ? i._fencing_raw : (i.power_fencing ? JSON.stringify(i.power_fencing,null,2) : ""))}</textarea><small>Same Target schema as the TUI inventory. Credential file contents are never placed in the Plan or browser.</small></div></div>` : ""}
+      <div class="card">
+        <h3>Verified Release</h3>
+        <div class="grid-2">${field("Target Release Version","releaseVersion",i.release_version,"Exact release version.")}${field("Exact Tested Main SHA","revision",i.revision,"40-character tested Git revision.")}</div>
+        ${i.operation!=="rollback" ? `<div class="grid-2">${field("AMD64 Native Archive","amd64Path",i.archives?.amd64?.path||"","Server-side path to the downloaded archive.")}${field("AMD64 Published SHA256","amd64SHA",i.archives?.amd64?.sha256||"","64-character checksum.")}</div><div class="grid-2">${field("ARM64 Native Archive","arm64Path",i.archives?.arm64?.path||"","Server-side path to the downloaded archive.")}${field("ARM64 Published SHA256","arm64SHA",i.archives?.arm64?.sha256||"","64-character checksum.")}</div>` : `<div class="notice">Binary rollback selects the verified previously installed release and therefore does not require downloaded archive paths.</div>`}
+      </div>
+      <div class="card">
+        <h3>Advanced Network & Lifecycle</h3>
+        <div class="grid-3">${field("mTLS API Port","apiPort",i.api_port,"Default 9443.","number")}${field("mTLS Raft Port","raftPort",i.raft_port,"Default 9444; distinct from API.","number")}${field("Fabric VXLAN ID","vxlanID",i.vxlan_id,"1–16777215.","number")}</div>
+        <div class="grid-2">${field("Per-node Unit Subnet Prefix","nodePrefix",i.node_prefix,"16–30.","number")}<div class="field"><label>Activation</label><label class="switch-row"><input id="startServices" type="checkbox" ${i.start?"checked":""}> Start services when installation is applied</label><small>Same final TUI choice.</small></div></div>
+      </div>
+      <div class="toolbar"><button class="btn" id="backInfrastructure">← Back</button><button class="btn primary" id="toReview">Review&nbsp; →</button></div>`;
+    bindComponents();
+  }
+
+  function bindComponents() {
+    const p=model.plan, i=p.installation, c=p.ceph;
+    $("#cephEnabled").addEventListener("change",e=>{c.enabled=e.target.checked; if(c.enabled){c.public_cidr=c.public_cidr||"10.230.0.0/24";c.cluster_cidr=c.cluster_cidr||"10.231.0.0/24";c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;} render();});
+    bindText("cephPublicCIDR",v=>c.pub
