@@ -360,7 +360,8 @@
     $("#requestedTB")?.addEventListener("input",e=>c.requested_usable_tb=Number(e.target.value));
     $("#replication")?.addEventListener("input",e=>c.replication=i.profile==="native-ha"?3:Number(e.target.value));
     $("#rbd")?.addEventListener("change",e=>c.enable_rbd=e.target.checked); $("#cephfs")?.addEventListener("change",e=>c.enable_cephfs=e.target.checked); $("#rgw")?.addEventListener("change",e=>c.enable_rgw=e.target.checked);
-    $("#provisionCeph")?.addEventListener("change",e=>{c.provision=e.target.checked;model.cephConfirmed=false;render();});\n    $("#confirmCephInit")?.addEventListener("change",e=>model.cephConfirmed=e.target.checked);
+    $("#provisionCeph")?.addEventListener("change",e=>{c.provision=e.target.checked;model.cephConfirmed=false;render();});
+    $("#confirmCephInit")?.addEventListener("change",e=>model.cephConfirmed=e.target.checked);
     bindText("fencingJSON",v=>{
       i._fencing_raw=v;
       try {
