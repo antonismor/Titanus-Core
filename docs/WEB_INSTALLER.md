@@ -53,6 +53,7 @@ The browser workflow exposes the installation choices from `titanus setup`:
 - PKI directory, API/Raft ports, per-node subnet prefix, VXLAN ID and service
   activation choice
 - offline validate/prepare-only mode or explicitly authorized live apply
+- protected browser download of the validated `titanus-plan/v2` JSON for the same review/export purpose as the TUI Plan output
 
 Enterprise is visible in the common installer shell as **Soon Available**. The
 current Community build does not implement Enterprise entitlements or remove the
