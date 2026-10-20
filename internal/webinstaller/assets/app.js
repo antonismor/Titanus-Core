@@ -400,10 +400,30 @@
       <details class="card flat"><summary><strong>Plan Preview</strong></summary><pre class="code-preview">${esc(preview)}</pre></details>
       <div id="validationResult"></div>
       <div id="fingerprintArea"></div>
-      <div class="toolbar"><button class="btn" id="backComponents">← Back</button><div class="inline-actions"><button class="btn" id="prepareOnly">Validate & Prepare Only</button><button class="btn primary" id="validateLive">Validate for Live Installation</button></div></div>`;
+      <div class="toolbar"><button class="btn" id="backComponents">← Back</button><div class="inline-actions"><button class="btn" id="downloadPlan" ${model.validated?"":"disabled"}>Download Validated Plan</button><button class="btn" id="prepareOnly">Validate & Prepare Only</button><button class="btn primary" id="validateLive">Validate for Live Installation</button></div></div>`;
     $("#backComponents").addEventListener("click",()=>{model.currentStep=3;render();});
+    $("#downloadPlan").addEventListener("click",downloadValidatedPlan);
     $("#prepareOnly").addEventListener("click",()=>validatePlan(false));
     $("#validateLive").addEventListener("click",()=>validatePlan(true));
+  }
+
+  async function downloadValidatedPlan() {
+    try {
+      const response=await fetch("/api/v1/plan",{cache:"no-store"});
+      if(!response.ok){
+        const payload=await response.json().catch(()=>({}));
+        throw new Error(payload.error||"Unable to download validated plan.");
+      }
+      const blob=await response.blob();
+      const url=URL.createObjectURL(blob);
+      const link=document.createElement("a");
+      link.href=url;
+      link.download="titanus-plan.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch(err) { showError(err.message); }
   }
 
   function safePreviewPlan() {
@@ -420,6 +440,7 @@
       const state=await api("/api/v1/validate",{method:"POST",body:JSON.stringify(p)});
       model.validated=true; model.state=state;
       $("#validationResult").innerHTML=`<div class="notice"><strong>Plan validated successfully.</strong><br>${esc(state.message)}</div>`;
+      $("#downloadPlan")?.removeAttribute("disabled");
       if(!forLive){
         const prepared=await api("/api/v1/start",{method:"POST",body:JSON.stringify({password:"",apply:false})});
         model.state=prepared; model.currentStep=5; render(); beginPolling(); return;
@@ -531,6 +552,7 @@
       model.meta=await api("/api/v1/bootstrap");
       model.state=model.meta.state;
       model.plan=model.meta.plan || makeDefaultPlan(model.meta);
+      model.validated=Boolean(model.meta.plan && model.meta.state && model.meta.state.plan_path);
       model.plan._nodeCount=model.plan.nodes?.length || 3;
       model.plan._controlCount=(model.plan.nodes||[]).filter(n=>(n.capabilities||[]).includes("CONTROL")).length || (model.plan._nodeCount>=3?3:1);
       model.plan._sshUser=model.plan.nodes?.[0]?.ssh_user || "root";
