@@ -144,4 +144,96 @@
     return p;
   }
 
-  function clo
+  function clonePlanForAPI() {
+    ensureNodes();
+    const copy = JSON.parse(JSON.stringify(model.plan));
+    return normalizePlanForAPI(copy);
+  }
+
+  function stepNav() {
+    const nav = $("#stepNav");
+    nav.innerHTML = steps.map((step, i) => {
+      const n = i + 1;
+      const cls = n === model.currentStep ? "step active" : n < model.currentStep ? "step done" : "step";
+      return `<div class="${cls}"><div class="bubble"><span>${n}</span></div><div><div class="step-title">${step[0]}</div><div class="step-sub">${step[1]}</div></div></div>`;
+    }).join("");
+  }
+
+  function updateSummary() {
+    if (!model.plan) return;
+    const p = model.plan;
+    const install = p.installation;
+    $("#summaryList").innerHTML = `
+      <dt>Edition</dt><dd>Community</dd>
+      <dt>Type</dt><dd>${esc(profileLabel())}</dd>
+      <dt>Operation</dt><dd>${esc(install.operation || "install")}</dd>
+      <dt>Nodes</dt><dd>${p._nodeCount || p.nodes.length || 0}</dd>
+      <dt>Realm</dt><dd>${esc(p.realm_name || "-")}</dd>
+      <dt>Fabric</dt><dd>${esc(p.fabric_cidr || "-")}</dd>
+      <dt>Ceph</dt><dd>${p.ceph.enabled ? "Enabled" : "Disabled"}</dd>`;
+    const caps = ["Titanus Core","SSH full-mesh","Native Fabric","Versioned releases"];
+    if (p.ceph.enabled) caps.push("Distributed Storage (Ceph)");
+    if (install.profile === "native-ha") caps.push("Native HA / Fencing");
+    caps.push("All TUI installation options");
+    $("#summaryDetails").innerHTML = `<h3>Available Components</h3><div class="checklist">${caps.map(x => `<div class="checkline"><span class="checkdot">✓</span>${esc(x)}</div>`).join("")}</div>`;
+  }
+
+  function render() {
+    stepNav();
+    updateSummary();
+    if (model.currentStep === 1) renderConfiguration();
+    else if (model.currentStep === 2) renderInfrastructure();
+    else if (model.currentStep === 3) renderComponents();
+    else if (model.currentStep === 4) renderReview();
+    else if (model.currentStep === 5) renderDeployment();
+    else renderComplete();
+  }
+
+  function header(title, subtitle, step) {
+    return `<div class="eyebrow">STEP ${step} OF 6</div><h1>${title}</h1><p class="lead">${subtitle}</p>`;
+  }
+
+  function renderConfiguration() {
+    const p = model.plan;
+    const i = p.installation;
+    $("#workspace").innerHTML = header("Deployment Configuration", "Choose your installation type and basic settings. Everything available in the TUI installer is available in this Web Installer.", 1) + `
+      <div class="card">
+        <h3>Edition</h3>
+        <div class="grid-2">
+          <div class="choice active"><span class="choice-tag">ACTIVE</span><div class="choice-icon">◈</div><h3>Community Edition</h3><p>Up to ${model.meta.community_node_limit} Realm nodes. Units, Fleets and applications do not consume node slots.</p></div>
+          <div class="choice disabled"><span class="choice-tag">SOON AVAILABLE</span><div class="choice-icon">◇</div><h3>Enterprise Edition</h3><p>Same installer experience, planned without an edition-imposed node ceiling and with a 90-day trial.</p></div>
+        </div>
+        <div class="sep"></div>
+        <h3>Installation Type</h3>
+        <div class="grid-3" id="profileChoices">
+          ${profileCard("standard","▤","Standard","General Titanus Core deployment with a guided topology.")}
+          ${profileCard("native-ha","⬡","Native HA","Fresh 5–9 node deployment with separate voters, Workers and verified fencing.")}
+          ${profileCard("custom","⚙","Advanced / Custom","Manually control node capabilities, storage and low-level settings.")}
+        </div>
+        <div class="grid-2" style="margin-top:20px">
+          <div class="field"><label>Operation</label><select id="operation" class="select">
+            <option value="install" ${i.operation==="install"?"selected":""}>Initial install</option>
+            <option value="upgrade" ${i.operation==="upgrade"?"selected":""} ${i.profile==="native-ha"?"disabled":""}>Upgrade</option>
+            <option value="rollback" ${i.operation==="rollback"?"selected":""} ${i.profile==="native-ha"?"disabled":""}>Binary rollback</option>
+          </select><small>Native HA remains a fresh-install profile; existing-Realm transition uses the separate verified HA workflow.</small></div>
+          <div class="field"><label>Deployment Size</label><select id="nodeCount" class="select">${Array.from({length:model.meta.community_node_limit},(_,idx)=>idx+1).map(n=>`<option value="${n}" ${(p._nodeCount||3)==n?"selected":""} ${i.profile==="native-ha"&&n<5?"disabled":""}>${n} Node${n>1?"s":""}</option>`).join("")}</select><small>Community Edition supports up to ${model.meta.community_node_limit} nodes.</small></div>
+        </div>
+        <div class="grid-2">
+          ${field("Realm Name","realmName",p.realm_name,"Unique identity for this Titanus Realm.")}
+          ${field("Persistent PKI Directory","pkiDir",i.pki_dir,"Private server-side path for the Realm authority.")}
+        </div>
+        <div class="grid-2">
+          ${field("Titanus Fabric CIDR","fabricCIDR",p.fabric_cidr,"Workload Fabric address space.")}
+          ${field("Titanus Service CIDR","serviceCIDR",p.service_cidr,"Service address space; must not overlap the Fabric.")}
+        </div>
+        <div class="toolbar"><span class="muted small">Enterprise is displayed here but remains unavailable until its entitlement model is implemented.</span><button id="toInfrastructure" class="btn primary">Next&nbsp; →</button></div>
+      </div>`;
+    bindConfiguration();
+  }
+
+  function profileCard(value, icon, title, text) {
+    return `<button class="choice ${model.plan.installation.profile===value?"active":""}" data-profile="${value}" type="button"><div class="choice-icon">${icon}</div><h3>${title}</h3><p>${text}</p></button>`;
+  }
+
+  function field(label, id, value, help, type="text") {
+    return `<div class="field"><label for="${id}">${label}</label><input id="${id}" class="input" type="${type}" value="${esc(value || "")}" autocomplete="off"><small>${help}</small></div>
