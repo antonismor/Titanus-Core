@@ -265,7 +265,11 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 }
 
-func tokenMatches(provided, expected string) bool {\n\treturn len(provided) == len(expected) && subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1\n}\n\nfunc securityHeaders(next http.Handler) http.Handler {
+func tokenMatches(provided, expected string) bool {
+	return len(provided) == len(expected) && subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
