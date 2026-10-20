@@ -10,12 +10,62 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/version"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/antonismor/Titanus-Core/internal/model"
 )
+
+func TestInitialInstallProbeAcceptsOnlyExactBinaryOnlyRelease(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable")
+	}
+	meta := version.Build{Version: "0.4.0-rc.17", Revision: strings.Repeat("a", 40), OS: "linux", Arch: "amd64", StateProfile: version.StateProfile}
+	expected, _ := json.Marshal(meta)
+	for _, scenario := range []string{"fresh", "binary-only", "other-revision", "realm-state", "agent-config", "realm-symlink", "foreign-selector"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			if scenario != "fresh" {
+				release := filepath.Join(root, "usr/local/lib/titanus/releases/candidate")
+				if scenario == "foreign-selector" {
+					release = filepath.Join(root, "outside")
+				}
+				if err := os.MkdirAll(release, 0700); err != nil {
+					t.Fatal(err)
+				}
+				build := meta
+				if scenario == "other-revision" {
+					build.Revision = strings.Repeat("b", 40)
+				}
+				data, _ := json.Marshal(build)
+				os.WriteFile(filepath.Join(release, "manifest.json"), data, 0600)
+				selector := filepath.Join(root, "usr/local/lib/titanus/current")
+				os.MkdirAll(filepath.Dir(selector), 0700)
+				os.Symlink(release, selector)
+			}
+			if scenario == "realm-state" {
+				os.MkdirAll(filepath.Join(root, "var/lib/titanus/realm"), 0700)
+			}
+			if scenario == "agent-config" {
+				dir := filepath.Join(root, "etc/titanus")
+				os.MkdirAll(dir, 0700)
+				os.WriteFile(filepath.Join(dir, "agent.env"), []byte("PRESERVE"), 0600)
+			}
+			if scenario == "realm-symlink" {
+				dir := filepath.Join(root, "var/lib/titanus")
+				os.MkdirAll(dir, 0700)
+				os.Symlink("/absent-fixture", filepath.Join(dir, "realm"))
+			}
+			out, err := exec.Command("python3", "-c", initialInstallProbePython, root, string(expected)).CombinedOutput()
+			want := scenario == "fresh" || scenario == "binary-only"
+			if (err == nil) != want {
+				t.Fatalf("accepted=%v wanted=%v output=%s", err == nil, want, out)
+			}
+		})
+	}
+}
 
 func TestPreparedRollbackIsOfflineAndPinned(t *testing.T) {
 	plan := model.RealmPlan{Version: "titanus-plan/v2", RealmName: "LAB", FabricCIDR: "10.210.0.0/16", ServiceCIDR: "10.220.0.0/16", Nodes: []model.NodeSpec{{Name: "node", ManagementIP: "192.0.2.1", SSHUser: "root", SSHPort: 22, Capabilities: []model.Capability{model.CapabilityControl}}}, Installation: &model.Installation{Operation: "rollback", ReleaseVersion: "0.4.0-rc.4", Revision: strings.Repeat("a", 40), APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242}}
@@ -150,5 +200,51 @@ func TestCustomAPIPortIsAdvertised(t *testing.T) {
 	env := agentEnvironment(model.RealmPlan{}, model.NodeSpec{Name: "worker", ManagementIP: "192.0.2.1"}, model.NodeSpec{ManagementIP: "192.0.2.2"}, RealmDeployOptions{ClusterPort: 10443})
 	if !strings.Contains(env, "TITANUS_NODE_ADDRESS=192.0.2.1:10443\n") {
 		t.Fatal("custom node API port lost")
+	}
+}
+
+type repairingReleaseSSH struct {
+	releaseSSHFixture
+	fixed, persistent bool
+	repairs           int
+}
+
+func (f *repairingReleaseSSH) Run(node model.NodeSpec, command string) (remote.Result, error) {
+	if command == "command -v nft" && !f.fixed {
+		return remote.Result{}, fmt.Errorf("missing nft executable")
+	}
+	if strings.Contains(command, "--reinstall") {
+		f.repairs++
+		f.fixed = !f.persistent
+	}
+	return f.releaseSSHFixture.Run(node, command)
+}
+
+func TestApplyRepairsBeforePayloadAndNeverIgnoresFailedVerification(t *testing.T) {
+	for _, persistent := range []bool{false, true} {
+		t.Run(fmt.Sprint(persistent), func(t *testing.T) {
+			plan := model.RealmPlan{Version: "titanus-plan/v2", RealmName: "LAB", FabricCIDR: "10.210.0.0/16", ServiceCIDR: "10.220.0.0/16", Nodes: []model.NodeSpec{{Name: "control", ManagementIP: "192.0.2.1", SSHUser: "root", SSHPort: 22, Capabilities: []model.Capability{model.CapabilityControl}}}, Installation: &model.Installation{Operation: "install", AutoRepair: true, ReleaseVersion: "0.4.0-rc.17", Revision: strings.Repeat("a", 40), APIPort: 9443, RaftPort: 9444, NodePrefix: 24, VXLANID: 4242, Archives: map[string]model.Archive{"amd64": {Path: "fixture-amd64", SHA256: strings.Repeat("b", 64)}, "arm64": {Path: "fixture-arm64", SHA256: strings.Repeat("c", 64)}}}}
+			// A prepared identity fixture isolates apply admission and ordering; its
+			// SSH runner never copies files, installs packages or executes a payload.
+			prepared := PreparedInstallation{Version: plan.Installation.ReleaseVersion, Revision: plan.Installation.Revision, Operation: "install", PlanSHA256: planDigest(plan), ResultsPath: filepath.Join(t.TempDir(), "results.json"), Nodes: []PreparedNode{{Node: "control"}}}
+			ssh := &repairingReleaseSSH{persistent: persistent}
+			d := &RealmDeployer{SSH: ssh}
+			plan.Installation.AutoRepair = false
+			if _, err := d.ApplyPrepared(plan, prepared); err == nil || len(ssh.calls) != 0 {
+				t.Fatal("repair policy changed after preparation was accepted")
+			}
+			plan.Installation.AutoRepair = true
+			results, err := d.ApplyPrepared(plan, prepared)
+			if persistent {
+				if err == nil || ssh.copies != 0 || len(results) != 0 {
+					t.Fatalf("failed verification reached payload: %v copies=%d", err, ssh.copies)
+				}
+			} else if err != nil || ssh.copies == 0 || len(results) != 1 {
+				t.Fatalf("verified repair did not continue: %v", err)
+			}
+			if ssh.repairs != 1 {
+				t.Fatalf("unbounded repair: %d", ssh.repairs)
+			}
+		})
 	}
 }

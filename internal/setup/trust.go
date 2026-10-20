@@ -49,9 +49,6 @@ func (w *Wizard) BootstrapTrust(ctx context.Context, plan model.RealmPlan) (ssht
 	if err := plan.Validate(); err != nil {
 		return sshtrust.Report{}, err
 	}
-	if plan.Installation != nil && plan.Installation.Profile == model.ProfileNativeHA {
-		return sshtrust.Report{}, fmt.Errorf("Native HA activation is reserved for the fencing and failback phase")
-	}
 	if err := sshtrust.CheckTools(); err != nil {
 		return sshtrust.Report{}, err
 	}

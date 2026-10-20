@@ -47,7 +47,8 @@ def atomiclink(target,path):
  temp.symlink_to(target);os.replace(temp,path);syncdir(path.parent)
 def verified(bundle,inspect_binaries=True,checksum_data=None):
  allowed={'bin/titanus','bin/titanusd','bin/titanus-agent','bin/titanus-init','systemd/titanusd.service','systemd/titanus-agent.service','scripts/install-release.py','scripts/install-release.sh','docs/RELEASE.md','LICENSE','manifest.json'}
- optional={'scripts/maintenance_transaction.py'}
+ web={'bin/titanus-installer-web','systemd/titanus-installer-web.service','scripts/tuigui','scripts/tuicli','docs/WEB_INSTALLER.md'}
+ optional={'scripts/maintenance_transaction.py'}|web
  required=allowed.copy()
  allowed |= optional
  checksum=bundle/'SHA256SUMS'
@@ -62,11 +63,13 @@ def verified(bundle,inspect_binaries=True,checksum_data=None):
  if not required.issubset(seen):raise ValueError('incomplete release')
  for name in optional:
   if (bundle/name).exists() and name not in seen:raise ValueError('unverified optional release file')
+ present_web=seen & web
+ if present_web and present_web!=web:raise ValueError('incomplete optional Web Installer release')
  meta=json.loads((bundle/'manifest.json').read_text())
  if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',meta['version']) or not re.fullmatch('[0-9a-f]{40}',meta['revision']):raise ValueError('invalid release identity')
  arch={'x86_64':'amd64','aarch64':'arm64'}.get(platform.machine())
  if meta['os']!='linux' or meta['arch']!=arch or meta['state_profile']!='titanus-state/v3':raise ValueError('unsupported release architecture/state profile')
- for name in (['titanus','titanusd','titanus-agent','titanus-init'] if inspect_binaries else []):
+ for name in ((['titanus','titanusd','titanus-agent','titanus-init']+(['titanus-installer-web'] if 'bin/titanus-installer-web' in seen else [])) if inspect_binaries else []):
   command=[str(bundle/'bin'/name),'version','--json'] if name=='titanus' else [str(bundle/'bin'/name),'--version-json']
   if json.loads(subprocess.check_output(command,timeout=5))!=meta:raise ValueError('binary manifest identity mismatch')
  return meta
@@ -77,10 +80,12 @@ def check_schema(bundle,meta):
   except Exception as e:raise ValueError('binary rollback lacks advertised schema support: '+name) from e
   if c.get('format')!='titanus-capabilities/v1' or c.get('build')!=meta or not c['protocol_min']<=1<=c['protocol_max'] or not c['read_schema_min']<=floor['schema']<=c['read_schema_max'] or not c['write_schema_min']<=floor['schema']<=c['write_schema_max']:raise ValueError('binary is incompatible with prepared data schema: '+name)
 lock=(base/'install.lock').open('a');os.chmod(base/'install.lock',0o600);fcntl.flock(lock,fcntl.LOCK_EX)
-current=base/'current';previous=base/'previous';old=os.readlink(current) if current.is_symlink() else None
-services=[];created_links=[];created_config=[];switched=False
+current=base/'current';previous=base/'previous';web_current=base/'web-current';old=os.readlink(current) if current.is_symlink() else None
+services=[];created_links=[];created_config=[];switched=False;web_switched=False
 prior_previous=os.readlink(previous) if previous.is_symlink() else None
+prior_web_current=os.readlink(web_current) if web_current.is_symlink() else None
 if current.exists() and not current.is_symlink():raise SystemExit('current selector must be a symlink')
+if web_current.exists() and not web_current.is_symlink():raise SystemExit('web-current selector must be a symlink')
 try:
  if args.rollback:
   if not previous.is_symlink():raise ValueError('no prior versioned release')
@@ -97,7 +102,7 @@ try:
    stage=pathlib.Path(tempfile.mkdtemp(prefix='.install-',dir=releases))
    try:
     for line in proof.decode().splitlines():
-     _,name=line.split('  ',1);src=bundle/name;dst=stage/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dst);dst.chmod(0o755 if name.startswith('bin/') or name.endswith('.sh') else 0o644)
+     _,name=line.split('  ',1);src=bundle/name;dst=stage/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dst);dst.chmod(0o755 if name.startswith('bin/') or name.endswith('.sh') or name in ('scripts/tuigui','scripts/tuicli') else 0o644)
      with dst.open('rb') as f:os.fsync(f.fileno())
     (stage/'SHA256SUMS').write_bytes(proof)
     with (stage/'SHA256SUMS').open('rb') as f:os.fsync(f.fileno())
@@ -110,7 +115,12 @@ try:
  check_schema(candidate,meta)
  configuration={}
  if args.config:
-  if args.rollback or old:raise ValueError('configuration is for initial installation only')
+  if args.rollback:raise ValueError('configuration is for initial installation only')
+  # tuigui/tuicli can run on a selected fresh node with binaries already installed.
+  # Only that exact verified release may receive its first Realm configuration.
+  if old and old!=target:raise ValueError('binary-only installer host must match the selected release exactly')
+  for name in ['etc/titanus/daemon.env','etc/titanus/agent.env','etc/titanus/ha.json','etc/titanus/power-fencing.json','etc/titanus/pki','var/lib/titanus/realm']:
+   if os.path.lexists(root/name):raise ValueError('initial configuration refuses existing Realm state/configuration: '+name)
   config=args.config.resolve();inventory=json.loads((config/'config.json').read_text())
   allowed_config={'daemon.env','agent.env','ha.json','power-fencing.json','pki/ca.crt','pki/ca.crl','pki/ca.key','pki/node.crt','pki/node.key'}
   required={'daemon.env','agent.env','pki/ca.crt','pki/ca.crl','pki/node.crt','pki/node.key'}
@@ -123,6 +133,9 @@ try:
    if dst.exists() or dst.is_symlink() or any(folder.is_symlink() for folder in dst.parents):raise ValueError('initial configuration refuses existing or redirected path')
    configuration[dst]=data
  links={'usr/local/bin/titanus':'../lib/titanus/current/bin/titanus','usr/local/sbin/titanusd':'../lib/titanus/current/bin/titanusd','usr/local/sbin/titanus-agent':'../lib/titanus/current/bin/titanus-agent','usr/local/libexec/titanus-init':'../lib/titanus/current/bin/titanus-init','etc/systemd/system/titanusd.service':'../../../usr/local/lib/titanus/current/systemd/titanusd.service','etc/systemd/system/titanus-agent.service':'../../../usr/local/lib/titanus/current/systemd/titanus-agent.service'}
+ web_available=(candidate/'bin/titanus-installer-web').is_file()
+ if web_available or web_current.is_symlink():
+  links.update({'usr/local/sbin/titanus-installer-web':'../lib/titanus/web-current/bin/titanus-installer-web','usr/local/bin/tuigui':'../lib/titanus/web-current/scripts/tuigui','usr/local/bin/tuicli':'../lib/titanus/web-current/scripts/tuicli','etc/systemd/system/titanus-installer-web.service':'../../../usr/local/lib/titanus/web-current/systemd/titanus-installer-web.service'})
  # Validate every destination before stopping services or changing any link.
  for name,link in links.items():
   dst=root/name
@@ -148,6 +161,7 @@ try:
   with os.fdopen(fd,'wb') as stream:stream.write(data);stream.flush();os.fsync(stream.fileno())
   syncdir(dst.parent)
  atomiclink(target,current);switched=True
+ if web_available:atomiclink(target,web_current);web_switched=True
  if old and old!=target:atomiclink(old,previous)
  if live:
   subprocess.run(['systemctl','daemon-reload'],check=True)
@@ -161,6 +175,9 @@ except Exception as error:
   if not old and current.is_symlink():current.unlink();syncdir(base)
   if prior_previous:atomiclink(prior_previous,previous)
   elif previous.is_symlink():previous.unlink();syncdir(base)
+ if web_switched:
+  if prior_web_current:atomiclink(prior_web_current,web_current)
+  elif web_current.is_symlink():web_current.unlink();syncdir(base)
  for dst in reversed(created_config):
   if dst.is_file():dst.unlink();syncdir(dst.parent)
  for dst in reversed(created_links):

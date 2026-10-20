@@ -68,6 +68,25 @@ if python3 scripts/install-release.py --root "$fixture/configured" --bundle "$ne
  echo 'Existing configuration overwritten' >&2; exit 1
 fi
 grep -q GUIDED_daemon.env "$fixture/configured/etc/titanus/daemon.env"
+# An exact matching binary-only installer host can initialize its first Realm.
+python3 scripts/install-release.py --root "$fixture/installer-only" --bundle "$base"
+python3 scripts/install-release.py --root "$fixture/installer-only" --bundle "$base" --config "$fixture/config" --expect-version "$base_version" --expect-revision "$revision"
+if python3 scripts/install-release.py --root "$fixture/installer-only" --bundle "$base" --config "$fixture/config"; then
+ echo 'Existing Realm configuration overwritten on installer host' >&2; exit 1
+fi
+# A different selected release and existing Realm data remain blocked.
+python3 scripts/install-release.py --root "$fixture/bootstrap-mismatch" --bundle "$base"
+if python3 scripts/install-release.py --root "$fixture/bootstrap-mismatch" --bundle "$next" --config "$fixture/config"; then
+ echo 'Different binary-only release accepted for initial configuration' >&2; exit 1
+fi
+test ! -e "$fixture/bootstrap-mismatch/etc/titanus/daemon.env"
+python3 scripts/install-release.py --root "$fixture/bootstrap-state" --bundle "$base"
+mkdir -p "$fixture/bootstrap-state/var/lib/titanus/realm"
+printf 'PRESERVE_REALM\n' > "$fixture/bootstrap-state/var/lib/titanus/realm/canary"
+if python3 scripts/install-release.py --root "$fixture/bootstrap-state" --bundle "$base" --config "$fixture/config"; then
+ echo 'Existing Realm state accepted for initial configuration' >&2; exit 1
+fi
+grep -q PRESERVE_REALM "$fixture/bootstrap-state/var/lib/titanus/realm/canary"
 python3 - "$next/bin/titanus" <<'PY'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]);data=bytearray(p.read_bytes());data[-1]^=1;p.write_bytes(data)

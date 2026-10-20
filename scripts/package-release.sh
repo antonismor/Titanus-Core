@@ -15,13 +15,13 @@ expected=declared+'.install-test' if os.environ.get('TITANUS_PACKAGE_INSTALL_FIX
 if meta['version']!=expected:raise SystemExit('binary version differs from declared release version')
 if meta['os']!='linux' or meta['arch'] not in ('amd64','arm64') or not re.fullmatch('[0-9a-f]{40}',meta['revision']) or meta['revision']!=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip():raise SystemExit('release requires native Linux build at the exact committed revision')
 if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?',meta['version']) or meta['state_profile']!=profile:raise SystemExit('invalid release version/state profile')
-for binary in ['titanusd','titanus-agent','titanus-init']:
+for binary in ['titanusd','titanus-agent','titanus-init','titanus-installer-web']:
  if json.loads(subprocess.check_output(['./bin/'+binary,'--version-json']))!=meta:raise SystemExit('binary release identities do not match')
 name=f"titanus-{meta['version']}-linux-{meta['arch']}"
 with tempfile.TemporaryDirectory(prefix='titanus-package-') as tmp:
  root=pathlib.Path(tmp)/name;root.mkdir()
- for p in ['bin/titanus','bin/titanusd','bin/titanus-agent','bin/titanus-init','systemd/titanusd.service','systemd/titanus-agent.service','scripts/maintenance_transaction.py','scripts/install-release.py','scripts/install-release.sh','docs/RELEASE.md','LICENSE']:
-  src=pathlib.Path(p);dst=root/p;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dst);dst.chmod(0o755 if p.startswith('bin/') or p.endswith('.sh') else 0o644)
+ for p in ['bin/titanus','bin/titanusd','bin/titanus-agent','bin/titanus-init','bin/titanus-installer-web','systemd/titanusd.service','systemd/titanus-agent.service','systemd/titanus-installer-web.service','scripts/maintenance_transaction.py','scripts/install-release.py','scripts/install-release.sh','scripts/tuigui','scripts/tuicli','docs/RELEASE.md','docs/WEB_INSTALLER.md','LICENSE']:
+  src=pathlib.Path(p);dst=root/p;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dst);dst.chmod(0o755 if p.startswith('bin/') or p.endswith('.sh') or p in ('scripts/tuigui','scripts/tuicli') else 0o644)
  (root/'manifest.json').write_text(json.dumps(meta,sort_keys=True)+'\n')
  files=sorted(p for p in root.rglob('*') if p.is_file())
  (root/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.relative_to(root).as_posix()+'\n' for p in files))

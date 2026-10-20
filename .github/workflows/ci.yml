@@ -43,7 +43,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Race checks
-        run: go test -race ./internal/haprofile ./internal/hatransition ./internal/sshtrust ./internal/setup ./internal/remote ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
+        run: go test -race ./internal/webinstaller ./internal/haprofile ./internal/hatransition ./internal/sshtrust ./internal/setup ./internal/remote ./internal/backup ./internal/offline ./internal/secrets ./internal/observe ./internal/disk ./cmd/titanus-init ./internal/identity ./internal/controlapi ./cmd/titanus-agent ./internal/security ./internal/unitruntime ./internal/lease ./internal/realm ./internal/reconcile ./internal/consensus ./internal/controllerclient ./internal/source ./internal/route ./internal/fencing
 
       - name: Cross-build native ARM64 runtime
         run: |
@@ -55,6 +55,28 @@ jobs:
 
       - name: Smoke CLI
         run: ./bin/titanus version
+
+      - name: Verify Web Installer launch commands with isolated systemd mocks
+        run: sudo env "PATH=$PATH" python3 -m unittest discover -s scripts/tests -p test_web_commands.py -v
+
+      - name: Setup Node for Web Installer browser checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pinned Web Installer browser client
+        run: npm install --prefix /tmp/titanus-web-client playwright@1.55.1 --no-audit --no-fund
+
+      - name: Exercise Web Installer HTTPS, failure status and browser reconnect
+        run: sudo env "PATH=$PATH" TITANUS_INSTALLER_BINARY="$PWD/bin/titanus-installer-web" TITANUS_PLAYWRIGHT_MODULE=/tmp/titanus-web-client/node_modules/playwright TITANUS_UI_CHROME=/usr/bin/google-chrome node scripts/ci-web-installer.cjs
+
+      - name: Keep Web Installer browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-installer-browser
+          path: /tmp/titanus-web-installer-*.png
+          if-no-files-found: ignore
 
   runtime-smoke:
     name: Native Unit runtime (${{ matrix.runner }})

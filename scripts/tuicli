@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${EUID} -ne 0 ]]; then
+  echo "tuicli must run as root." >&2
+  exit 1
+fi
+if ! command -v titanus >/dev/null 2>&1; then
+  echo "Titanus Core CLI is not installed." >&2
+  exit 1
+fi
+if systemctl is-active --quiet titanus-installer-web.service 2>/dev/null; then
+  # Atomically refuse new Web requests before stopping the idle service.
+  # Fail closed if the service cannot confirm that no deployment is running.
+  if ! python3 - <<'PYQUIESCE'
+import json,ssl,sys,urllib.request,urllib.error
+try:
+    token=open('/var/lib/titanus/installer-web/access.token').read().strip()
+    request=urllib.request.Request('https://127.0.0.1:8088/api/v1/quiesce',data=b'{}',
+        headers={'Content-Type':'application/json','X-Titanus-Installer-Token':token},method='POST')
+    # Loopback only; this service uses a private, locally generated certificate.
+    with urllib.request.urlopen(request,context=ssl._create_unverified_context(),timeout=35) as response:
+        if not json.load(response).get('quiesced'):
+            raise RuntimeError('Web Installer did not confirm an idle state')
+except Exception as error:
+    print('Cannot switch to tuicli while the Web Installer is busy or unavailable. No service was stopped.',file=sys.stderr)
+    sys.exit(1)
+PYQUIESCE
+  then
+    exit 1
+  fi
+  systemctl stop titanus-installer-web.service
+fi
+echo "Starting Titanus Core terminal-only installer..."
+exec titanus setup "$@"

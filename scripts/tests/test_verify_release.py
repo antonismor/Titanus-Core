@@ -36,7 +36,7 @@ class ReleaseIntegrity(unittest.TestCase):
             for path, data in files.items():
                 member = tarfile.TarInfo(root + '/' + path)
                 member.size = len(data)
-                member.mode = 0o755 if path.startswith('bin/') or path.endswith('.sh') else 0o644
+                member.mode = 0o755 if path.startswith('bin/') or path.endswith('.sh') or path in verifier.WEB_COMMANDS else 0o644
                 member.uname = member.gname = 'root'
                 if member_change:
                     member_change(member)
@@ -115,6 +115,48 @@ class ReleaseIntegrity(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args = self.package(pathlib.Path(tmp))
             self.assertEqual(verifier.verify(*args)['inventory_files_verified'], 11)
+
+    @staticmethod
+    def add_web(files):
+        for path in verifier.WEB_INVENTORY:
+            files[path] = files['bin/titanus'] if path.startswith('bin/') else b'web fixture'
+        files['SHA256SUMS'] = ''.join(hashlib.sha256(data).hexdigest() + '  ' + path + '\n'
+                                      for path, data in sorted(files.items()) if path != 'SHA256SUMS').encode()
+
+    def test_complete_web_group_and_fifth_native_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self.package(pathlib.Path(tmp), change=self.add_web)
+            result = verifier.verify(*args)
+            self.assertEqual(result['inventory_files_verified'], 16)
+            self.assertEqual(result['elf_binaries_verified'], 5)
+
+    def test_partial_web_group_is_rejected(self):
+        def partial(files):
+            self.add_web(files)
+            del files['docs/WEB_INSTALLER.md']
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self.package(pathlib.Path(tmp), change=partial)
+            with self.assertRaisesRegex(ValueError, 'incomplete optional Web Installer'):
+                verifier.verify(*args)
+
+    def test_web_binary_wrong_architecture_is_rejected(self):
+        def wrong(files):
+            self.add_web(files)
+            data = bytearray(files['bin/titanus-installer-web']); struct.pack_into('<H', data, 18, 183)
+            files['bin/titanus-installer-web'] = bytes(data)
+            files['SHA256SUMS'] = ''.join(hashlib.sha256(data).hexdigest() + '  ' + path + '\n'
+                                          for path, data in sorted(files.items()) if path != 'SHA256SUMS').encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self.package(pathlib.Path(tmp), change=wrong)
+            with self.assertRaisesRegex(ValueError, 'architecture'):
+                verifier.verify(*args)
+
+    def test_web_commands_must_be_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self.package(pathlib.Path(tmp), change=self.add_web,
+                                member_change=self.mutate_member('/scripts/tuigui', 'mode', 0o644))
+            with self.assertRaisesRegex(ValueError, 'permissions'):
+                verifier.verify(*args)
 
 
 if __name__ == '__main__':

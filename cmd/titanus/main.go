@@ -24,6 +24,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
+	"github.com/antonismor/Titanus-Core/internal/prerequisites"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/remote"
 	"github.com/antonismor/Titanus-Core/internal/security"
@@ -2047,11 +2048,17 @@ func runSetup() error {
 	}
 	fmt.Println("Prepared private deployment:", result.PlanPath+".deployment")
 	if result.Plan.AutoDeploy {
+		output, dependencyErr := prerequisites.EnsureInstallerWithRepair(context.Background(), prerequisites.RepairEnabled(result.Plan))
+		fmt.Print(output)
+		if dependencyErr != nil {
+			return dependencyErr
+		}
 		trust, bootstrapErr := setup.RunTrustDefault(context.Background(), result.Plan)
 		if bootstrapErr != nil {
 			return bootstrapErr
 		}
 		d := deploy.NewRealmDeployer()
+		d.RepairLog = func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
 		executor := d.SSH.(*remote.SSHExecutor)
 		executor.IdentityFile = trust.IdentityFile
 		executor.KnownHostsFile = trust.KnownHostsFile
@@ -2316,7 +2323,9 @@ func runReleaseDeploy(args []string) error {
 	}
 	fmt.Println("Prepared verified deployment:", *output)
 	if *apply {
-		results, e := deploy.NewRealmDeployer().ApplyPrepared(plan, prepared)
+		deployer := deploy.NewRealmDeployer()
+		deployer.RepairLog = func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
+		results, e := deployer.ApplyPrepared(plan, prepared)
 		for _, r := range results {
 			fmt.Printf("%s %s %s\n", r.Node, r.Role, r.Message)
 		}

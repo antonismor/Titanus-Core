@@ -146,6 +146,13 @@ func nativeGuidedInstallation(t *testing.T, nativeHA bool) {
 			}
 		}
 		f.Close()
+		if index == 0 {
+			// The selected bootstrap can already host tuigui/tuicli binaries.
+			command := exec.Command("python3", filepath.Join(bundle, "scripts/install-release.py"), "--root", root, "--bundle", bundle)
+			if data, e := command.CombinedOutput(); e != nil {
+				t.Fatalf("installer-only bootstrap: %v %s", e, data)
+			}
+		}
 		command := exec.Command("python3", filepath.Join(bundle, "scripts/install-release.py"), "--root", root, "--bundle", bundle, "--config", cfg, "--expect-version", version.Version, "--expect-revision", revision)
 		if data, e := command.CombinedOutput(); e != nil {
 			t.Fatalf("install %s: %v %s", item.Node, e, data)

@@ -36,6 +36,15 @@ func fixture(t *testing.T, mutation string) (string, string) {
 	for _, n := range []string{"bin/titanus", "bin/titanusd", "bin/titanus-agent", "bin/titanus-init"} {
 		files[n] = binary
 	}
+	if mutation == "web" || mutation == "web-partial" {
+		files["bin/titanus-installer-web"] = binary
+		files["systemd/titanus-installer-web.service"] = []byte("fixture")
+		if mutation == "web" {
+			files["scripts/tuigui"] = []byte("fixture")
+			files["scripts/tuicli"] = []byte("fixture")
+			files["docs/WEB_INSTALLER.md"] = []byte("fixture")
+		}
+	}
 	for _, n := range []string{"systemd/titanusd.service", "systemd/titanus-agent.service", "scripts/install-release.py", "scripts/install-release.sh", "docs/RELEASE.md", "LICENSE"} {
 		files[n] = []byte("fixture")
 	}
@@ -101,11 +110,11 @@ func fixture(t *testing.T, mutation string) (string, string) {
 	return filename, hex.EncodeToString(sum[:])
 }
 func TestArchiveInventoryAndArchitecture(t *testing.T) {
-	for _, mutation := range []string{"", "checksum", "extra", "escape", "symlink", "duplicate", "arch"} {
+	for _, mutation := range []string{"", "web", "web-partial", "checksum", "extra", "escape", "symlink", "duplicate", "arch"} {
 		t.Run(mutation, func(t *testing.T) {
 			file, sum := fixture(t, mutation)
 			_, e := Verify(file, sum, "0.4.0-rc.4", strings.Repeat("a", 40), runtime.GOARCH)
-			if (e == nil) != (mutation == "") {
+			if (e == nil) != (mutation == "" || mutation == "web") {
 				t.Fatalf("mutation=%q: %v", mutation, e)
 			}
 			if _, e = Verify(file, strings.Repeat("0", 64), "0.4.0-rc.4", strings.Repeat("a", 40), runtime.GOARCH); e == nil {

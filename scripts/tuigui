@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE=titanus-installer-web.service
+STATE_DIR=/var/lib/titanus/installer-web
+TOKEN_FILE="$STATE_DIR/access.token"
+PORT=8088
+
+if [[ ${EUID} -ne 0 ]]; then
+  echo "tuigui must run as root." >&2
+  exit 1
+fi
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemd is required to start the Titanus Core Web Installer." >&2
+  exit 1
+fi
+if ! command -v titanus-installer-web >/dev/null 2>&1; then
+  echo "titanus-installer-web is not installed. Install a Titanus Core release that includes Web Installer support." >&2
+  exit 1
+fi
+if ! command -v titanus >/dev/null 2>&1; then
+  echo "Titanus Core CLI is not installed." >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required by the Titanus installer launch commands." >&2
+  exit 1
+fi
+if ! python3 - "$(titanus version --json)" "$(titanus-installer-web --version-json)" <<'PY'
+import json,sys
+core=json.loads(sys.argv[1]); web=json.loads(sys.argv[2])
+keys=('version','revision','state_profile')
+raise SystemExit(0 if all(core.get(k)==web.get(k) for k in keys) else 1)
+PY
+then
+  echo "The installed Web Installer does not match the active Titanus Core release. Use 'tuicli' or install a matching release before starting tuigui." >&2
+  exit 1
+fi
+
+systemctl daemon-reload
+systemctl start "$SERVICE"
+
+for _ in $(seq 1 50); do
+  if systemctl is-active --quiet "$SERVICE" && [[ -s "$TOKEN_FILE" ]]; then
+    break
+  fi
+  sleep 0.2
+done
+if ! systemctl is-active --quiet "$SERVICE"; then
+  echo "Titanus Core Web Installer failed to start." >&2
+  systemctl --no-pager --full status "$SERVICE" >&2 || true
+  exit 1
+fi
+if [[ ! -s "$TOKEN_FILE" ]]; then
+  echo "Titanus Core Web Installer started but the protected access token is not available." >&2
+  exit 1
+fi
+
+IP=$(python3 - <<'PYIP'
+import ipaddress,json,subprocess
+
+def ip_json(*args):
+    try:
+        result=subprocess.run(['ip','-j','-4',*args],capture_output=True,text=True,timeout=5)
+        return json.loads(result.stdout) if result.returncode==0 else []
+    except (OSError,ValueError,subprocess.TimeoutExpired):
+        return []
+
+def usable(value):
+    try:
+        address=ipaddress.IPv4Address(value)
+        return not (address.is_loopback or address.is_unspecified or address.is_multicast or address.is_link_local)
+    except ValueError:
+        return False
+
+candidates=[route.get('prefsrc','') for route in ip_json('route','get','1.1.1.1')]
+candidates += [a.get('local','') for interface in ip_json('address','show','up')
+               for a in interface.get('addr_info',[]) if a.get('scope')=='global']
+print(next((value for value in candidates if usable(value)),''))
+PYIP
+)
+if [[ -z "$IP" ]]; then
+  echo "Titanus Core Web Installer is running, but no non-loopback IPv4 address could be detected." >&2
+  echo "Run 'ip -4 addr' and open https://<this-host-ip>:$PORT/ in your browser." >&2
+  exit 1
+fi
+
+TOKEN=$(tr -d '\r\n' < "$TOKEN_FILE")
+if [[ ! "$TOKEN" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Titanus Core Web Installer access token is invalid." >&2
+  exit 1
+fi
+
+cat <<OUT
+Titanus Core Web Installer is running.
+Detected local IPv4 address: $IP
+Open this protected URL in your browser:
+
+  https://$IP:$PORT/#access=$TOKEN
+
+The first connection uses a local Titanus HTTPS certificate, so your browser may ask you to confirm it.
+After the first successful sign-in, reopening https://$IP:$PORT/ in the same browser will restore the current installation status.
+The installer service continues running if you close or refresh the browser.
+Use 'tuicli' at any time when you want the terminal-only installer.
+OUT

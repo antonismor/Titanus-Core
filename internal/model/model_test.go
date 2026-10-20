@@ -78,6 +78,7 @@ func TestVersionedPlanRejectsUnsafeNetworkIdentityAndLifecycle(t *testing.T) {
 		func(p *RealmPlan) { p.Installation.NodePrefix = 16 },
 		func(p *RealmPlan) { p.Installation.NodePrefix = 31 },
 		func(p *RealmPlan) { p.Ceph.Provision = true },
+		func(p *RealmPlan) { p.Installation.AutoRepair = true },
 	}
 	for i, mutate := range cases {
 		p := base

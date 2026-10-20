@@ -57,7 +57,17 @@ func (ExecRunner) Run(ctx context.Context, input, password []byte, name string, 
 }
 
 func CheckTools() error {
-	for _, name := range []string{"ssh", "ssh-keyscan", "ssh-keygen", "sshpass"} {
+	return checkTools([]string{"ssh", "ssh-keyscan", "ssh-keygen", "sshpass"})
+}
+
+// Password authentication is installed when apply starts; key discovery itself
+// stays read-only and does not require sshpass.
+func CheckDiscoveryTools() error {
+	return checkTools([]string{"ssh", "ssh-keyscan", "ssh-keygen"})
+}
+
+func checkTools(names []string) error {
+	for _, name := range names {
 		if _, err := exec.LookPath(name); err != nil {
 			return fmt.Errorf("SSH trust bootstrap requires %s; install openssh-client and sshpass", name)
 		}

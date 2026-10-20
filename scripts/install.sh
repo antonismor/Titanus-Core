@@ -14,4 +14,4 @@ stage=$(mktemp -d /tmp/titanus-source-install.XXXXXX)
 tar -xzf "$archive" -C "$stage"
 bundle=$(find "$stage" -mindepth 1 -maxdepth 1 -type d -print -quit)
 python3 scripts/install-release.py --bundle "$bundle"
-echo 'Configure Realm/PKI/daemon.env/agent.env, then start the configured services.'
+echo "Titanus Core installed. Run 'tuigui' for the browser installer or 'tuicli' for the terminal-only installer."

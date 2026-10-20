@@ -15,7 +15,9 @@ INVENTORY = {
     'docs/RELEASE.md', 'LICENSE', 'manifest.json',
 }
 
-OPTIONAL_INVENTORY = {'scripts/maintenance_transaction.py'}
+WEB_COMMANDS = {'scripts/tuigui', 'scripts/tuicli'}
+WEB_INVENTORY = WEB_COMMANDS | {'bin/titanus-installer-web', 'systemd/titanus-installer-web.service', 'docs/WEB_INSTALLER.md'}
+OPTIONAL_INVENTORY = {'scripts/maintenance_transaction.py'} | WEB_INVENTORY
 
 
 def verify(archive, revision, version):
@@ -50,12 +52,15 @@ def verify(archive, revision, version):
             if not member.isfile() or len(parts) < 2:
                 raise ValueError('unsupported archive member')
             relative = '/'.join(parts[1:])
-            expected_mode = 0o755 if relative.startswith('bin/') or relative.endswith('.sh') else 0o644
+            expected_mode = 0o755 if relative.startswith('bin/') or relative.endswith('.sh') or relative in WEB_COMMANDS else 0o644
             if member.mode != expected_mode:
                 raise ValueError('unsafe archive file permissions: ' + relative)
             if relative in files:
                 raise ValueError('duplicate member')
             files[relative] = tar.extractfile(member).read()
+        present_web = set(files) & WEB_INVENTORY
+        if present_web and present_web != WEB_INVENTORY:
+            raise ValueError('incomplete optional Web Installer package')
         expected_inventory = INVENTORY | (set(files) & OPTIONAL_INVENTORY)
         if len(roots) != 1 or set(files) != expected_inventory | {'SHA256SUMS'}:
             raise ValueError('incomplete or unexpected package inventory')
@@ -82,7 +87,7 @@ def verify(archive, revision, version):
         if (roots != {stem} or archive.name != stem + '.tar.gz'
                 or directories != expected_directories):
             raise ValueError('archive root/name/directory identity mismatch')
-        for path in sorted(INVENTORY):
+        for path in sorted(expected_inventory):
             if not path.startswith('bin/'):
                 continue
             data = files[path]
@@ -93,7 +98,7 @@ def verify(archive, revision, version):
             if revision.encode() not in data:
                 raise ValueError('exact compiled revision absent: ' + path)
         return {'archive': archive.name, 'sha256': actual, 'manifest': meta,
-                'inventory_files_verified': len(inventory), 'elf_binaries_verified': 4}
+                'inventory_files_verified': len(inventory), 'elf_binaries_verified': sum(path.startswith('bin/') for path in expected_inventory)}
 
 
 def main():
