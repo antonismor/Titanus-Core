@@ -982,4 +982,17 @@ func tlsKeyPairFiles(certPath, keyPath string) (*x509.Certificate, error) {
 	if err != nil || len(pair.Certificate) == 0 {
 		return nil, fmt.Errorf("invalid Web Installer TLS identity")
 	}
-	cert, err := x509.ParseCertificate(pair.Certifi
+	cert, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || time.Now().After(cert.NotAfter) {
+		return nil, fmt.Errorf("invalid or expired Web Installer certificate")
+	}
+	return cert, nil
+}
+
+func newSessionID() string {
+	var raw [6]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return time.Now().UTC().Format("20060102T150405")
+	}
+	return time.Now().UTC().Format("20060102T150405") + "-" + hex.EncodeToString(raw[:])
+}
