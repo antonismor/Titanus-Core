@@ -167,6 +167,52 @@ addresses; no target installation is performed by this screenshot fixture.
 
 ## Progress, verbose output and reconnect behavior
 
+After live deployment, the browser automatically enters **Complete** while a
+read-only **Cluster Acceptance Check** is still running. Its verbose panel opens
+automatically and streams the existing installation log plus `[ACCEPTANCE]`
+events. The installation is successful only after required acceptance checks
+pass; merely reaching the last payload step is not sufficient.
+
+The checks cover both Titanus services on every node; verified HTTPS/mTLS and
+the exact node/Realm/release identity from a CONTROL host to every selected
+node; matching Fabric/Service parameters, roles, fresh READY pulses and no
+quarantined or unexpected members on every controller; and responsive
+controllers agreeing on one leader (or the selected standalone controller).
+Selected Ceph storage must be HEALTH_OK with complete active+clean PG evidence
+and all expected OSDs up/in. Native HA reuses the deployment engine's stricter
+monitor, manager, CephFS, pool and host failure-domain validator.
+
+Observations are retried at most three times per check while services converge.
+Scheduling is bounded to three minutes, with each in-flight SSH probe bounded
+to 45 seconds. No configuration, package, service, disk, workload or fencing
+operation is performed by acceptance. This is readiness verification; it is not
+a failover/fault-injection or sustained workload benchmark. API responses are
+filtered on the source host before output, excluding secret/workload records.
+
+**Status Report** shows Running, then **Success** or **Failed**, with the result,
+attempt count and details of each check. Reports survive browser reconnect and
+are saved privately under the installer's `reports/` directory. **Download
+Report** returns the authenticated `titanus-installation-report/v1` JSON. A
+service restart during acceptance marks the saved report Failed/interrupted;
+it does not silently resume or claim success.
+
+For an already completed live installation, **Run Acceptance Check** can run or
+repeat only these read-only probes using the saved pinned SSH trust. It never
+replays installation. Missing saved trust blocks the check instead of falling
+back to other operator keys. Prepare-only runs remain offline. If service
+activation was deliberately omitted, the report explicitly scopes success to
+file installation and marks live cluster acceptance Skipped.
+
+**Refresh Status** queues a fresh status/log fetch even when an automatic poll
+is pending, displays Refreshing feedback and the last successful refresh time,
+and preserves verbose collapse/scroll state. It remains usable during deployment
+and acceptance. Every screen includes the requested centered development credit.
+
+![Complete and Status Report](images/tuigui-complete-report.png)
+
+Actual embedded HTTPS UI captured with an isolated browser acceptance-response
+fixture; this screenshot is UI verification, not live cluster acceptance evidence.
+
 The Deployment screen follows the light Titanus Enterprise Installer reference:
 a six-stage navigation rail, installation summary, large progress bar, per-stage
 status and a collapsible **Verbose Installation Output** terminal immediately
@@ -181,7 +227,9 @@ latest persisted percentage, node count, phase and verbose output.
 If the installer *service process itself* is restarted during an active apply,
 Titanus reports the last durable state as `interrupted`. It deliberately does
 not replay a possibly destructive step automatically. The operator must inspect
-the verbose output and revalidate before any retry.
+the verbose output and revalidate before any deployment retry. A saved
+acceptance report can instead be checked again through the read-only acceptance
+action, without replaying deployment.
 
 ## Safety boundaries
 

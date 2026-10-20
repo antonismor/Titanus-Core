@@ -59,23 +59,24 @@ type Fingerprint struct {
 }
 
 type InstallerState struct {
-	SessionID      string        `json:"session_id,omitempty"`
-	Status         string        `json:"status"`
-	Phase          string        `json:"phase"`
-	Progress       int           `json:"progress"`
-	Message        string        `json:"message"`
-	Error          string        `json:"error,omitempty"`
-	Running        bool          `json:"running"`
-	Completed      bool          `json:"completed"`
-	PreparedOnly   bool          `json:"prepared_only,omitempty"`
-	PlanPath       string        `json:"plan_path,omitempty"`
-	DeploymentPath string        `json:"deployment_path,omitempty"`
-	AppliedNodes   int           `json:"applied_nodes,omitempty"`
-	TotalNodes     int           `json:"total_nodes,omitempty"`
-	Fingerprints   []Fingerprint `json:"fingerprints,omitempty"`
-	StartedAt      time.Time     `json:"started_at,omitempty"`
-	UpdatedAt      time.Time     `json:"updated_at"`
-	FinishedAt     time.Time     `json:"finished_at,omitempty"`
+	SessionID      string            `json:"session_id,omitempty"`
+	Status         string            `json:"status"`
+	Phase          string            `json:"phase"`
+	Progress       int               `json:"progress"`
+	Message        string            `json:"message"`
+	Error          string            `json:"error,omitempty"`
+	Running        bool              `json:"running"`
+	Completed      bool              `json:"completed"`
+	PreparedOnly   bool              `json:"prepared_only,omitempty"`
+	PlanPath       string            `json:"plan_path,omitempty"`
+	DeploymentPath string            `json:"deployment_path,omitempty"`
+	AppliedNodes   int               `json:"applied_nodes,omitempty"`
+	TotalNodes     int               `json:"total_nodes,omitempty"`
+	Fingerprints   []Fingerprint     `json:"fingerprints,omitempty"`
+	StartedAt      time.Time         `json:"started_at,omitempty"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	FinishedAt     time.Time         `json:"finished_at,omitempty"`
+	Report         *AcceptanceReport `json:"report,omitempty"`
 }
 
 type bootstrapResponse struct {
@@ -188,6 +189,13 @@ func New(cfg Config) (*Server, error) {
 		s.state.Status = "interrupted"
 		s.state.Message = "The installer service restarted. The last persisted installation status is preserved; validate the configuration before resuming."
 		s.state.UpdatedAt = time.Now().UTC()
+		if s.state.Report != nil {
+			s.state.Report.Status = "Failed"
+			s.state.Report.FinishedAt = s.state.UpdatedAt
+			s.state.Report.Checks = append(s.state.Report.Checks, AcceptanceCheck{Node: "Installer", Name: "Acceptance interrupted", Status: "Failed", Details: "Installer service restarted before acceptance finished. Run the read-only check again after reviewing the saved output."})
+			s.state.Phase = "Complete"
+			s.state.Completed = false
+		}
 		if err := s.persistStateLocked(); err != nil {
 			return nil, fmt.Errorf("persist interrupted installation: %w", err)
 		}
@@ -201,6 +209,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/v1/session", http.HandlerFunc(s.handleSession))
 	mux.Handle("/api/v1/bootstrap", s.requireToken(http.HandlerFunc(s.handleBootstrap)))
 	mux.Handle("/api/v1/status", s.requireToken(http.HandlerFunc(s.handleStatus)))
+	mux.Handle("/api/v1/report", s.requireToken(http.HandlerFunc(s.handleReport)))
+	mux.Handle("/api/v1/acceptance", s.requireToken(http.HandlerFunc(s.handleAcceptance)))
 	mux.Handle("/api/v1/logs", s.requireToken(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("/api/v1/validate", s.requireToken(http.HandlerFunc(s.handleValidate)))
 	mux.Handle("/api/v1/autofill", s.requireToken(http.HandlerFunc(s.handleAutoQuery)))
@@ -769,35 +779,13 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 		s.logf("OK", "Node %s (%s) %s", result.Node, result.Address, result.Message)
 	}
 
-	s.setState("running", "Run Health Checks", 94, "Verifying Titanus services on every installed node.", "")
-	for _, node := range plan.Nodes {
-		if !plan.Installation.Start {
-			s.logf("INFO", "Service activation was not requested; skipping active-service check on %s", node.Name)
-			continue
-		}
-		if _, err := verbose.Run(node, "systemctl --no-pager is-active titanusd.service titanus-agent.service"); err != nil {
-			s.fail("Service health check failed on " + node.Name + ": " + err.Error())
-			return
-		}
-		s.logf("OK", "Service health check passed on %s", node.Name)
-	}
-	if plan.Ceph.Enabled && plan.Ceph.Provision {
-		s.logf("OK", "Ceph provisioning returned successfully through the verified deployment engine")
-	}
-
 	s.mu.Lock()
-	s.state.Status = "completed"
-	s.state.Phase = "Complete"
-	s.state.Progress = 100
-	s.state.Completed = true
-	s.state.PreparedOnly = false
 	s.state.AppliedNodes = len(plan.Nodes)
-	s.state.Message = "Titanus Core installation completed successfully."
-	s.state.FinishedAt = time.Now().UTC()
-	s.state.UpdatedAt = time.Now().UTC()
-	_ = s.persistStateLocked()
 	s.mu.Unlock()
-	s.logf("OK", "Titanus Core installation completed successfully")
+	s.logf("INFO", "Deployment finished; entering Complete for read-only cluster acceptance")
+	acceptanceExecutor := *executor
+	acceptanceExecutor.CommandTimeout = 45 * time.Second
+	s.runAcceptance(plan, &acceptanceExecutor)
 }
 
 func (s *Server) watchResults(path string, total int, done <-chan struct{}) {
@@ -875,13 +863,20 @@ func (s *Server) setState(status, phase string, progress int, message, errorText
 func (s *Server) fail(message string) {
 	s.mu.Lock()
 	s.state.Status = "failed"
-	s.state.Phase = "Deployment"
+	s.state.Phase = "Complete"
 	s.state.Running = s.running
 	s.state.Completed = false
 	s.state.Error = message
 	s.state.Message = "Installation stopped safely. Review the verbose output before retrying."
 	s.state.FinishedAt = time.Now().UTC()
 	s.state.UpdatedAt = time.Now().UTC()
+	if s.plan != nil && s.plan.Installation != nil {
+		report := newAcceptanceReport(*s.plan, s.state.SessionID, "installation")
+		report.Status = "Failed"
+		report.FinishedAt = s.state.FinishedAt
+		report.Checks = append(report.Checks, AcceptanceCheck{Node: "Installer", Name: "Installation workflow", Status: "Failed", Details: compactLog(message, 2048)})
+		s.state.Report = &report
+	}
 	_ = s.persistStateLocked()
 	s.mu.Unlock()
 	s.logf("ERROR", "%s", message)

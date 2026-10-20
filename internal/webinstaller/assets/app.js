@@ -23,8 +23,9 @@
     state: null,
     plan: null,
     cephConfirmed: false,
-    polling: false,
-    readingLogs: false,
+    polling: null,
+    readingLogs: null,
+    refreshing: false,
     verboseOpen: true,
     autoQuery: null,
     querying: false
@@ -548,20 +549,42 @@
         <details class="verbose" ${model.verboseOpen?"open":""}><summary><span>▣&nbsp; Verbose Installation Output</span><span id="logMode" class="live-pill">${s.running?"● Live output":"Saved output"}</span></summary><pre id="terminal" class="terminal">Connecting to installer log…</pre></details>
       </div>
       ${s.error?`<div id="deploymentError" class="notice error"><strong>Installation stopped:</strong> ${esc(s.error)}</div>`:""}
-      <div class="toolbar"><button id="returnReview" class="btn" ${s.running?"disabled":""}>← Review</button><button id="refreshNow" class="btn">Refresh Status</button></div>`;
+      <div class="toolbar"><button id="returnReview" class="btn" ${s.running?"disabled":""}>← Review</button><span id="lastRefresh" class="muted small" aria-live="polite"></span><button id="refreshNow" class="btn">Refresh Status</button></div>`;
     $(".verbose").addEventListener("toggle",e=>model.verboseOpen=e.target.open);
     $("#returnReview").addEventListener("click",()=>{model.currentStep=4;render();});
-    $("#refreshNow").addEventListener("click",pollNow);
+    $("#refreshNow").addEventListener("click",refreshStatus);
     pollLogs();
   }
 
   function renderComplete() {
     const s=model.state||{};
-    const ok=s.status==="completed"||s.status==="prepared";
-    $("#workspace").innerHTML = header(ok?(s.prepared_only?"Deployment Prepared":"Titanus Core Ready"):"Installation Status", ok?(s.prepared_only?"The verified deployment is prepared and no remote host was changed.":"The installation workflow completed successfully."):"The last persisted installer state is shown below.", 6) + `
-      <div class="card"><div class="choice ${ok?"active":""}" style="min-height:150px"><div class="choice-icon">${ok?"✓":"!"}</div><h3>${esc(s.message||s.status||"Status")}</h3><p>Status: <strong>${esc(s.status||"unknown")}</strong><br>Progress: <strong>${Number(s.progress||0)}%</strong><br>${s.deployment_path?`Prepared deployment: <code>${esc(s.deployment_path)}</code><br>`:""}${s.plan_path?`Plan: <code>${esc(s.plan_path)}</code>`:""}</p></div>${s.error?`<div class="notice error" style="margin-top:14px">${esc(s.error)}</div>`:""}<div class="toolbar"><button id="newInstall" class="btn">New Installation</button><button id="showLogs" class="btn primary">View Verbose Output</button></div></div>`;
-    $("#showLogs").addEventListener("click",()=>{model.currentStep=5;render();});
+    $("#workspace").innerHTML = header("Complete · Cluster Acceptance", "Live read-only checks verify the installed nodes, controller quorum, Fabric and selected Ceph storage. The Status Report records the result and remains available after reconnecting.", 6) + `
+      <div id="reportPanel" aria-live="polite"></div>
+      <div class="card complete-verbose"><details class="verbose" ${model.verboseOpen?"open":""}><summary><span>▣&nbsp; Verbose Acceptance & Installation Output</span><span id="logMode" class="live-pill">${s.running?"● Live output":"Saved output"}</span></summary><pre id="terminal" class="terminal">Connecting to installer log…</pre></details></div>
+      <div class="toolbar completion-toolbar"><button id="newInstall" class="btn" ${s.running?"disabled":""}>New Installation</button><span id="lastRefresh" class="muted small" aria-live="polite"></span><div class="inline-actions"><button id="runAcceptance" class="btn">Run Acceptance Check</button><a id="downloadReport" class="btn" href="/api/v1/report" download="titanus-status-report.json">Download Report</a><button id="refreshNow" class="btn primary">Refresh Status</button></div></div>`;
+    $(".verbose").addEventListener("toggle",e=>model.verboseOpen=e.target.open);
     $("#newInstall").addEventListener("click",resetInstaller);
+    $("#refreshNow").addEventListener("click",refreshStatus);
+    $("#runAcceptance").addEventListener("click",async()=>{
+      try{model.state=await api("/api/v1/acceptance",{method:"POST",body:"{}"});model.verboseOpen=true;render();beginPolling();}catch(err){showError(err.message);}
+    });
+    updateComplete();pollLogs();
+  }
+
+  function updateComplete() {
+    const s=model.state||{},r=s.report;
+    const status=r?.status||(s.prepared_only?"Prepared":s.status==="failed"||s.status==="interrupted"?"Failed":s.running?"Running":"Not checked");
+    const finished=(r?.checks||[]).filter(c=>["Passed","Failed","Skipped"].includes(c.status)).length;
+    $("#reportPanel").innerHTML=`<div class="card status-report"><div class="progress-head"><h2>Status Report</h2><strong id="reportStatus" class="report-result ${status.toLowerCase()}">${esc(status)}</strong></div><p id="progressMessage">${esc(s.message||"")}</p><p class="muted small">Realm: ${esc(r?.realm||model.plan.realm_name)} · ${s.applied_nodes||0}/${s.total_nodes||model.plan.nodes.length} nodes · ${r?`${finished}/${r.checks.length} checks finished`:"Acceptance has not run"}</p>
+      ${s.prepared_only?`<div class="notice">Prepare-only workflow: no remote hosts were changed and cluster acceptance was not run.</div>`:""}
+      ${r?.scope==="files-only"?`<div class="notice warn">Services were not requested. This report confirms file installation; live cluster readiness has not been checked.</div>`:""}
+      ${!r&&!s.running&&!s.prepared_only?`<div class="notice warn">This saved installation has no acceptance report. Run the read-only acceptance check to verify it.</div>`:""}
+      ${s.error?`<div class="notice error">${esc(s.error)}</div>`:""}
+      ${r?`<div class="report-table-wrap"><table class="report-table"><thead><tr><th>Node</th><th>Check</th><th>Result</th><th>Details</th></tr></thead><tbody>${r.checks.map(c=>`<tr><td>${esc(c.node)}</td><td>${esc(c.name)}</td><td><strong class="report-result ${esc(c.status.toLowerCase())}">${esc(c.status)}</strong></td><td>${esc(c.details)}${c.attempts?` <span class="muted small">(attempt ${Number(c.attempts)})</span>`:""}</td></tr>`).join("")}</tbody></table></div>`:""}</div>`;
+    $("#newInstall").disabled=Boolean(s.running);
+    $("#runAcceptance").classList.toggle("hidden",Boolean(s.running||s.prepared_only||!s.deployment_path||s.status!=="completed"&&r?.scope!=="cluster"));
+    $("#downloadReport").classList.toggle("hidden",!r);
+    $("#logMode").textContent=s.running?"● Live output":"Saved output";
   }
 
   function elapsedText(startedAt) {
@@ -573,17 +596,35 @@
   }
 
   async function pollNow() {
-    if(model.polling) return;
-    model.polling=true;
-    try {
+    if(model.polling) return model.polling;
+    model.polling=(async()=>{try {
       model.state=await api("/api/v1/status");
       if($("#toast").textContent.startsWith("Connection interrupted.")) $("#toast").classList.add("hidden");
-      if(!model.state.running && (model.state.status==="completed"||model.state.status==="prepared")) { model.currentStep=6; stopPolling(); render(); return; }
-      if(!model.state.running && ["failed","interrupted"].includes(model.state.status)) { stopPolling(); }
+      const complete=model.state.status==="acceptance"||["completed","prepared"].includes(model.state.status)||model.state.report;
+      if(complete&&model.currentStep!==6){model.currentStep=6;model.verboseOpen=true;render();}
+      if(!model.state.running&&["completed","prepared","failed","interrupted"].includes(model.state.status)){stopPolling();await pollLogs();}
       if(model.currentStep===5) updateDeployment();
+      if(model.currentStep===6) updateComplete();
       updateSummaryProgress();
-    } catch(err){ showError("Connection interrupted. Retrying installation status… " + err.message); }
-    finally { model.polling=false; }
+      return true;
+    } catch(err){ showError("Connection interrupted. Retrying installation status… " + err.message); return false; }
+    })();
+    try{return await model.polling;}finally{model.polling=null;}
+  }
+
+  async function refreshStatus() {
+    if(model.refreshing)return;
+    model.refreshing=true;
+    const button=$("#refreshNow");button.disabled=true;button.textContent="Refreshing…";button.setAttribute("aria-busy","true");
+    try{
+      // A click must queue a fresh fetch after an in-flight automatic poll.
+      await Promise.all([model.polling,model.readingLogs]);
+      const results=await Promise.all([pollNow(),pollLogs()]);
+      if($("#lastRefresh"))$("#lastRefresh").textContent=results.every(Boolean)?`Last refresh: ${new Date().toLocaleTimeString()}`:"Refresh failed; showing last saved status.";
+    } finally {
+      model.refreshing=false;
+      const current=$("#refreshNow");if(current){current.disabled=false;current.textContent="Refresh Status";current.removeAttribute("aria-busy");}
+    }
   }
 
   // Update live fields without replacing the verbose panel or its scroll position.
@@ -613,14 +654,13 @@
   }
 
   function updateSummaryProgress() {
-    if(model.currentStep!==5 || !model.state) return;
+    if(![5,6].includes(model.currentStep) || !model.state) return;
     $("#summaryDetails").innerHTML=`<h3>Current Progress</h3><div class="progress-track" style="height:10px"><div class="progress-bar" style="width:${Number(model.state.progress||0)}%"></div></div><div class="status-list"><div class="status-line">Phase <b>${esc(model.state.phase||"-")}</b></div><div class="status-line">Status <b>${esc(model.state.status||"-")}</b></div><div class="status-line">Nodes <b>${model.state.applied_nodes||0}/${model.state.total_nodes||model.plan.nodes.length}</b></div></div>`;
   }
 
   async function pollLogs() {
-    if(model.readingLogs) return;
-    model.readingLogs=true;
-    try {
+    if(model.readingLogs) return model.readingLogs;
+    model.readingLogs=(async()=>{try {
       const data=await api("/api/v1/logs");
       const terminal=$("#terminal");
       if(terminal){
@@ -628,8 +668,10 @@
         const content=(data.lines||[]).join("\n")||"No verbose output yet.";
         if(terminal.textContent!==content){terminal.textContent=content;if(atEnd)terminal.scrollTop=terminal.scrollHeight;}
       }
-    } catch(_){/* status polling surfaces auth/network errors */}
-    finally { model.readingLogs=false; }
+      return true;
+    } catch(_){return false;/* status polling surfaces auth/network errors */}
+    })();
+    try{return await model.readingLogs;}finally{model.readingLogs=null;}
   }
 
   function beginPolling() {
@@ -675,13 +717,12 @@
       } else if(st==="validated"){
         model.currentStep=4;
         render();
+      } else if(st==="acceptance"||model.state.report||["completed","prepared"].includes(st)){
+        model.currentStep=6;render();if(model.state.running)beginPolling();
       } else if(model.state.running || ["running","discovering","failed","interrupted"].includes(st)){
         model.currentStep=5;
         render();
         if(model.state.running)beginPolling();
-      } else if(["completed","prepared"].includes(st)){
-        model.currentStep=6;
-        render();
       } else render();
     } catch(err) {
       model.token="";
