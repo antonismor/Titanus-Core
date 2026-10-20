@@ -16,6 +16,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/identity"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
+	"github.com/antonismor/Titanus-Core/internal/prerequisites"
 	"github.com/antonismor/Titanus-Core/internal/release"
 	"github.com/antonismor/Titanus-Core/internal/version"
 )
@@ -286,8 +287,23 @@ func installationOrder(plan model.RealmPlan) []model.NodeSpec {
 	return nodes
 }
 
-// ApplyPrepared is intentionally explicit. It performs read-only preflight on
-// the whole plan before transferring any files, then installs one node at a time.
+// The probe allows an exact matching installer-only release, never a Realm.
+const initialInstallProbePython = `import json,os,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+for name in ("etc/titanus/daemon.env","etc/titanus/agent.env","etc/titanus/ha.json","etc/titanus/power-fencing.json","etc/titanus/pki","var/lib/titanus/realm"):
+    if os.path.lexists(root/name):
+        raise SystemExit("Initial installation refuses existing Realm state/configuration: "+name)
+current=root/"usr/local/lib/titanus/current"
+if os.path.lexists(current):
+    if not current.is_symlink():
+        raise SystemExit("Existing release selector is not a versioned symlink")
+    target=current.resolve(strict=True)
+    if target.parent!=(root/"usr/local/lib/titanus/releases").resolve():
+        raise SystemExit("Existing release selector is outside the versioned release directory")
+    if json.loads((target/"manifest.json").read_text())!=json.loads(sys.argv[2]):
+        raise SystemExit("Binary-only installer host must match the selected release exactly")
+`
+
 func (d *RealmDeployer) ApplyPrepared(plan model.RealmPlan, prepared PreparedInstallation) ([]RealmNodeResult, error) {
 	if err := plan.Validate(); err != nil {
 		return nil, err
@@ -300,6 +316,9 @@ func (d *RealmDeployer) ApplyPrepared(plan model.RealmPlan, prepared PreparedIns
 		if prepared.Nodes[index].Node != node.Name {
 			return nil, fmt.Errorf("prepared node order mismatch")
 		}
+	}
+	if err := prerequisites.EnsureNodes(d.SSH, plan); err != nil {
+		return nil, err
 	}
 	check := d.ReleasePreflight
 	if check == nil {
@@ -324,7 +343,11 @@ func (d *RealmDeployer) ApplyPrepared(plan model.RealmPlan, prepared PreparedIns
 		}
 		command := remoteSudoPrefix + "; $SUDO test -d /etc"
 		if prepared.Operation == "install" {
-			command += " && ! $SUDO test -e /etc/titanus/daemon.env && ! $SUDO test -e /usr/local/lib/titanus/current && ! $SUDO test -d /var/lib/titanus/realm"
+			// The installer may run on a selected node before it has a Realm.
+			// Permit only an exact matching binary-only release; existing Realm
+			// configuration, PKI and state still block a fresh installation.
+			expected, _ := json.Marshal(version.Build{Version: plan.Installation.ReleaseVersion, Revision: plan.Installation.Revision, OS: "linux", Arch: arches[node.Name], StateProfile: version.StateProfile})
+			command += " && $SUDO python3 -c " + shellQuote(initialInstallProbePython) + " / " + shellQuote(string(expected))
 		} else {
 			command += " && $SUDO test -L /usr/local/lib/titanus/current"
 		}

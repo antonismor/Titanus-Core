@@ -115,7 +115,12 @@ try:
  check_schema(candidate,meta)
  configuration={}
  if args.config:
-  if args.rollback or old:raise ValueError('configuration is for initial installation only')
+  if args.rollback:raise ValueError('configuration is for initial installation only')
+  # tuigui/tuicli can run on a selected fresh node with binaries already installed.
+  # Only that exact verified release may receive its first Realm configuration.
+  if old and old!=target:raise ValueError('binary-only installer host must match the selected release exactly')
+  for name in ['etc/titanus/daemon.env','etc/titanus/agent.env','etc/titanus/ha.json','etc/titanus/power-fencing.json','etc/titanus/pki','var/lib/titanus/realm']:
+   if os.path.lexists(root/name):raise ValueError('initial configuration refuses existing Realm state/configuration: '+name)
   config=args.config.resolve();inventory=json.loads((config/'config.json').read_text())
   allowed_config={'daemon.env','agent.env','ha.json','power-fencing.json','pki/ca.crt','pki/ca.crl','pki/ca.key','pki/node.crt','pki/node.key'}
   required={'daemon.env','agent.env','pki/ca.crt','pki/ca.crl','pki/node.crt','pki/node.key'}

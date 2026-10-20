@@ -164,6 +164,29 @@ browser certificate fingerprint out of band when appropriate.
 
 ## Live-test candidate from this branch
 
+Starting a live installation automatically installs missing Debian dependencies
+on the installer host and selected nodes before pre-flight. This covers
+OpenSSH/sshpass on the installer host, and Python, iproute2, nftables, util-linux,
+kmod, systemd, archive/checksum tools and CA certificates on the targets.
+Ceph clients and, when provisioning is selected, the required storage daemons
+are chosen from the Plan; Native HA provider tools are installed on CONTROL
+nodes when required. Existing packages are not upgraded. The runtime modules
+`overlay`, `bridge`, `veth` and `vxlan` are loaded and persisted in
+`/etc/modules-load.d/titanus-runtime.conf`. Package/network failures stop with
+the affected node identified; a retry installs only what is still missing.
+
+The apply path requires root or passwordless sudo and reachable configured APT
+repositories. Existing Realm guards run across all nodes before remote package
+changes. A normal pre-flight runs after dependency setup, before payload install.
+**Validate & Prepare Only** checks the Plan and local release/configuration
+artifacts; it does not contact target hosts or verify these prerequisites.
+
+The selected installer host may already contain the exact matching versioned
+Titanus binaries without a Realm. Initial installation permits that binary-only
+state, while existing daemon/agent configuration, Realm PKI or Realm data blocks
+a fresh installation. A different installed release must first be updated to the
+selected candidate. No existing Realm state is adopted or overwritten.
+
 Build and package the exact checked-out commit on Linux AMD64 and Linux ARM64
 with `make release`. Both archives and their published `.sha256` files must
 refer to that same commit; do not mix the branch Web Installer with rc.17

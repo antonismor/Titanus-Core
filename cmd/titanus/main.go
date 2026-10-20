@@ -24,6 +24,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/offline"
 	"github.com/antonismor/Titanus-Core/internal/planner"
 	"github.com/antonismor/Titanus-Core/internal/preflight"
+	"github.com/antonismor/Titanus-Core/internal/prerequisites"
 	"github.com/antonismor/Titanus-Core/internal/realm"
 	"github.com/antonismor/Titanus-Core/internal/remote"
 	"github.com/antonismor/Titanus-Core/internal/security"
@@ -2047,6 +2048,11 @@ func runSetup() error {
 	}
 	fmt.Println("Prepared private deployment:", result.PlanPath+".deployment")
 	if result.Plan.AutoDeploy {
+		output, dependencyErr := prerequisites.EnsureInstaller(context.Background())
+		fmt.Print(output)
+		if dependencyErr != nil {
+			return dependencyErr
+		}
 		trust, bootstrapErr := setup.RunTrustDefault(context.Background(), result.Plan)
 		if bootstrapErr != nil {
 			return bootstrapErr

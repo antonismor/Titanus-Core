@@ -30,6 +30,7 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/deploy"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/prerequisites"
 	"github.com/antonismor/Titanus-Core/internal/remote"
 	"github.com/antonismor/Titanus-Core/internal/sshtrust"
 	buildversion "github.com/antonismor/Titanus-Core/internal/version"
@@ -114,6 +115,9 @@ func (v *verboseSSH) Run(node model.NodeSpec, command string) (remote.Result, er
 	result, err := v.inner.Run(node, command)
 	if result.Stdout != "" && v.logf != nil {
 		v.logf("OUTPUT", "[%s] %s", node.Name, compactLog(result.Stdout, 4096))
+	}
+	if result.Stderr != "" && v.logf != nil && strings.Contains(command, "TITANUS_DEPENDENCIES_OK") {
+		v.logf("OUTPUT", "[%s] Dependency details: %s", node.Name, compactLog(result.Stderr, 4096))
 	}
 	if err != nil && v.logf != nil {
 		v.logf("ERROR", "[%s] SSH command failed: %s", node.Name, compactLog(err.Error(), 1024))
@@ -469,7 +473,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validate a configuration first")
 		return
 	}
-	if err := sshtrust.CheckTools(); err != nil {
+	if err := sshtrust.CheckDiscoveryTools(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -647,7 +651,11 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 		s.finishRun(true)
 	}()
 
-	s.logf("INFO", "Starting Titanus Core installation session %s", s.sessionID())
+	mode := "prepare-only workflow"
+	if apply {
+		mode = "installation"
+	}
+	s.logf("INFO", "Starting Titanus Core %s session %s", mode, s.sessionID())
 	if err := plan.Validate(); err != nil {
 		s.fail("Plan validation failed: " + err.Error())
 		return
@@ -657,6 +665,15 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 
 	var trust sshtrust.Report
 	if apply {
+		s.setState("running", "Prepare Environment", 27, "Installing required tools on the installer host.", "")
+		output, err := prerequisites.EnsureInstaller(context.Background())
+		if output != "" {
+			s.logf("OUTPUT", "Installer dependencies: %s", compactLog(output, 4096))
+		}
+		if err != nil {
+			s.fail(err.Error())
+			return
+		}
 		if err := sshtrust.CheckTools(); err != nil {
 			s.fail(err.Error())
 			return
@@ -721,15 +738,15 @@ func (s *Server) runInstallation(plan model.RealmPlan, password []byte, approved
 	}
 
 	executor := remote.NewSSHExecutor()
-	executor.CommandTimeout = 3 * time.Minute
+	executor.CommandTimeout = 15 * time.Minute
 	executor.IdentityFile = trust.IdentityFile
 	executor.KnownHostsFile = trust.KnownHostsFile
 	verbose := &verboseSSH{inner: executor, logf: s.logf}
 	deployer := deploy.NewRealmDeployer()
 	deployer.SSH = verbose
 
-	s.setState("running", "Deploy Components", 52, "Applying the verified release to Titanus nodes.", "")
-	s.logf("INFO", "Applying release to %d nodes serially", len(plan.Nodes))
+	s.setState("running", "Prepare Environment", 46, "Installing required node dependencies and loading runtime kernel modules before pre-flight.", "")
+	s.logf("INFO", "Installing required packages/modules, then applying the verified release to %d nodes serially", len(plan.Nodes))
 	watchDone := make(chan struct{})
 	watchExited := make(chan struct{})
 	go func() {

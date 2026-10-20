@@ -86,10 +86,23 @@ func (r *Runner) checkNode(node model.NodeSpec) NodeReport {
 }
 
 func Summary(reports []NodeReport) error {
+	var failures []string
 	for _, r := range reports {
 		if !r.Successful {
-			return fmt.Errorf("pre-flight failed for node %s", r.Node)
+			var checks []string
+			for _, check := range r.Checks {
+				if !check.Passed {
+					checks = append(checks, check.Name)
+				}
+			}
+			if len(checks) == 0 {
+				checks = append(checks, "unspecified check")
+			}
+			failures = append(failures, fmt.Sprintf("%s [%s]", r.Node, strings.Join(checks, ", ")))
 		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("pre-flight failed: %s", strings.Join(failures, "; "))
 	}
 	return nil
 }

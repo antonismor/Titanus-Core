@@ -45,7 +45,7 @@ type RealmDeployer struct {
 
 func NewRealmDeployer() *RealmDeployer {
 	executor := remote.NewSSHExecutor()
-	executor.CommandTimeout = 3 * time.Minute
+	executor.CommandTimeout = 15 * time.Minute
 	return &RealmDeployer{SSH: executor}
 }
 
