@@ -152,3 +152,34 @@ func TestBootstrapIncludesPersistedPlanForReconnect(t *testing.T) {
 		t.Fatalf("bootstrap did not restore plan: %s", res.Body.String())
 	}
 }
+
+
+func TestValidatedPlanCanBeDownloaded(t *testing.T) {
+	s := testServer(t)
+	body, _ := json.Marshal(validPlan())
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/validate", bytes.NewReader(body))
+	req.Header.Set("X-Titanus-Installer-Token", s.accessToken)
+	res := httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("validate status=%d body=%s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/plan", nil)
+	req.Header.Set("X-Titanus-Installer-Token", s.accessToken)
+	res = httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("plan status=%d body=%s", res.Code, res.Body.String())
+	}
+	if disposition := res.Header().Get("Content-Disposition"); disposition != `attachment; filename="titanus-plan.json"` {
+		t.Fatalf("unexpected content disposition: %q", disposition)
+	}
+	var plan model.RealmPlan
+	if err := json.Unmarshal(res.Body.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.RealmName != "TEST-REALM" || len(plan.Nodes) != 1 {
+		t.Fatalf("unexpected downloaded plan: %+v", plan)
+	}
+}
