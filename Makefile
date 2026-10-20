@@ -10,6 +10,7 @@ build:
 	CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$(LDFLAGS)" -o bin/titanusd ./cmd/titanusd
 	CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$(LDFLAGS)" -o bin/titanus-agent ./cmd/titanus-agent
 	CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$(LDFLAGS)" -o bin/titanus-init ./cmd/titanus-init
+	CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$(LDFLAGS)" -o bin/titanus-installer-web ./cmd/titanus-installer-web
 
 test:
 	go test ./...
