@@ -1,11 +1,11 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.19**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.20**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
 
-The rc.19 candidate integrates Universal Installer Phases A–C and the verified Web Installer/Complete-report work: Community's
+The rc.20 candidate integrates Universal Installer Phases A–C and the verified Web Installer/Complete-report work: Community's
 nine-host ceiling, secure directed SSH bootstrap, opt-in Native HA Worker
 fencing/recovery, explicit Ceph HA policy and backup-bound transition of supported
 existing 3/5-voter Realms. It also includes the protected `tuigui` HTTPS workflow, Step 3 infrastructure auto-fill, bounded optional automatic repair, reconnect-safe progress/refresh, automatic Complete transition, read-only cluster acceptance, and persistent Success/Failed JSON reports. See [Phase C](universal-installer-phase-c.md) for the
@@ -64,9 +64,9 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.19-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.19-linux-amd64.tar.gz
-cd titanus-0.4.0-rc.19-linux-amd64
+sha256sum -c titanus-0.4.0-rc.20-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.20-linux-amd64.tar.gz
+cd titanus-0.4.0-rc.20-linux-amd64
 sudo ./scripts/install-release.sh --bundle "$PWD"
 sudo tuigui  # or sudo tuicli
 ```
@@ -301,3 +301,19 @@ CI verifies preparation twice inside a clean Debian 13 container, TLS across
 unrelated subnets/localhost, renewal without trust rotation, archive corruption
 and fencing identity/privilege failures. No cluster provisioning is implied by
 successful preparation.
+
+### 0.4.0-rc.20 node and network defaults
+
+Fresh TUI and Web Installer drafts offer role-based names: `titanus-ctl01`,
+`titanus-wrk01`, `titanus-ceph01` and their numbered successors. The nine-node
+Native HA layout defaults to three Controllers, three Workers and three dedicated
+storage hosts. Existing saved node identities and explicit capabilities are preserved.
+
+The first Management IP starts from an installer-host address and remains editable.
+Subsequent defaults continue from Controller 01 within the configured management
+prefix. Network/broadcast addresses and overflow are never generated. Ceph public
+and cluster addresses default to each storage host's Management IP, and each Ceph
+CIDR derives from its selected storage addresses and prefix. Explicit per-node
+addresses, names and dedicated Ceph networks remain editable. Mixed storage
+subnets require an explicit network choice or read-only infrastructure discovery.
+These defaults do not start Apply, initialize storage or change saved live plans.

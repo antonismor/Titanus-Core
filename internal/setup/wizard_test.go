@@ -2,7 +2,9 @@ package setup
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,62 @@ import (
 
 	"github.com/antonismor/Titanus-Core/internal/model"
 )
+
+func TestWizardNineNodeDefaultsFromFirstManagementIP(t *testing.T) {
+	lines := []string{"2", "y", "1", "", "", "", "9", "", "", "3", "3"}
+	for i := 0; i < 9; i++ {
+		ip := ""
+		if i == 0 {
+			ip = "192.0.2.40"
+		}
+		lines = append(lines, "", ip, "", "")
+		if i >= 6 {
+			lines = append(lines, "", "")
+		}
+	}
+	lines = append(lines, "n", "", "") // Accept derived CIDRs; never provision.
+	var out bytes.Buffer
+	_, err := New(strings.NewReader(strings.Join(lines, "\n")+"\n"), &out).Run()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected to stop before storage/provisioning: %v", err)
+	}
+	for i, role := range []string{"ctl01", "ctl02", "ctl03", "wrk01", "wrk02", "wrk03", "ceph01", "ceph02", "ceph03"} {
+		if !strings.Contains(out.String(), "[titanus-"+role+"]") {
+			t.Fatalf("missing default name %s\n%s", role, out.String())
+		}
+		if i > 0 && !strings.Contains(out.String(), fmt.Sprintf("Management IP [192.0.2.%d]", 40+i)) {
+			t.Fatalf("missing consecutive IP %d\n%s", i, out.String())
+		}
+		if i >= 6 && !strings.Contains(out.String(), fmt.Sprintf("Ceph cluster IP [192.0.2.%d]", 40+i)) {
+			t.Fatalf("missing Ceph default %d\n%s", i, out.String())
+		}
+	}
+	for _, label := range []string{"Ceph public network CIDR", "Ceph cluster network CIDR"} {
+		if !strings.Contains(out.String(), label+" [192.0.2.0/24]") {
+			t.Fatalf("missing derived %s\n%s", label, out.String())
+		}
+	}
+}
+
+func TestManagementAddressDoesNotWrapOrLeaveSelectedPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		base         string
+		offset, bits int
+		want         string
+	}{
+		{"10.11.101.10", 8, 24, "10.11.101.18"},
+		{"172.20.10.254", 2, 23, "172.20.11.0"},
+		{"192.0.2.250", 4, 24, "192.0.2.254"},
+		{"192.0.2.250", 5, 24, ""},
+		{"192.0.2.250", 6, 24, ""},
+		{"255.255.255.254", 2, 24, ""},
+		{"invalid", 1, 24, ""},
+	} {
+		if got := managementAddress(tc.base, tc.offset, tc.bits); got != tc.want {
+			t.Errorf("%+v: got %q", tc, got)
+		}
+	}
+}
 
 func wizardInput(file string, count int, profile string) string {
 	lines := []string{profile}
