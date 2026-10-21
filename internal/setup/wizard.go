@@ -118,6 +118,10 @@ func (w *Wizard) Run() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	managementPrefix, err := w.askInt("Management subnet prefix (for address and Ceph defaults)", localManagementPrefix(localManagementAddress()), 1, 32)
+	if err != nil {
+		return Result{}, err
+	}
 	controlNodes := 1
 	if nodeCount >= 3 {
 		for {
@@ -166,7 +170,7 @@ func (w *Wizard) Run() (Result, error) {
 		}
 		defaultIP := localManagementAddress()
 		if i > 0 {
-			defaultIP = managementAddress(plan.Nodes[0].ManagementIP, i, install.NodePrefix)
+			defaultIP = managementAddress(plan.Nodes[0].ManagementIP, i, managementPrefix)
 		}
 		n.ManagementIP, err = w.ask("  Management IP", defaultIP, true)
 		if err != nil {
@@ -214,11 +218,11 @@ func (w *Wizard) Run() (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		plan.Ceph.PublicCIDR, err = w.ask("Ceph public network CIDR", defaultCephCIDR(plan.Nodes, false, install.NodePrefix, ""), true)
+		plan.Ceph.PublicCIDR, err = w.ask("Ceph public network CIDR", defaultCephCIDR(plan.Nodes, false, managementPrefix, ""), true)
 		if err != nil {
 			return Result{}, err
 		}
-		plan.Ceph.ClusterCIDR, err = w.ask("Ceph cluster network CIDR", defaultCephCIDR(plan.Nodes, true, install.NodePrefix, ""), true)
+		plan.Ceph.ClusterCIDR, err = w.ask("Ceph cluster network CIDR", defaultCephCIDR(plan.Nodes, true, managementPrefix, ""), true)
 		if err != nil {
 			return Result{}, err
 		}

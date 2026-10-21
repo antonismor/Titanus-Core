@@ -376,7 +376,9 @@ An already matching service preserves its active session when tuigui is reopened
 For a fresh nine-node Native HA draft, the Infrastructure page offers
 `titanus-ctl01` through `titanus-ctl03`, `titanus-wrk01` through `titanus-wrk03`,
 and `titanus-ceph01` through `titanus-ceph03`. The first controller's Management IP
-starts from an address on the installer host. Editing it fills consecutive addresses
+starts from an address on the installer host. Management Subnet Prefix is detected
+from its active interface mask and can be edited independently of application
+network settings. Editing the first Management IP fills consecutive addresses
 for the remaining nodes within the selected management prefix; manually changed
 addresses and names are retained. The default nine-node topology separates its
 three storage hosts from Controllers and Workers.

@@ -49,6 +49,16 @@
     return [24,16,8,0].map(bits=>Math.floor(next/2**bits)%256).join(".");
   }
 
+  function detectedManagementPrefix(address, networks) {
+    const value=String(address||"").split(".").reduce((n,x)=>n*256+Number(x),0);
+    const matches=networks.map(cidr=>{
+      const [base,bits]=cidr.split("/"), prefix=Number(bits), block=2**(32-prefix);
+      const start=base.split(".").reduce((n,x)=>n*256+Number(x),0);
+      return prefix>=1 && prefix<=32 && Math.floor(value/block)===Math.floor(start/block)?prefix:0;
+    }).filter(Boolean);
+    return matches.length?Math.max(...matches):24;
+  }
+
   function applyNodeDefaults() {
     const p=model.plan, counts={ctl:0,wrk:0,ceph:0};
     p.nodes.forEach(node=>{
@@ -62,7 +72,7 @@
     p.nodes.forEach((node,index)=>{
       const defaults=nodeDefaults.get(node);
       if (index>0 && !defaults.manualManagement && (!node.management_ip || node.management_ip===defaults.managementIP)) {
-        node.management_ip=managementAddress(base,index,Number(p.installation.node_prefix));
+        node.management_ip=managementAddress(base,index,Number(p._managementPrefix||24));
         defaults.managementIP=node.management_ip;
       }
       if (node.capabilities.includes("STORAGE")) {
@@ -80,7 +90,7 @@
   function applyCephNetworkDefaults() {
     const p=model.plan, c=p.ceph;
     if(!c.enabled) return;
-    const defaults=cephDefaults.get(c)||{}, bits=Number(p.installation.node_prefix);
+    const defaults=cephDefaults.get(c)||{}, bits=Number(p._managementPrefix||24);
     const storage=p.nodes.filter(n=>n.capabilities.includes("STORAGE"));
     for(const [field,address] of [["public_cidr","ceph_public_ip"],["cluster_cidr","ceph_cluster_ip"]]) {
       const networks=storage.map(node=>{
@@ -108,7 +118,8 @@
     });
     const hint=$("#addressRangeHint"), p=model.plan;
     if(hint) {
-      const overflow=Boolean(managementAddress(p.nodes[0]?.management_ip,0,Number(p.installation.node_prefix))) && !managementAddress(p.nodes[0]?.management_ip,p.nodes.length-1,Number(p.installation.node_prefix));
+      const bits=Number(p._managementPrefix||24);
+      const overflow=Boolean(managementAddress(p.nodes[0]?.management_ip,0,bits)) && !managementAddress(p.nodes[0]?.management_ip,p.nodes.length-1,bits);
       hint.textContent=overflow?"The consecutive range exceeds the configured management prefix or reaches a reserved address. Choose another starting IP or edit the remaining addresses.":"Management IPs continue from Controller 01. Ceph addresses follow their node's Management IP. Manual edits are preserved.";
       hint.classList.toggle("warning",overflow);
     }
@@ -139,6 +150,7 @@
       service_cidr: "10.220.0.0/16",
       created_at: new Date().toISOString(),
       nodes: [],
+      _managementPrefix: detectedManagementPrefix((meta.local_ips||[])[0],meta.local_networks||[]),
       ceph: {enabled:false, replication:1, enable_rbd:true, enable_cephfs:true, enable_rgw:false, provision:false},
       auto_deploy: false,
       installation: {
@@ -241,26 +253,32 @@
     delete p._controlCount;
     delete p._sshUser;
     delete p._sshPort;
+    delete p._managementPrefix;
     return p;
   }
 
   function clonePlanForAPI() {
+    const prefix=Number(model.plan._managementPrefix);
+    if(!Number.isInteger(prefix)||prefix<1||prefix>32) throw new Error("Management Subnet Prefix must be between 1 and 32.");
     ensureNodes();
     const copy = JSON.parse(JSON.stringify(model.plan));
     return normalizePlanForAPI(copy);
   }
 
   function clonePlanForAutoQuery() {
+    const prefix=Number(model.plan._managementPrefix);
+    if(!Number.isInteger(prefix)||prefix<1||prefix>32) throw new Error("Management Subnet Prefix must be between 1 and 32.");
     if(model.plan.installation?._fencing_error) throw new Error("Native HA fencing JSON is invalid: "+model.plan.installation._fencing_error);
     ensureNodes();
     const p=JSON.parse(JSON.stringify(model.plan));
     p.created_at=new Date().toISOString();
-    delete p._nodeCount; delete p._controlCount; delete p._sshUser; delete p._sshPort;
+    delete p._nodeCount; delete p._controlCount; delete p._sshUser; delete p._sshPort; delete p._managementPrefix;
     if(p.installation){ delete p.installation._fencing_raw; delete p.installation._fencing_error; }
     return p;
   }
 
   function hydrateQueriedPlan(plan) {
+    plan._managementPrefix=model.plan._managementPrefix||24;
     plan._nodeCount=plan.nodes?.length||1;
     plan._controlCount=(plan.nodes||[]).filter(n=>(n.capabilities||[]).includes("CONTROL")).length||1;
     plan._sshUser=plan.nodes?.[0]?.ssh_user||"root";
@@ -423,7 +441,7 @@
         </div>
         <div class="grid-2">
           <div class="field"><label>CONTROL-capable Nodes</label><select id="controlCount" class="select">${controlOptions.map(n=>`<option value="${n}" ${controls===n?"selected":""}>${n}</option>`).join("")}</select><small>Voting topology must use 1, 3 or 5 CONTROL nodes.</small></div>
-          <div class="field"><label>Node Count</label><input class="input" value="${p.nodes.length} / ${model.meta.community_node_limit}" disabled><small>Each VM or physical host counts once regardless of capabilities.</small></div>
+          ${field("Management Subnet Prefix","managementPrefix",p._managementPrefix||24,"Prefix for consecutive host IPs and Ceph network defaults (1–32).","number")}
         </div>
         ${p.installation.profile === "native-ha" ? `<div class="notice">Native HA separates CONTROL voters from EXECUTION Workers. The Web Installer enforces the same topology and fencing validation as the TUI.</div>` : ""}
       </div>
@@ -453,6 +471,7 @@
     $("#sshPort").addEventListener("input", e => { const v=Number(e.target.value||22); model.plan._sshPort=v; model.plan.nodes.forEach(n=>n.ssh_port=v); });
     $("#sshPassword").addEventListener("input", e => model.password=e.target.value);
     $("#controlCount").addEventListener("change", e => { model.plan._controlCount=Number(e.target.value); ensureNodes(); render(); });
+    bindText("managementPrefix",v=>{model.plan._managementPrefix=Number(v);refreshAddressFields();});
     model.plan.nodes.forEach((node,idx)=>{
       bindText(`nodeName${idx}`,v=>{node.name=v;nodeDefaults.get(node).name=undefined;});
       bindText(`nodeMgmt${idx}`,v=>{node.management_ip=v;nodeDefaults.get(node).manualManagement=true;refreshAddressFields();});
@@ -567,13 +586,7 @@
     bindText("arm64Path",v=>{i.archives=i.archives||{};i.archives.arm64=i.archives.arm64||{};i.archives.arm64.path=v;});
     bindText("arm64SHA",v=>{i.archives=i.archives||{};i.archives.arm64=i.archives.arm64||{};i.archives.arm64.sha256=v;});
     $("#apiPort")?.addEventListener("input",e=>i.api_port=Number(e.target.value)); $("#raftPort")?.addEventListener("input",e=>i.raft_port=Number(e.target.value));
-    $("#vxlanID")?.addEventListener("input",e=>i.vxlan_id=Number(e.target.value));
-    $("#nodePrefix")?.addEventListener("input",e=>{
-      i.node_prefix=Number(e.target.value);applyNodeDefaults();model.validated=false;
-      for(const [id,key] of [["cephPublicCIDR","public_cidr"],["cephClusterCIDR","cluster_cidr"]]) {
-        const input=$("#"+id);if(input) input.value=c[key]||"";
-      }
-    });
+    $("#vxlanID")?.addEventListener("input",e=>i.vxlan_id=Number(e.target.value)); $("#nodePrefix")?.addEventListener("input",e=>{i.node_prefix=Number(e.target.value);model.validated=false;});
     $("#startServices")?.addEventListener("change",e=>i.start=e.target.checked);
     $("#autoRepair")?.addEventListener("change",e=>{i.auto_repair=e.target.checked;model.validated=false;});
     $("#backInfrastructure").addEventListener("click",()=>{model.currentStep=2;render();});
@@ -821,6 +834,7 @@
       model.meta=await api("/api/v1/bootstrap");
       model.state=model.meta.state;
       model.plan=model.meta.plan || makeDefaultPlan(model.meta);
+      model.plan._managementPrefix=model.plan._managementPrefix||detectedManagementPrefix(model.plan.nodes?.[0]?.management_ip||(model.meta.local_ips||[])[0],model.meta.local_networks||[]);
       model.validated=Boolean(model.meta.plan && model.meta.state && model.meta.state.plan_path);
       model.plan._nodeCount=model.plan.nodes?.length || 3;
       model.plan._controlCount=(model.plan.nodes||[]).filter(n=>(n.capabilities||[]).includes("CONTROL")).length || (model.plan._nodeCount>=3?3:1);

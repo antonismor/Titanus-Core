@@ -85,6 +85,21 @@ func localManagementAddress() string {
 	return ""
 }
 
+func localManagementPrefix(base string) int {
+	ip, err := netip.ParseAddr(base)
+	if err != nil {
+		return 24
+	}
+	addresses, _ := net.InterfaceAddrs()
+	for _, address := range addresses {
+		prefix, err := netip.ParsePrefix(address.String())
+		if err == nil && prefix.Addr().Is4() && prefix.Contains(ip) {
+			return prefix.Bits()
+		}
+	}
+	return 24
+}
+
 func defaultCephCIDR(nodes []model.NodeSpec, cluster bool, bits int, fallback string) string {
 	var common netip.Prefix
 	for _, node := range nodes {

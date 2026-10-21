@@ -44,7 +44,7 @@ const {setTimeout:delay}=require('node:timers/promises');
   // Fresh nine-node defaults follow the first controller on any subnet.
   await page.click('[data-profile="native-ha"]');await page.selectOption('#nodeCount','9');await page.click('#toInfrastructure');
   const defaultNames=['ctl01','ctl02','ctl03','wrk01','wrk02','wrk03','ceph01','ceph02','ceph03'];
-  await page.fill('#nodeMgmt0','198.51.100.40');
+  await page.fill('#managementPrefix','24');await page.fill('#nodeMgmt0','198.51.100.40');
   for(let n=0;n<9;n++){
    assert.equal(await page.inputValue(`#nodeName${n}`),'titanus-'+defaultNames[n]);
    assert.equal(await page.inputValue(`#nodeMgmt${n}`),`198.51.100.${40+n}`);
@@ -56,6 +56,14 @@ const {setTimeout:delay}=require('node:timers/promises');
   await page.click('#backInfrastructure');
   for(let n=6;n<9;n++)assert.equal(await page.inputValue(`#cephCluster${n}`),`198.51.100.${40+n}`);
   await page.screenshot({path:'/tmp/titanus-web-installer-node-defaults.png',fullPage:true});
+  await page.fill('#managementPrefix','23');await page.fill('#nodeMgmt0','198.51.100.254');
+  assert.equal(await page.inputValue('#nodeMgmt2'),'198.51.101.0');
+  await page.click('#toComponents');
+  assert.equal(await page.inputValue('#cephClusterCIDR'),'198.51.100.0/23');
+  assert.equal(await page.inputValue('#nodePrefix'),'24');
+  await page.fill('#nodePrefix','25');
+  assert.equal(await page.inputValue('#cephClusterCIDR'),'198.51.100.0/23');
+  await page.click('#backInfrastructure');await page.fill('#managementPrefix','24');await page.fill('#nodeMgmt0','198.51.100.40');
   await page.fill('#nodeName4','custom-worker');await page.fill('#nodeMgmt1','198.51.100.200');
   await page.fill('#nodeMgmt0','192.0.2.60');
   assert.equal(await page.inputValue('#nodeMgmt8'),'192.0.2.68');

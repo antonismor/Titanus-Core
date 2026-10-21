@@ -15,7 +15,7 @@ import (
 )
 
 func TestWizardNineNodeDefaultsFromFirstManagementIP(t *testing.T) {
-	lines := []string{"2", "y", "1", "", "", "", "9", "", "", "3", "3"}
+	lines := []string{"2", "y", "1", "", "", "", "9", "", "", "24", "3", "3"}
 	for i := 0; i < 9; i++ {
 		ip := ""
 		if i == 0 {
@@ -76,7 +76,7 @@ func wizardInput(file string, count int, profile string) string {
 	if profile == "3" {
 		lines = append(lines, "n")
 	}
-	lines = append(lines, "3", "LAB", "", "", fmt.Sprint(count), "", "22")
+	lines = append(lines, "3", "LAB", "", "", fmt.Sprint(count), "", "22", "24")
 	if count >= 3 {
 		lines = append(lines, "3")
 	}
@@ -158,7 +158,7 @@ func TestWizardSavesNativeHAWithSeparateWorkersAndFencing(t *testing.T) {
 	if e := os.WriteFile(inventory, []byte(data), 0600); e != nil {
 		t.Fatal(e)
 	}
-	lines := []string{"2", "n", "1", "LAB", "", "", "5", "", "22", "3"}
+	lines := []string{"2", "n", "1", "LAB", "", "", "5", "", "22", "24", "3"}
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf("node%d", i), fmt.Sprintf("192.0.2.%d", i), "", "")
 	}
