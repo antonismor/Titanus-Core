@@ -369,13 +369,9 @@ func EnrollLocalCATrust(info TLSDetails) error {
 func tlsCertificateLoader(cfg Config) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	var mu sync.Mutex
 	var current *tls.Certificate
-	var checked time.Time
 	return func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		if current != nil && time.Since(checked) < time.Minute {
-			return current, nil
-		}
 		c, k, _, err := tlsIdentity(cfg)
 		if err != nil {
 			return nil, err
@@ -385,7 +381,6 @@ func tlsCertificateLoader(cfg Config) func(*tls.ClientHelloInfo) (*tls.Certifica
 			return nil, err
 		}
 		current = &pair
-		checked = time.Now()
 		return current, nil
 	}
 }

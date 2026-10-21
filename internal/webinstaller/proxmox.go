@@ -89,7 +89,7 @@ func (s *Server) handleProxmoxSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		uuids[n.Name] = probes[n.Name].UUID
 	}
-	targets, err := fencing.ConfigureProxmox(filepath.Join(s.cfg.StateDir, "fencing"), req.Proxmox, uuids)
+	targets, err := fencing.ConfigureProxmoxContext(ctx, filepath.Join(s.cfg.StateDir, "fencing"), req.Proxmox, uuids)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

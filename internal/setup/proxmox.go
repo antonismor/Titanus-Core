@@ -83,7 +83,7 @@ func (w *Wizard) configureProxmox(plan model.RealmPlan) (map[string]fencing.Targ
 	if err != nil {
 		return nil, err
 	}
-	targets, err := fencing.ConfigureProxmox("/var/lib/titanus/installer-web/fencing", input, uuids)
+	targets, err := fencing.ConfigureProxmoxContext(ctx, "/var/lib/titanus/installer-web/fencing", input, uuids)
 	if err == nil {
 		fmt.Fprintln(w.out, "Proxmox fencing verified: trusted TLS, guest UUIDs and VM.Audit/VM.PowerMgmt. No power commands sent.")
 	}

@@ -16,7 +16,7 @@ if ! command -v python3 >/dev/null 2>&1 || { [[ $offline_root == false ]] && ! c
     echo 'Initial release activation requires root on a supported Debian-family host.' >&2; exit 1
   fi
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq -o APT::Update::Error-Mode=any -o DPkg::Lock::Timeout=120
+  apt-get update -qq -o APT::Update::Error-Mode=any -o DPkg::Lock::Timeout=120 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
   apt-get install -y --no-install-recommends --no-upgrade -o DPkg::Lock::Timeout=120 python3 systemd ca-certificates
 fi
 if [[ ${1:-} == --prepare-host && $# == 1 ]]; then exit 0; fi

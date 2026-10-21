@@ -398,13 +398,15 @@
     const button=$("#configureProxmox");
     const vm_ids={};model.plan.nodes.filter(n=>n.capabilities.includes("EXECUTION")).forEach((n,idx)=>vm_ids[n.name]=Number($(`#pveVM${idx}`).value));
     const proxmox={address:$("#pveAddress").value.trim(),hypervisor:$("#pveNode").value.trim(),user:$("#pveUser").value.trim(),secret:$("#pveSecret").value,ca_pem:$("#pveCA").value,vm_ids};
+    const enabled=$$("input,select,textarea,button").filter(el=>!el.disabled);
+    enabled.forEach(el=>el.disabled=true);
     model.querying=true;button.disabled=true;button.textContent="Verifying…";
     try {
       const result=await api("/api/v1/fencing/proxmox",{method:"POST",body:JSON.stringify({plan:clonePlanForAutoQuery(),password:model.password,proxmox})});
       model.plan=hydrateQueriedPlan(result.plan);model.validated=false;model.fingerprints=[];
       model.autoQuery={findings:result.findings||[],warnings:[]};render();
     } catch(err){showError(err.message);}
-    finally {proxmox.secret="";if($("#pveSecret"))$("#pveSecret").value="";model.querying=false;button.disabled=false;button.textContent="Configure & Verify Fencing";}
+    finally {proxmox.secret="";if($("#pveSecret"))$("#pveSecret").value="";model.querying=false;enabled.forEach(el=>el.disabled=false);button.textContent="Configure & Verify Fencing";}
   }
 
   function renderComponents() {

@@ -41,6 +41,37 @@ then
   exit 1
 fi
 
+# An idle older service must be quiesced before replacing its TLS identity.
+# Current services keep their durable running session and dynamically reload TLS.
+PID=$(systemctl show "$SERVICE" --property=MainPID --value 2>/dev/null || true)
+if [[ "$PID" =~ ^[1-9][0-9]*$ ]]; then
+  if ! SERVICE_MODE=$(python3 - <<'PYWEBMODE'
+import json,os,ssl,subprocess,sys,urllib.request
+try:
+    ca=os.environ.get('TITANUS_INSTALLER_TLS_CA')
+    settings='/etc/titanus/installer-tls.json'
+    if not ca and os.path.isfile(settings): ca=json.load(open(settings))['ca']
+    if not ca: ca='/var/lib/titanus/installer-web/https-ca.crt'
+    if not os.path.isfile(ca): ca='/var/lib/titanus/installer-web/https.crt'
+    context=ssl.create_default_context(cafile=ca)
+    token=open('/var/lib/titanus/installer-web/access.token').read().strip()
+    headers={'Content-Type':'application/json','X-Titanus-Installer-Token':token}
+    def request(endpoint,data=None):
+        req=urllib.request.Request('https://127.0.0.1:8088/api/v1/'+endpoint,headers=headers,data=data)
+        with urllib.request.urlopen(req,context=context,timeout=35) as response: return json.load(response)
+    current=request('bootstrap');target=json.loads(subprocess.check_output(['titanus','version','--json']))
+    if all(current.get(k)==target.get(k) for k in ('version','revision')): print('current')
+    else:
+        if not request('quiesce',b'{}').get('quiesced'): raise RuntimeError('not idle')
+        print('restart')
+except Exception:
+    print('Cannot verify an idle Web Installer for upgrade. No service was stopped and no TLS identity was changed.',file=sys.stderr)
+    sys.exit(1)
+PYWEBMODE
+  ); then exit 1; fi
+  if [[ "$SERVICE_MODE" == restart ]]; then systemctl stop "$SERVICE"; fi
+fi
+
 TLS_INFO=$(titanus-installer-web --prepare-tls --install-local-trust)
 TLS_CA=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ca_file"])' "$TLS_INFO")
 TLS_FINGERPRINT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ca_sha256"])' "$TLS_INFO")

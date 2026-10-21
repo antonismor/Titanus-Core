@@ -1,6 +1,7 @@
 package fencing
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,6 +24,12 @@ type ProxmoxSetup struct {
 
 // ProbeProxmox verifies API trust, VM identity and effective privileges using GET
 // only. It never sends a power command, even when readiness fails.
+func (p *Power) ProbeProxmoxContext(ctx context.Context, node string) error {
+	copy := *p
+	copy.ctx = ctx
+	return copy.ProbeProxmox(node)
+}
+
 func (p *Power) ProbeProxmox(node string) error {
 	t, ok := p.Targets[node]
 	if !ok || t.Provider != "proxmox" {
@@ -78,6 +85,13 @@ func (p *Power) ProbeProxmox(node string) error {
 // ConfigureProxmox creates private installer-local files after independently
 // discovered guest UUIDs have been supplied. No credentials enter a Plan.
 func ConfigureProxmox(parent string, input ProxmoxSetup, uuids map[string]string) (map[string]Target, error) {
+	return ConfigureProxmoxContext(context.Background(), parent, input, uuids)
+}
+
+func ConfigureProxmoxContext(ctx context.Context, parent string, input ProxmoxSetup, uuids map[string]string) (map[string]Target, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	u, err := url.Parse(input.Address)
 	if err != nil || u.Scheme != "https" || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 		return nil, fmt.Errorf("Proxmox management address must be an HTTPS origin")
@@ -125,11 +139,14 @@ func ConfigureProxmox(parent string, input ProxmoxSetup, uuids map[string]string
 	if err = ValidateTargets(targets, true); err != nil {
 		return nil, err
 	}
-	p := &Power{Targets: targets}
+	p := &Power{Targets: targets, ctx: ctx}
 	for name := range targets {
 		if err = p.ProbeProxmox(name); err != nil {
 			return nil, fmt.Errorf("%s readiness: %w", name, err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	keep = true
 	return targets, nil

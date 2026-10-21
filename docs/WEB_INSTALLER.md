@@ -24,7 +24,7 @@ active interfaces and the hostname. Its certificate contains the detected IPv4
 and IPv6 addresses, hostname, `localhost`, `127.0.0.1` and `::1`; no customer
 subnet is hard-coded. A persistent, private installer CA signs 90-day server
 certificates. Certificates renew seven days before expiry and when a new address
-needs coverage; the running server reloads TLS at least once per minute without
+needs coverage; the running server rechecks active addresses before each TLS handshake without
 interrupting installation state. IP/subnet changes do not rotate the CA.
 
 A certificate for a private IP or localhost cannot be made universally trusted
@@ -365,3 +365,8 @@ Repeated Auto-fill queries re-verify selected clean data disks without treating
 an unchanged safe selection as a warning. Busy, signed or mismatched devices
 remain blocked. A single physical host may use the same interface address for
 management, Fabric and Ceph, while duplicate addresses across hosts are rejected.
+
+When a newer launcher finds an older installer service, it verifies the existing
+HTTPS identity and confirms an idle state before restarting that service. A busy
+or unverifiable older service is left running, and no certificate is replaced.
+An already matching service preserves its active session when tuigui is reopened.

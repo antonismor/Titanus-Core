@@ -191,7 +191,7 @@ func (s *Server) handleAutoQuery(w http.ResponseWriter, r *http.Request) {
 			if target.Provider != "proxmox" || fencing.ValidateTargets(map[string]fencing.Target{name: target}, true) != nil {
 				continue
 			}
-			if err := (&fencing.Power{Targets: map[string]fencing.Target{name: target}}).ProbeProxmox(name); err != nil {
+			if err := (&fencing.Power{Targets: map[string]fencing.Target{name: target}}).ProbeProxmoxContext(ctx, name); err != nil {
 				warnings = append(warnings, name+" Proxmox API readiness: "+err.Error())
 			} else {
 				findings = append(findings, name+": Proxmox TLS, VM UUID and effective power permissions verified with read-only requests")

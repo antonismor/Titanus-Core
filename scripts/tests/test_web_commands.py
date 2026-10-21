@@ -71,3 +71,14 @@ class WebCommandTests(unittest.TestCase):
             self.assertIn('localhost',result.stdout)
             self.assertIn('trusted roots',result.stdout)
             self.assertNotIn('confirm it',result.stdout)
+
+    def test_gui_refuses_unverified_upgrade_before_changing_tls_or_stopping_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script,env,log=self.fixture(directory,'tuigui')
+            ctl=Path(directory)/'bin/systemctl'
+            ctl.write_text('#!/bin/sh\necho "$*" >> "'+str(log)+'"\nif [ "$1" = show ]; then echo 42; fi\nexit 0\n')
+            result=subprocess.run([str(script)],env=env,capture_output=True,text=True,timeout=5)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('No service was stopped and no TLS identity was changed',result.stderr)
+            self.assertNotIn('stop ',log.read_text())
+            self.assertNotIn('start ',log.read_text())
