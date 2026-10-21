@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -31,19 +32,20 @@ func TestWizardNineNodeDefaultsFromFirstManagementIP(t *testing.T) {
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("expected to stop before storage/provisioning: %v", err)
 	}
+	output := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(out.String(), "")
 	for i, role := range []string{"ctl01", "ctl02", "ctl03", "wrk01", "wrk02", "wrk03", "ceph01", "ceph02", "ceph03"} {
-		if !strings.Contains(out.String(), "[titanus-"+role+"]") {
+		if !strings.Contains(output, "[titanus-"+role+"]") {
 			t.Fatalf("missing default name %s\n%s", role, out.String())
 		}
-		if i > 0 && !strings.Contains(out.String(), fmt.Sprintf("Management IP [192.0.2.%d]", 40+i)) {
+		if i > 0 && !strings.Contains(output, fmt.Sprintf("Management IP [192.0.2.%d]", 40+i)) {
 			t.Fatalf("missing consecutive IP %d\n%s", i, out.String())
 		}
-		if i >= 6 && !strings.Contains(out.String(), fmt.Sprintf("Ceph cluster IP [192.0.2.%d]", 40+i)) {
+		if i >= 6 && !strings.Contains(output, fmt.Sprintf("Ceph cluster IP [192.0.2.%d]", 40+i)) {
 			t.Fatalf("missing Ceph default %d\n%s", i, out.String())
 		}
 	}
 	for _, label := range []string{"Ceph public network CIDR", "Ceph cluster network CIDR"} {
-		if !strings.Contains(out.String(), label+" [192.0.2.0/24]") {
+		if !strings.Contains(output, label+" [192.0.2.0/24]") {
 			t.Fatalf("missing derived %s\n%s", label, out.String())
 		}
 	}
