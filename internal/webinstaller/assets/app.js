@@ -45,7 +45,7 @@
     const headers = Object.assign({}, options.headers || {});
     if (model.token) headers["X-Titanus-Installer-Token"] = model.token;
     if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-    const response = await fetch(path, Object.assign({}, options, {headers, cache: "no-store", signal: AbortSignal.timeout((path.endsWith("/discover")||path.endsWith("/autofill"))?110000:15000)}));
+    const response = await fetch(path, Object.assign({}, options, {headers, cache: "no-store", signal: AbortSignal.timeout((path.endsWith("/discover")||path.endsWith("/autofill")||path.endsWith("/fencing/proxmox"))?110000:15000)}));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
     return payload;
@@ -67,10 +67,7 @@
         operation: "install",
         release_version: meta.version || "0.4.0-rc.17",
         revision,
-        archives: {
-          amd64: {path:"", sha256:""},
-          arm64: {path:"", sha256:""}
-        },
+        archives: meta.archives || {amd64:{path:"",sha256:""},arm64:{path:"",sha256:""}},
         pki_dir: "/var/lib/titanus/installer-web/pki/TITANUS-REALM",
         api_port: 9443,
         raft_port: 9444,
@@ -386,6 +383,30 @@
     $("#toComponents").addEventListener("click",()=>{ model.currentStep=3; render(); });
   }
 
+  function proxmoxForm(p) {
+    const workers=p.nodes.filter(n=>n.capabilities.includes("EXECUTION"));
+    return `<details><summary>Configure Proxmox fencing</summary><p class="muted small">Enter your management API settings once. Titanus saves private credentials locally and verifies guest UUIDs, TLS and VM.Audit/VM.PowerMgmt permissions. This check sends no power commands.</p>
+      <div class="grid-2">${field("Proxmox HTTPS URL","pveAddress","","https://your-proxmox-host:8006")}${field("Hypervisor node name","pveNode","","Proxmox node containing these Workers.")}${field("API token identity","pveUser","","user@realm!token")}${field("API token secret","pveSecret","","Saved only in a private server-side file.","password")}</div>
+      <div class="field"><label>Proxmox issuer CA certificate (PEM)</label><textarea id="pveCA" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+      <div class="grid-3">${workers.map((n,idx)=>field(`VM ID for ${n.name}`,`pveVM${idx}`,"","Exact Proxmox VM ID.","number")).join("")}</div>
+      <button class="btn" id="configureProxmox" type="button">Configure & Verify Fencing</button></details>`;
+  }
+
+  async function configureProxmox() {
+    if(model.querying)return;
+    if(!model.password){showError("Enter the initial SSH password in Step 2 first.");return;}
+    const button=$("#configureProxmox");
+    const vm_ids={};model.plan.nodes.filter(n=>n.capabilities.includes("EXECUTION")).forEach((n,idx)=>vm_ids[n.name]=Number($(`#pveVM${idx}`).value));
+    const proxmox={address:$("#pveAddress").value.trim(),hypervisor:$("#pveNode").value.trim(),user:$("#pveUser").value.trim(),secret:$("#pveSecret").value,ca_pem:$("#pveCA").value,vm_ids};
+    model.querying=true;button.disabled=true;button.textContent="Verifying…";
+    try {
+      const result=await api("/api/v1/fencing/proxmox",{method:"POST",body:JSON.stringify({plan:clonePlanForAutoQuery(),password:model.password,proxmox})});
+      model.plan=hydrateQueriedPlan(result.plan);model.validated=false;model.fingerprints=[];
+      model.autoQuery={findings:result.findings||[],warnings:[]};render();
+    } catch(err){showError(err.message);}
+    finally {proxmox.secret="";if($("#pveSecret"))$("#pveSecret").value="";model.querying=false;button.disabled=false;button.textContent="Configure & Verify Fencing";}
+  }
+
   function renderComponents() {
     const p=model.plan, i=p.installation, c=p.ceph;
     const isNative=i.profile==="native-ha";
@@ -405,9 +426,9 @@
           <div class="field"><label>Provisioning</label><label class="switch-row"><input id="provisionCeph" type="checkbox" ${c.provision?"checked":""} ${i.operation!=="install"?"disabled":""}> Provision a new Ceph cluster</label><small>Only explicitly selected unused devices may be initialized.</small>${c.provision?`<label class="switch-row"><input id="confirmCephInit" type="checkbox" ${model.cephConfirmed?"checked":""}> I confirm Titanus may initialize only the explicitly selected unused Ceph devices.</label>`:""}</div>
         </div>` : `<p class="muted small">Ceph can be enabled for Custom and Native HA profiles. Existing TUI safety rules remain enforced.</p>`}
       </div>
-      ${isNative ? `<div class="card"><h3>Native HA Power Fencing</h3><div class="field"><label>Private Fencing Inventory JSON</label><textarea id="fencingJSON" spellcheck="false" placeholder='{"worker01":{"provider":"proxmox","uuid":"...","address":"https://...","user":"...","credential_file":"/root/...","ca_file":"/root/..."}}'>${esc(i._fencing_raw !== undefined ? i._fencing_raw : (i.power_fencing ? JSON.stringify(i.power_fencing,null,2) : ""))}</textarea><small>Same Target schema as the TUI inventory. Credential file contents are never placed in the Plan or browser.</small></div></div>` : ""}
+      ${isNative ? `<div class="card"><h3>Native HA Power Fencing</h3>${proxmoxForm(p)}<div class="field"><label>Private Fencing Inventory JSON</label><textarea id="fencingJSON" spellcheck="false" placeholder='{"worker01":{"provider":"proxmox","uuid":"...","address":"https://...","user":"...","credential_file":"/root/...","ca_file":"/root/..."}}'>${esc(i._fencing_raw !== undefined ? i._fencing_raw : (i.power_fencing ? JSON.stringify(i.power_fencing,null,2) : ""))}</textarea><small>Same Target schema as the TUI inventory. Saved credential contents are never returned in the Plan or API responses.</small></div></div>` : ""}
       <div class="card">
-        <h3>Verified Release</h3>
+        <h3>Verified Release</h3><p class="muted small">Starting tuigui or tuicli prepares the installer dependencies and caches both official native archives with verified checksums. Target-host packages and modules are prepared automatically after Apply, before runtime pre-flight. Infrastructure Query itself makes no remote changes.</p>
         <div class="grid-2">${field("Target Release Version","releaseVersion",i.release_version,"Exact release version.")}${field("Exact Tested Main SHA","revision",i.revision,"40-character tested Git revision.")}</div>
         ${i.operation!=="rollback" ? `<div class="grid-2">${field("AMD64 Native Archive","amd64Path",i.archives?.amd64?.path||"","Server-side path to the downloaded archive.")}${field("AMD64 Published SHA256","amd64SHA",i.archives?.amd64?.sha256||"","64-character checksum.")}</div><div class="grid-2">${field("ARM64 Native Archive","arm64Path",i.archives?.arm64?.path||"","Server-side path to the downloaded archive.")}${field("ARM64 Published SHA256","arm64SHA",i.archives?.arm64?.sha256||"","64-character checksum.")}</div>` : `<div class="notice">Binary rollback selects the verified previously installed release and therefore does not require downloaded archive paths.</div>`}
       </div>
@@ -428,6 +449,7 @@
   function bindComponents() {
     const p=model.plan, i=p.installation, c=p.ceph;
     $("#autoQueryButton")?.addEventListener("click",runAutoQuery);
+    $("#configureProxmox")?.addEventListener("click",configureProxmox);
     $("#cephEnabled").addEventListener("change",e=>{model.cephConfirmed=false;c.enabled=e.target.checked; if(c.enabled){c.public_cidr=c.public_cidr||"10.230.0.0/24";c.cluster_cidr=c.cluster_cidr||"10.231.0.0/24";c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;} render();});
     bindText("cephPublicCIDR",v=>c.public_cidr=v); bindText("cephClusterCIDR",v=>c.cluster_cidr=v);
     $("#requestedTB")?.addEventListener("input",e=>c.requested_usable_tb=Number(e.target.value));

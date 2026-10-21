@@ -15,6 +15,10 @@ import (
 // readPassword refuses redirected input and always restores terminal echo.
 // It uses the wizard's existing reader so no buffered input is silently lost.
 func (w *Wizard) readPassword() ([]byte, error) {
+	return w.readSecret("Common initial root password (hidden, never saved): ")
+}
+
+func (w *Wizard) readSecret(prompt string) ([]byte, error) {
 	f, ok := w.terminal.(*os.File)
 	if !ok {
 		return nil, fmt.Errorf("bootstrap password requires an interactive terminal")
@@ -30,7 +34,7 @@ func (w *Wizard) readPassword() ([]byte, error) {
 		return nil, err
 	}
 	defer unix.IoctlSetTermios(fd, unix.TCSETS, old)
-	fmt.Fprint(w.out, "Common initial root password (hidden, never saved): ")
+	fmt.Fprint(w.out, prompt)
 	raw, err := w.in.ReadBytes('\n')
 	fmt.Fprintln(w.out)
 	if err != nil {

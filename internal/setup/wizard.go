@@ -12,6 +12,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/ansi"
 	"github.com/antonismor/Titanus-Core/internal/fencing"
 	"github.com/antonismor/Titanus-Core/internal/model"
+	"github.com/antonismor/Titanus-Core/internal/releasecache"
 	"github.com/antonismor/Titanus-Core/internal/version"
 )
 
@@ -36,7 +37,7 @@ func (w *Wizard) Run() (Result, error) {
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.White, "Create a Titanus Realm"))
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Cyan, fmt.Sprintf("Community Edition: up to %d Realm nodes (VMs/hosts). Workloads do not count.", model.CommunityNodeLimit)))
 	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "Enterprise Edition: Soon Available (planned unlimited nodes, 90-day trial)."))
-	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "The wizard will build and validate a deployment Plan before changing any host."))
+	fmt.Fprintln(w.out, ansi.Paint(ansi.Dim, "The wizard will build and validate a deployment Plan before provisioning a Realm or initializing any data disk."))
 	fmt.Fprintln(w.out)
 	fmt.Fprintln(w.out, "  1) Standard Titanus Core")
 	fmt.Fprintln(w.out, "  2) Titanus Native HA Cluster (3/5 voters, separate Workers, verified power fencing)")
@@ -298,11 +299,15 @@ func (w *Wizard) Run() (Result, error) {
 	}
 
 	if profile == model.ProfileNativeHA {
-		file, e := w.ask("Private fencing inventory JSON (node name -> provider/UUID/address/credential_file)", "", true)
+		file, e := w.ask("Private fencing inventory JSON path, or PROXMOX for guided configuration", "", true)
 		if e != nil {
 			return Result{}, e
 		}
-		install.PowerFencing, e = fencing.LoadTargets(file, false)
+		if strings.EqualFold(file, "PROXMOX") {
+			install.PowerFencing, e = w.configureProxmox(plan)
+		} else {
+			install.PowerFencing, e = fencing.LoadTargets(file, false)
+		}
 		if e != nil {
 			return Result{}, fmt.Errorf("fencing inventory: %w", e)
 		}
@@ -323,6 +328,11 @@ func (w *Wizard) Run() (Result, error) {
 	if install.Operation != "rollback" {
 		install.Archives = map[string]model.Archive{}
 		for _, arch := range []string{"amd64", "arm64"} {
+			if cached, e := releasecache.Lookup(releasecache.Directory(install.ReleaseVersion, install.Revision), install.ReleaseVersion, install.Revision, arch); e == nil {
+				install.Archives[arch] = cached
+				fmt.Fprintf(w.out, "%s verified release archive selected automatically.\n", strings.ToUpper(arch))
+				continue
+			}
 			file, e := w.ask(arch+" downloaded native archive", "", true)
 			if e != nil {
 				return Result{}, e

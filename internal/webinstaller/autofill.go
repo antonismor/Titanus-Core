@@ -21,6 +21,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/fencing"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/release"
+	"github.com/antonismor/Titanus-Core/internal/releasecache"
 	"github.com/antonismor/Titanus-Core/internal/sshtrust"
 )
 
@@ -172,7 +173,32 @@ func (s *Server) handleAutoQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile, profileWarnings := loadDiscoveryProfile()
+	stored, storedErr := fencing.LoadTargets(filepath.Join(s.cfg.StateDir, "fencing-profile.json"), true)
+	if storedErr == nil {
+		if profile.PowerFencing == nil {
+			profile.PowerFencing = map[string]fencing.Target{}
+		}
+		for name, target := range stored {
+			profile.PowerFencing[name] = target
+		}
+	} else if !os.IsNotExist(storedErr) {
+		profileWarnings = append(profileWarnings, "Saved fencing profile needs attention: "+storedErr.Error())
+	}
+
 	findings, warnings := applyAutoQuery(&req.Plan, probes, profile)
+	if req.Plan.Installation != nil {
+		for name, target := range req.Plan.Installation.PowerFencing {
+			if target.Provider != "proxmox" || fencing.ValidateTargets(map[string]fencing.Target{name: target}, true) != nil {
+				continue
+			}
+			if err := (&fencing.Power{Targets: map[string]fencing.Target{name: target}}).ProbeProxmox(name); err != nil {
+				warnings = append(warnings, name+" Proxmox API readiness: "+err.Error())
+			} else {
+				findings = append(findings, name+": Proxmox TLS, VM UUID and effective power permissions verified with read-only requests")
+			}
+		}
+	}
+
 	warnings = append(profileWarnings, warnings...)
 	archiveFindings, archiveWarnings := autoFillArchives(&req.Plan, profile)
 	findings = append(findings, archiveFindings...)
@@ -321,7 +347,24 @@ func applyAutoQuery(plan *model.RealmPlan, probes map[string]nodeProbe, profile 
 				continue
 			}
 			if len(node.CephDevices) > 0 {
-				warnings = append(warnings, node.Name+": existing Ceph device selection preserved; review against the discovered unused disks")
+				available := map[string]uint64{}
+				for _, d := range probe.Devices {
+					available[d.Path] = d.Size
+				}
+				safe := true
+				for _, selected := range node.CephDevices {
+					size, ok := available[selected]
+					if !ok {
+						safe = false
+					} else {
+						raw += size
+					}
+				}
+				if safe {
+					findings = append(findings, node.Name+": existing Ceph device selection re-verified unused")
+				} else {
+					warnings = append(warnings, node.Name+": existing Ceph device selection includes a device not proven unused; inspect it before validation")
+				}
 				continue
 			}
 			node.CephDevices = node.CephDevices[:0]
@@ -370,6 +413,7 @@ func applyAutoQuery(plan *model.RealmPlan, probes map[string]nodeProbe, profile 
 					warnings = append(warnings, fmt.Sprintf("%s fencing needs attention: %v", node.Name, err))
 				} else {
 					findings = append(findings, node.Name+": fencing identity and private credential files verified")
+
 				}
 			} else {
 				warnings = append(warnings, node.Name+": UUID discovered, but no server-side fencing provider profile is configured")
@@ -444,6 +488,7 @@ func autoFillArchives(plan *model.RealmPlan, profile discoveryProfile) ([]string
 	}
 	dirs := append([]string{}, profile.ReleaseDirs...)
 	dirs = append(dirs,
+		releasecache.Directory(plan.Installation.ReleaseVersion, plan.Installation.Revision),
 		"/root/titanus-web-candidate",
 		filepath.Join("/var/lib/titanus/installer-web", "releases"),
 		"/var/lib/titanus/releases",

@@ -56,6 +56,12 @@ jobs:
       - name: Smoke CLI
         run: ./bin/titanus version
 
+      - name: Verify installer preparation twice in a clean Debian 13 container
+        run: bash scripts/ci-installer-host.sh
+
+      - name: Verify Proxmox fencing setup and scoped power permissions as root
+        run: sudo env "PATH=$PATH" go test ./internal/fencing -run TestProxmoxSetup -count=1 -v
+
       - name: Verify Web Installer launch commands with isolated systemd mocks
         run: sudo env "PATH=$PATH" python3 -m unittest discover -s scripts/tests -p test_web_commands.py -v
 
@@ -67,8 +73,10 @@ jobs:
       - name: Install pinned Web Installer browser client
         run: npm install --prefix /tmp/titanus-web-client playwright@1.55.1 --no-audit --no-fund
 
-      - name: Exercise Web Installer HTTPS, failure status and browser reconnect
-        run: sudo env "PATH=$PATH" TITANUS_INSTALLER_BINARY="$PWD/bin/titanus-installer-web" TITANUS_PLAYWRIGHT_MODULE=/tmp/titanus-web-client/node_modules/playwright TITANUS_UI_CHROME=/usr/bin/google-chrome node scripts/ci-web-installer.cjs
+      - name: Exercise Web Installer with enrolled CA trust, failure status and browser reconnect
+        run: |
+          sudo apt-get install -y libnss3-tools
+          sudo env "PATH=$PATH" TITANUS_INSTALLER_BINARY="$PWD/bin/titanus-installer-web" TITANUS_PLAYWRIGHT_MODULE=/tmp/titanus-web-client/node_modules/playwright TITANUS_UI_CHROME=/usr/bin/google-chrome bash scripts/ci-web-installer-trust.sh
 
       - name: Keep Web Installer browser evidence
         if: always()

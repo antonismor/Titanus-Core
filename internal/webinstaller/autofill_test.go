@@ -52,6 +52,12 @@ func TestApplyAutoQueryCephUsesCommonManagementNetworkAndUnusedDevices(t *testin
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warnings)
 	}
+	// Repeating a successful query must verify the selected disks rather than
+	// manufacture a warning simply because Auto-fill selected them previously.
+	_, warnings = applyAutoQuery(&plan, probes, discoveryProfile{})
+	if len(warnings) != 0 {
+		t.Fatalf("safe repeated query produced warnings: %#v", warnings)
+	}
 }
 
 func TestAutoQueryPreservesConflictingSelectionsAndReportsExistingState(t *testing.T) {
