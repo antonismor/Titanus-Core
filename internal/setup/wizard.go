@@ -118,6 +118,10 @@ func (w *Wizard) Run() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	managementPrefix, err := w.askInt("Management subnet prefix (for address and Ceph defaults)", localManagementPrefix(localManagementAddress()), 1, 32)
+	if err != nil {
+		return Result{}, err
+	}
 	controlNodes := 1
 	if nodeCount >= 3 {
 		for {
@@ -159,11 +163,16 @@ func (w *Wizard) Run() (Result, error) {
 	for i := 0; i < nodeCount; i++ {
 		fmt.Fprintln(w.out, ansi.Paint(ansi.Bold+ansi.Cyan, fmt.Sprintf("Node %d/%d", i+1, nodeCount)))
 		n := model.NodeSpec{SSHPort: sshPort, SSHUser: sshUser}
-		n.Name, err = w.ask("  Hostname", fmt.Sprintf("titanus%02d", i+1), true)
+		caps := defaultNodeCapabilities(profile, i, nodeCount, controlNodes, storageNodesWanted)
+		n.Name, err = w.ask("  Hostname", defaultNodeName(caps, plan.Nodes), true)
 		if err != nil {
 			return Result{}, err
 		}
-		n.ManagementIP, err = w.ask("  Management IP", "", true)
+		defaultIP := localManagementAddress()
+		if i > 0 {
+			defaultIP = managementAddress(plan.Nodes[0].ManagementIP, i, managementPrefix)
+		}
+		n.ManagementIP, err = w.ask("  Management IP", defaultIP, true)
 		if err != nil {
 			return Result{}, err
 		}
@@ -172,16 +181,11 @@ func (w *Wizard) Run() (Result, error) {
 			return Result{}, err
 		}
 
-		defaultCaps := "EXECUTION"
-		if i < controlNodes {
-			defaultCaps = "CONTROL,EXECUTION"
-			if profile == model.ProfileNativeHA {
-				defaultCaps = "CONTROL"
-			}
+		labels := make([]string, len(caps))
+		for j, capability := range caps {
+			labels[j] = string(capability)
 		}
-		if mode == 3 && i < storageNodesWanted {
-			defaultCaps += ",STORAGE"
-		}
+		defaultCaps := strings.Join(labels, ",")
 		capsRaw, askErr := w.ask("  Capabilities", defaultCaps, true)
 		if askErr != nil {
 			return Result{}, askErr
@@ -192,11 +196,11 @@ func (w *Wizard) Run() (Result, error) {
 		}
 
 		if mode == 3 && hasCapability(n, model.CapabilityStorage) {
-			n.CephPublicIP, err = w.ask("  Ceph public IP", "", true)
+			n.CephPublicIP, err = w.ask("  Ceph public IP", n.ManagementIP, true)
 			if err != nil {
 				return Result{}, err
 			}
-			n.CephClusterIP, err = w.ask("  Ceph cluster IP", "", true)
+			n.CephClusterIP, err = w.ask("  Ceph cluster IP", n.ManagementIP, true)
 			if err != nil {
 				return Result{}, err
 			}
@@ -214,11 +218,11 @@ func (w *Wizard) Run() (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		plan.Ceph.PublicCIDR, err = w.ask("Ceph public network CIDR", "10.230.0.0/24", true)
+		plan.Ceph.PublicCIDR, err = w.ask("Ceph public network CIDR", defaultCephCIDR(plan.Nodes, false, managementPrefix, ""), true)
 		if err != nil {
 			return Result{}, err
 		}
-		plan.Ceph.ClusterCIDR, err = w.ask("Ceph cluster network CIDR", "10.231.0.0/24", true)
+		plan.Ceph.ClusterCIDR, err = w.ask("Ceph cluster network CIDR", defaultCephCIDR(plan.Nodes, true, managementPrefix, ""), true)
 		if err != nil {
 			return Result{}, err
 		}

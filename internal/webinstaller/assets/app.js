@@ -34,6 +34,96 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch]));
+  // Session-only provenance: loaded plans and manually edited fields stay explicit.
+  const nodeDefaults = new WeakMap();
+  const cephDefaults = new WeakMap();
+
+  function managementAddress(base, offset, prefix = 24) {
+    const parts = String(base || "").split(".");
+    if (parts.length !== 4 || parts.some(p => !/^(0|[1-9][0-9]{0,2})$/.test(p) || Number(p)>255)) return "";
+    if (!Number.isInteger(prefix) || prefix<1 || prefix>32) return "";
+    const value = parts.reduce((n,p)=>n*256+Number(p),0), next = value+offset, block = 2**(32-prefix);
+    if (parts[0]==="0" || parts[0]==="127" || Number(parts[0])>=224 || (parts[0]==="169" && parts[1]==="254")) return "";
+    if (next>0xffffffff || Math.floor(value/block)!==Math.floor(next/block)) return "";
+    if (prefix<=30 && (next%block===0 || next%block===block-1)) return "";
+    return [24,16,8,0].map(bits=>Math.floor(next/2**bits)%256).join(".");
+  }
+
+  function detectedManagementPrefix(address, networks) {
+    const value=String(address||"").split(".").reduce((n,x)=>n*256+Number(x),0);
+    const matches=networks.map(cidr=>{
+      const [base,bits]=cidr.split("/"), prefix=Number(bits), block=2**(32-prefix);
+      const start=base.split(".").reduce((n,x)=>n*256+Number(x),0);
+      return prefix>=1 && prefix<=32 && Math.floor(value/block)===Math.floor(start/block)?prefix:0;
+    }).filter(Boolean);
+    return matches.length?Math.max(...matches):24;
+  }
+
+  function applyNodeDefaults() {
+    const p=model.plan, counts={ctl:0,wrk:0,ceph:0};
+    p.nodes.forEach(node=>{
+      const defaults=nodeDefaults.get(node)||{};
+      const role=node.capabilities.includes("CONTROL")?"ctl":node.capabilities.includes("STORAGE")&&!node.capabilities.includes("EXECUTION")?"ceph":"wrk";
+      const name=`titanus-${role}${String(++counts[role]).padStart(2,"0")}`;
+      if (!node.name || node.name===defaults.name) {node.name=name;defaults.name=name;}
+      nodeDefaults.set(node,defaults);
+    });
+    const base=p.nodes[0]?.management_ip;
+    p.nodes.forEach((node,index)=>{
+      const defaults=nodeDefaults.get(node);
+      if (index>0 && !defaults.manualManagement && (!node.management_ip || node.management_ip===defaults.managementIP)) {
+        node.management_ip=managementAddress(base,index,Number(p._managementPrefix||24));
+        defaults.managementIP=node.management_ip;
+      }
+      if (node.capabilities.includes("STORAGE")) {
+        for (const key of ["ceph_public_ip","ceph_cluster_ip"]) {
+          if (!defaults["manual_"+key] && (!node[key] || node[key]===defaults[key])) {
+            node[key]=node.management_ip;
+            defaults[key]=node[key];
+          }
+        }
+      }
+    });
+    applyCephNetworkDefaults();
+  }
+
+  function applyCephNetworkDefaults() {
+    const p=model.plan, c=p.ceph;
+    if(!c.enabled) return;
+    const defaults=cephDefaults.get(c)||{}, bits=Number(p._managementPrefix||24);
+    const storage=p.nodes.filter(n=>n.capabilities.includes("STORAGE"));
+    for(const [field,address] of [["public_cidr","ceph_public_ip"],["cluster_cidr","ceph_cluster_ip"]]) {
+      const networks=storage.map(node=>{
+        const ip=managementAddress(node[address]||node.management_ip,0,bits);
+        if(!ip) return "";
+        const value=ip.split(".").reduce((n,x)=>n*256+Number(x),0), block=2**(32-bits), network=Math.floor(value/block)*block;
+        return [24,16,8,0].map(b=>Math.floor(network/2**b)%256).join(".")+"/"+bits;
+      });
+      const cidr=networks.length && networks.every(n=>n && n===networks[0])?networks[0]:"";
+      if(!defaults["manual_"+field] && (!c[field] || c[field]===defaults[field])) {
+        c[field]=cidr;
+        defaults[field]=cidr;
+      }
+    }
+    cephDefaults.set(c,defaults);
+  }
+
+  function refreshAddressFields() {
+    applyNodeDefaults();
+    model.plan.nodes.forEach((node,index)=>{
+      for (const [id,key] of [["nodeName","name"],["nodeMgmt","management_ip"],["cephPublic","ceph_public_ip"],["cephCluster","ceph_cluster_ip"]]) {
+        const input=$("#"+id+index);
+        if(input && input!==document.activeElement) input.value=node[key]||"";
+      }
+    });
+    const hint=$("#addressRangeHint"), p=model.plan;
+    if(hint) {
+      const bits=Number(p._managementPrefix||24);
+      const overflow=Boolean(managementAddress(p.nodes[0]?.management_ip,0,bits)) && !managementAddress(p.nodes[0]?.management_ip,p.nodes.length-1,bits);
+      hint.textContent=overflow?"The consecutive range exceeds the configured management prefix or reaches a reserved address. Choose another starting IP or edit the remaining addresses.":"Management IPs continue from Controller 01. Ceph addresses follow their node's Management IP. Manual edits are preserved.";
+      hint.classList.toggle("warning",overflow);
+    }
+  }
 
   function readAccessToken() {
     const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
@@ -60,6 +150,7 @@
       service_cidr: "10.220.0.0/16",
       created_at: new Date().toISOString(),
       nodes: [],
+      _managementPrefix: detectedManagementPrefix((meta.local_ips||[])[0],meta.local_networks||[]),
       ceph: {enabled:false, replication:1, enable_rbd:true, enable_cephfs:true, enable_rgw:false, provision:false},
       auto_deploy: false,
       installation: {
@@ -88,18 +179,24 @@
     model.plan._nodeCount = count;
     while (model.plan.nodes.length < count) {
       const i = model.plan.nodes.length;
-      model.plan.nodes.push({
-        name: `titanus${String(i+1).padStart(2,"0")}`,
-        management_ip: "",
+      const node={
+        name: "",
+        management_ip: i===0?(model.meta.local_ips||[]).find(ip=>managementAddress(ip,0))||"":"",
         ssh_user: model.plan._sshUser || "root",
         ssh_port: Number(model.plan._sshPort || 22),
-        capabilities: ["EXECUTION"]
-      });
+        capabilities: model.plan.installation.profile==="native-ha" && count===9 && i>=6 ? ["STORAGE"] : ["EXECUTION"]
+      };
+      nodeDefaults.set(node,{capabilities:node.capabilities.join(",")});
+      model.plan.nodes.push(node);
     }
     model.plan.nodes = model.plan.nodes.slice(0, count);
     const controls = validControlCount(Number(model.plan._controlCount || (count >= 3 ? 3 : 1)), count);
     model.plan._controlCount = controls;
     model.plan.nodes.forEach((node, i) => {
+      const defaults=nodeDefaults.get(node);
+      if(defaults && node.capabilities.join(",")===defaults.capabilities) {
+        node.capabilities=model.plan.installation.profile==="native-ha" && count===9 && controls===3 && i>=6?["STORAGE"]:["EXECUTION"];
+      }
       node.ssh_user = model.plan._sshUser || node.ssh_user || "root";
       node.ssh_port = Number(model.plan._sshPort || node.ssh_port || 22);
       if (!node.capabilities || !node.capabilities.length) node.capabilities = ["EXECUTION"];
@@ -115,7 +212,9 @@
         if (i < controls && !node.capabilities.includes("CONTROL")) node.capabilities.push("CONTROL");
         if (i >= controls) node.capabilities = node.capabilities.filter(c => c !== "CONTROL");
       }
+      if(defaults && !defaults.manualCapabilities) defaults.capabilities=node.capabilities.join(",");
     });
+    applyNodeDefaults();
   }
 
   function validControlCount(wanted, nodeCount) {
@@ -143,7 +242,11 @@
     }
     if (!p.ceph.enabled) {
       p.ceph = {enabled:false, replication:1, enable_rbd:true, enable_cephfs:true, enable_rgw:false, provision:false};
-      p.nodes.forEach(n => { delete n.ceph_public_ip; delete n.ceph_cluster_ip; delete n.ceph_devices; n.capabilities = n.capabilities.filter(c => c !== "STORAGE"); });
+      p.nodes.forEach(n => {
+        delete n.ceph_public_ip; delete n.ceph_cluster_ip; delete n.ceph_devices;
+        n.capabilities = n.capabilities.filter(c => c !== "STORAGE");
+        if(!n.capabilities.length) n.capabilities=["EXECUTION"];
+      });
     }
     if (install.operation === "rollback") { delete install.archives; install.auto_repair=false; }
     else if (!install.archives) install.archives = {amd64:{path:"",sha256:""},arm64:{path:"",sha256:""}};
@@ -154,26 +257,32 @@
     delete p._controlCount;
     delete p._sshUser;
     delete p._sshPort;
+    delete p._managementPrefix;
     return p;
   }
 
   function clonePlanForAPI() {
+    const prefix=Number(model.plan._managementPrefix);
+    if(!Number.isInteger(prefix)||prefix<1||prefix>32) throw new Error("Management Subnet Prefix must be between 1 and 32.");
     ensureNodes();
     const copy = JSON.parse(JSON.stringify(model.plan));
     return normalizePlanForAPI(copy);
   }
 
   function clonePlanForAutoQuery() {
+    const prefix=Number(model.plan._managementPrefix);
+    if(!Number.isInteger(prefix)||prefix<1||prefix>32) throw new Error("Management Subnet Prefix must be between 1 and 32.");
     if(model.plan.installation?._fencing_error) throw new Error("Native HA fencing JSON is invalid: "+model.plan.installation._fencing_error);
     ensureNodes();
     const p=JSON.parse(JSON.stringify(model.plan));
     p.created_at=new Date().toISOString();
-    delete p._nodeCount; delete p._controlCount; delete p._sshUser; delete p._sshPort;
+    delete p._nodeCount; delete p._controlCount; delete p._sshUser; delete p._sshPort; delete p._managementPrefix;
     if(p.installation){ delete p.installation._fencing_raw; delete p.installation._fencing_error; }
     return p;
   }
 
   function hydrateQueriedPlan(plan) {
+    plan._managementPrefix=model.plan._managementPrefix||24;
     plan._nodeCount=plan.nodes?.length||1;
     plan._controlCount=(plan.nodes||[]).filter(n=>(n.capabilities||[]).includes("CONTROL")).length||1;
     plan._sshUser=plan.nodes?.[0]?.ssh_user||"root";
@@ -336,13 +445,15 @@
         </div>
         <div class="grid-2">
           <div class="field"><label>CONTROL-capable Nodes</label><select id="controlCount" class="select">${controlOptions.map(n=>`<option value="${n}" ${controls===n?"selected":""}>${n}</option>`).join("")}</select><small>Voting topology must use 1, 3 or 5 CONTROL nodes.</small></div>
-          <div class="field"><label>Node Count</label><input class="input" value="${p.nodes.length} / ${model.meta.community_node_limit}" disabled><small>Each VM or physical host counts once regardless of capabilities.</small></div>
+          ${field("Management Subnet Prefix","managementPrefix",p._managementPrefix||24,"Prefix for consecutive host IPs and Ceph network defaults (1–32).","number")}
         </div>
         ${p.installation.profile === "native-ha" ? `<div class="notice">Native HA separates CONTROL voters from EXECUTION Workers. The Web Installer enforces the same topology and fencing validation as the TUI.</div>` : ""}
       </div>
       <div id="nodesArea">${p.nodes.map((n,idx)=>nodeCard(n,idx)).join("")}</div>
+      <div class="notice" id="addressRangeHint"></div>
       <div class="toolbar"><button class="btn" id="backConfig">← Back</button><button class="btn primary" id="toComponents">Next&nbsp; →</button></div>`;
     bindInfrastructure();
+    refreshAddressFields();
   }
 
   function nodeCard(node, idx) {
@@ -364,16 +475,19 @@
     $("#sshPort").addEventListener("input", e => { const v=Number(e.target.value||22); model.plan._sshPort=v; model.plan.nodes.forEach(n=>n.ssh_port=v); });
     $("#sshPassword").addEventListener("input", e => model.password=e.target.value);
     $("#controlCount").addEventListener("change", e => { model.plan._controlCount=Number(e.target.value); ensureNodes(); render(); });
+    bindText("managementPrefix",v=>{model.plan._managementPrefix=Number(v);refreshAddressFields();});
     model.plan.nodes.forEach((node,idx)=>{
-      bindText(`nodeName${idx}`,v=>node.name=v);
-      bindText(`nodeMgmt${idx}`,v=>node.management_ip=v);
+      bindText(`nodeName${idx}`,v=>{node.name=v;nodeDefaults.get(node).name=undefined;});
+      bindText(`nodeMgmt${idx}`,v=>{node.management_ip=v;nodeDefaults.get(node).manualManagement=true;refreshAddressFields();});
       bindText(`nodeFabric${idx}`,v=> { if(v) node.fabric_ip=v; else delete node.fabric_ip; });
-      bindText(`cephPublic${idx}`,v=> { if(v) node.ceph_public_ip=v; else delete node.ceph_public_ip; });
-      bindText(`cephCluster${idx}`,v=> { if(v) node.ceph_cluster_ip=v; else delete node.ceph_cluster_ip; });
+      bindText(`cephPublic${idx}`,v=> { node.ceph_public_ip=v;nodeDefaults.get(node).manual_ceph_public_ip=true; });
+      bindText(`cephCluster${idx}`,v=> { node.ceph_cluster_ip=v;nodeDefaults.get(node).manual_ceph_cluster_ip=true; });
       bindText(`cephDevices${idx}`,v=> { node.ceph_devices=v.split(",").map(x=>x.trim()).filter(Boolean); model.cephConfirmed=false; });
     });
     $$('[data-cap-index]').forEach(el=>el.addEventListener("change",()=>{
       const node=model.plan.nodes[Number(el.dataset.capIndex)], cap=el.dataset.cap;
+      nodeDefaults.get(node).manualCapabilities=true;
+      nodeDefaults.get(node).capabilities=undefined;
       if(el.checked && !node.capabilities.includes(cap)) node.capabilities.push(cap);
       if(!el.checked) node.capabilities=node.capabilities.filter(x=>x!==cap);
       model.validated=false;
@@ -410,6 +524,7 @@
   }
 
   function renderComponents() {
+    applyNodeDefaults();
     const p=model.plan, i=p.installation, c=p.ceph;
     const isNative=i.profile==="native-ha";
     const querySummary=model.autoQuery ? `<div class="notice ${model.autoQuery.warnings?.length?"warning":""}"><strong>Auto-query result</strong>${(model.autoQuery.findings||[]).map(x=>`<div>✓ ${esc(x)}</div>`).join("")}${(model.autoQuery.warnings||[]).map(x=>`<div>⚠ ${esc(x)}</div>`).join("")}</div>` : "";
@@ -452,8 +567,9 @@
     const p=model.plan, i=p.installation, c=p.ceph;
     $("#autoQueryButton")?.addEventListener("click",runAutoQuery);
     $("#configureProxmox")?.addEventListener("click",configureProxmox);
-    $("#cephEnabled").addEventListener("change",e=>{model.cephConfirmed=false;c.enabled=e.target.checked; if(c.enabled){c.public_cidr=c.public_cidr||"10.230.0.0/24";c.cluster_cidr=c.cluster_cidr||"10.231.0.0/24";c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;} render();});
-    bindText("cephPublicCIDR",v=>c.public_cidr=v); bindText("cephClusterCIDR",v=>c.cluster_cidr=v);
+    $("#cephEnabled").addEventListener("change",e=>{model.cephConfirmed=false;c.enabled=e.target.checked; if(c.enabled){c.replication=i.profile==="native-ha"?3:(c.replication||3);c.requested_usable_tb=c.requested_usable_tb||10;applyNodeDefaults();} render();});
+    bindText("cephPublicCIDR",v=>{c.public_cidr=v;cephDefaults.get(c).manual_public_cidr=true;});
+    bindText("cephClusterCIDR",v=>{c.cluster_cidr=v;cephDefaults.get(c).manual_cluster_cidr=true;});
     $("#requestedTB")?.addEventListener("input",e=>c.requested_usable_tb=Number(e.target.value));
     $("#replication")?.addEventListener("input",e=>c.replication=i.profile==="native-ha"?3:Number(e.target.value));
     $("#rbd")?.addEventListener("change",e=>c.enable_rbd=e.target.checked); $("#cephfs")?.addEventListener("change",e=>c.enable_cephfs=e.target.checked); $("#rgw")?.addEventListener("change",e=>c.enable_rgw=e.target.checked);
@@ -474,7 +590,7 @@
     bindText("arm64Path",v=>{i.archives=i.archives||{};i.archives.arm64=i.archives.arm64||{};i.archives.arm64.path=v;});
     bindText("arm64SHA",v=>{i.archives=i.archives||{};i.archives.arm64=i.archives.arm64||{};i.archives.arm64.sha256=v;});
     $("#apiPort")?.addEventListener("input",e=>i.api_port=Number(e.target.value)); $("#raftPort")?.addEventListener("input",e=>i.raft_port=Number(e.target.value));
-    $("#vxlanID")?.addEventListener("input",e=>i.vxlan_id=Number(e.target.value)); $("#nodePrefix")?.addEventListener("input",e=>i.node_prefix=Number(e.target.value));
+    $("#vxlanID")?.addEventListener("input",e=>i.vxlan_id=Number(e.target.value)); $("#nodePrefix")?.addEventListener("input",e=>{i.node_prefix=Number(e.target.value);model.validated=false;});
     $("#startServices")?.addEventListener("change",e=>i.start=e.target.checked);
     $("#autoRepair")?.addEventListener("change",e=>{i.auto_repair=e.target.checked;model.validated=false;});
     $("#backInfrastructure").addEventListener("click",()=>{model.currentStep=2;render();});
@@ -722,6 +838,7 @@
       model.meta=await api("/api/v1/bootstrap");
       model.state=model.meta.state;
       model.plan=model.meta.plan || makeDefaultPlan(model.meta);
+      model.plan._managementPrefix=model.plan._managementPrefix||detectedManagementPrefix(model.plan.nodes?.[0]?.management_ip||(model.meta.local_ips||[])[0],model.meta.local_networks||[]);
       model.validated=Boolean(model.meta.plan && model.meta.state && model.meta.state.plan_path);
       model.plan._nodeCount=model.plan.nodes?.length || 3;
       model.plan._controlCount=(model.plan.nodes||[]).filter(n=>(n.capabilities||[]).includes("CONTROL")).length || (model.plan._nodeCount>=3?3:1);

@@ -370,3 +370,24 @@ When a newer launcher finds an older installer service, it verifies the existing
 HTTPS identity and confirms an idle state before restarting that service. A busy
 or unverifiable older service is left running, and no certificate is replaced.
 An already matching service preserves its active session when tuigui is reopened.
+
+## Node and subnet defaults
+
+For a fresh nine-node Native HA draft, the Infrastructure page offers
+`titanus-ctl01` through `titanus-ctl03`, `titanus-wrk01` through `titanus-wrk03`,
+and `titanus-ceph01` through `titanus-ceph03`. The first controller's Management IP
+starts from an address on the installer host. Management Subnet Prefix is detected
+from its active interface mask and can be edited independently of application
+network settings. Editing the first Management IP fills consecutive addresses
+for the remaining nodes within the selected management prefix; manually changed
+addresses and names are retained. The default nine-node topology separates its
+three storage hosts from Controllers and Workers.
+
+Ceph Public IP and Ceph Cluster IP initially match each storage node's Management
+IP. On enabling Ceph, Public CIDR and Cluster CIDR are calculated independently
+from the selected storage addresses and management prefix. They follow generated
+address changes until explicitly edited. Custom storage-network addresses/CIDRs
+are preserved, including on navigation and reconnect. A range reaching a subnet
+boundary or reserved address leaves the affected generated fields blank and shows
+an explanation. Mixed Ceph subnets require an explicit CIDR or Infrastructure
+Query; no unrelated fixed Ceph subnet is inserted.

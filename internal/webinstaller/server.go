@@ -78,19 +78,20 @@ type InstallerState struct {
 }
 
 type bootstrapResponse struct {
-	Product      string                   `json:"product"`
-	Edition      string                   `json:"edition"`
-	Enterprise   string                   `json:"enterprise"`
-	NodeLimit    int                      `json:"community_node_limit"`
-	Version      string                   `json:"version"`
-	Revision     string                   `json:"revision"`
-	StateProfile string                   `json:"state_profile"`
-	Listen       string                   `json:"listen"`
-	LocalIPs     []string                 `json:"local_ips"`
-	Capabilities []string                 `json:"capabilities"`
-	State        InstallerState           `json:"state"`
-	Plan         *model.RealmPlan         `json:"plan,omitempty"`
-	Archives     map[string]model.Archive `json:"archives,omitempty"`
+	Product       string                   `json:"product"`
+	Edition       string                   `json:"edition"`
+	Enterprise    string                   `json:"enterprise"`
+	NodeLimit     int                      `json:"community_node_limit"`
+	Version       string                   `json:"version"`
+	Revision      string                   `json:"revision"`
+	StateProfile  string                   `json:"state_profile"`
+	Listen        string                   `json:"listen"`
+	LocalIPs      []string                 `json:"local_ips"`
+	LocalNetworks []string                 `json:"local_networks"`
+	Capabilities  []string                 `json:"capabilities"`
+	State         InstallerState           `json:"state"`
+	Plan          *model.RealmPlan         `json:"plan,omitempty"`
+	Archives      map[string]model.Archive `json:"archives,omitempty"`
 }
 
 type sessionRequest struct {
@@ -326,19 +327,20 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, bootstrapResponse{
-		Archives:     archives,
-		Product:      "Titanus Core Universal Installer",
-		Edition:      "Community",
-		Enterprise:   "Soon Available",
-		NodeLimit:    model.CommunityNodeLimit,
-		Version:      buildversion.Version,
-		Revision:     buildversion.Revision,
-		StateProfile: buildversion.StateProfile,
-		Listen:       s.cfg.Listen,
-		LocalIPs:     localIPv4s(),
-		Capabilities: []string{"CONTROL", "EXECUTION", "STORAGE", "GATEWAY", "GPU", "BACKUP"},
-		State:        state,
-		Plan:         plan,
+		Archives:      archives,
+		Product:       "Titanus Core Universal Installer",
+		Edition:       "Community",
+		Enterprise:    "Soon Available",
+		NodeLimit:     model.CommunityNodeLimit,
+		Version:       buildversion.Version,
+		Revision:      buildversion.Revision,
+		StateProfile:  buildversion.StateProfile,
+		Listen:        s.cfg.Listen,
+		LocalIPs:      localIPv4s(),
+		LocalNetworks: localIPv4Networks(),
+		Capabilities:  []string{"CONTROL", "EXECUTION", "STORAGE", "GATEWAY", "GPU", "BACKUP"},
+		State:         state,
+		Plan:          plan,
 	})
 }
 
@@ -1089,6 +1091,29 @@ func localIPv4s() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func localIPv4Networks() []string {
+	active := map[string]bool{}
+	for _, ip := range localIPv4s() {
+		active[ip] = true
+	}
+	addresses, _ := net.InterfaceAddrs()
+	seen := map[string]bool{}
+	var networks []string
+	for _, address := range addresses {
+		ip, network, err := net.ParseCIDR(address.String())
+		if err != nil || !active[ip.String()] {
+			continue
+		}
+		cidr := network.String()
+		if !seen[cidr] {
+			networks = append(networks, cidr)
+			seen[cidr] = true
+		}
+	}
+	sort.Strings(networks)
+	return networks
 }
 
 func loadAccessToken(stateDir string) (string, error) {

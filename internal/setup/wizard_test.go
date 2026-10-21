@@ -2,21 +2,81 @@ package setup
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/antonismor/Titanus-Core/internal/model"
 )
 
+func TestWizardNineNodeDefaultsFromFirstManagementIP(t *testing.T) {
+	lines := []string{"2", "y", "1", "", "", "", "9", "", "", "24", "3", "3"}
+	for i := 0; i < 9; i++ {
+		ip := ""
+		if i == 0 {
+			ip = "192.0.2.40"
+		}
+		lines = append(lines, "", ip, "", "")
+		if i >= 6 {
+			lines = append(lines, "", "")
+		}
+	}
+	lines = append(lines, "n", "", "") // Accept derived CIDRs; never provision.
+	var out bytes.Buffer
+	_, err := New(strings.NewReader(strings.Join(lines, "\n")+"\n"), &out).Run()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected to stop before storage/provisioning: %v", err)
+	}
+	output := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(out.String(), "")
+	for i, role := range []string{"ctl01", "ctl02", "ctl03", "wrk01", "wrk02", "wrk03", "ceph01", "ceph02", "ceph03"} {
+		if !strings.Contains(output, "[titanus-"+role+"]") {
+			t.Fatalf("missing default name %s\n%s", role, out.String())
+		}
+		if i > 0 && !strings.Contains(output, fmt.Sprintf("Management IP [192.0.2.%d]", 40+i)) {
+			t.Fatalf("missing consecutive IP %d\n%s", i, out.String())
+		}
+		if i >= 6 && !strings.Contains(output, fmt.Sprintf("Ceph cluster IP [192.0.2.%d]", 40+i)) {
+			t.Fatalf("missing Ceph default %d\n%s", i, out.String())
+		}
+	}
+	for _, label := range []string{"Ceph public network CIDR", "Ceph cluster network CIDR"} {
+		if !strings.Contains(output, label+" [192.0.2.0/24]") {
+			t.Fatalf("missing derived %s\n%s", label, out.String())
+		}
+	}
+}
+
+func TestManagementAddressDoesNotWrapOrLeaveSelectedPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		base         string
+		offset, bits int
+		want         string
+	}{
+		{"10.11.101.10", 8, 24, "10.11.101.18"},
+		{"172.20.10.254", 2, 23, "172.20.11.0"},
+		{"192.0.2.250", 4, 24, "192.0.2.254"},
+		{"192.0.2.250", 5, 24, ""},
+		{"192.0.2.250", 6, 24, ""},
+		{"255.255.255.254", 2, 24, ""},
+		{"invalid", 1, 24, ""},
+	} {
+		if got := managementAddress(tc.base, tc.offset, tc.bits); got != tc.want {
+			t.Errorf("%+v: got %q", tc, got)
+		}
+	}
+}
+
 func wizardInput(file string, count int, profile string) string {
 	lines := []string{profile}
 	if profile == "3" {
 		lines = append(lines, "n")
 	}
-	lines = append(lines, "3", "LAB", "", "", fmt.Sprint(count), "", "22")
+	lines = append(lines, "3", "LAB", "", "", fmt.Sprint(count), "", "22", "24")
 	if count >= 3 {
 		lines = append(lines, "3")
 	}
@@ -98,7 +158,7 @@ func TestWizardSavesNativeHAWithSeparateWorkersAndFencing(t *testing.T) {
 	if e := os.WriteFile(inventory, []byte(data), 0600); e != nil {
 		t.Fatal(e)
 	}
-	lines := []string{"2", "n", "1", "LAB", "", "", "5", "", "22", "3"}
+	lines := []string{"2", "n", "1", "LAB", "", "", "5", "", "22", "24", "3"}
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf("node%d", i), fmt.Sprintf("192.0.2.%d", i), "", "")
 	}
