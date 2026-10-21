@@ -10,10 +10,6 @@ if [[ ${EUID} -ne 0 ]]; then
   echo "tuigui must run as root." >&2
   exit 1
 fi
-if ! command -v systemctl >/dev/null 2>&1; then
-  echo "systemd is required to start the Titanus Core Web Installer." >&2
-  exit 1
-fi
 if ! command -v titanus-installer-web >/dev/null 2>&1; then
   echo "titanus-installer-web is not installed. Install a Titanus Core release that includes Web Installer support." >&2
   exit 1
@@ -22,6 +18,14 @@ if ! command -v titanus >/dev/null 2>&1; then
   echo "Titanus Core CLI is not installed." >&2
   exit 1
 fi
+echo "Preparing installer dependencies and verified release archives..."
+titanus installer prepare
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemd is required to start the Titanus Core Web Installer." >&2
+  exit 1
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required by the Titanus installer launch commands." >&2
   exit 1
@@ -36,6 +40,41 @@ then
   echo "The installed Web Installer does not match the active Titanus Core release. Use 'tuicli' or install a matching release before starting tuigui." >&2
   exit 1
 fi
+
+# An idle older service must be quiesced before replacing its TLS identity.
+# Current services keep their durable running session and dynamically reload TLS.
+PID=$(systemctl show "$SERVICE" --property=MainPID --value 2>/dev/null || true)
+if [[ "$PID" =~ ^[1-9][0-9]*$ ]]; then
+  if ! SERVICE_MODE=$(python3 - <<'PYWEBMODE'
+import json,os,ssl,subprocess,sys,urllib.request
+try:
+    ca=os.environ.get('TITANUS_INSTALLER_TLS_CA')
+    settings='/etc/titanus/installer-tls.json'
+    if not ca and os.path.isfile(settings): ca=json.load(open(settings))['ca']
+    if not ca: ca='/var/lib/titanus/installer-web/https-ca.crt'
+    if not os.path.isfile(ca): ca='/var/lib/titanus/installer-web/https.crt'
+    context=ssl.create_default_context(cafile=ca)
+    token=open('/var/lib/titanus/installer-web/access.token').read().strip()
+    headers={'Content-Type':'application/json','X-Titanus-Installer-Token':token}
+    def request(endpoint,data=None):
+        req=urllib.request.Request('https://127.0.0.1:8088/api/v1/'+endpoint,headers=headers,data=data)
+        with urllib.request.urlopen(req,context=context,timeout=35) as response: return json.load(response)
+    current=request('bootstrap');target=json.loads(subprocess.check_output(['titanus','version','--json']))
+    if all(current.get(k)==target.get(k) for k in ('version','revision')): print('current')
+    else:
+        if not request('quiesce',b'{}').get('quiesced'): raise RuntimeError('not idle')
+        print('restart')
+except Exception:
+    print('Cannot verify an idle Web Installer for upgrade. No service was stopped and no TLS identity was changed.',file=sys.stderr)
+    sys.exit(1)
+PYWEBMODE
+  ); then exit 1; fi
+  if [[ "$SERVICE_MODE" == restart ]]; then systemctl stop "$SERVICE"; fi
+fi
+
+TLS_INFO=$(titanus-installer-web --prepare-tls --install-local-trust)
+TLS_CA=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ca_file"])' "$TLS_INFO")
+TLS_FINGERPRINT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ca_sha256"])' "$TLS_INFO")
 
 systemctl daemon-reload
 systemctl start "$SERVICE"
@@ -98,7 +137,14 @@ Open this protected URL in your browser:
 
   https://$IP:$PORT/#access=$TOKEN
 
-The first connection uses a local Titanus HTTPS certificate, so your browser may ask you to confirm it.
+TLS covers this host's detected addresses, hostname, localhost and loopback addresses.
+This issuer is enrolled in the installer host trust store.
+Issuer CA certificate: $TLS_CA
+Issuer CA SHA256 fingerprint: $TLS_FINGERPRINT
+Before the first browser connection, enroll the issuer CA in the client's trusted roots
+using a trusted channel such as SSH or your organization's certificate policy.
+Verify the fingerprint above. An already trusted corporate CA needs no extra enrollment.
+The CA stays the same when this host changes IP or subnet; server certificates renew automatically.
 After the first successful sign-in, reopening https://$IP:$PORT/ in the same browser will restore the current installation status.
 The installer service continues running if you close or refresh the browser.
 Use 'tuicli' at any time when you want the terminal-only installer.

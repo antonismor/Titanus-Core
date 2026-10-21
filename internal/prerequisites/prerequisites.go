@@ -14,6 +14,8 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/remote"
 )
 
+var installerPackages = []string{"ca-certificates", "iproute2", "openssh-client", "python3", "sshpass", "systemd", "util-linux"}
+
 var basePackages = []string{"ca-certificates", "coreutils", "gzip", "iproute2", "kmod", "nftables", "openssh-client", "python3", "systemd", "tar", "util-linux"}
 
 func Packages(plan model.RealmPlan, node model.NodeSpec) []string {
@@ -142,7 +144,7 @@ chmod 0644 '` + moduleFile + `'
 }
 
 func InstallerScript() string {
-	return script([]string{"ca-certificates", "openssh-client", "python3", "sshpass", "util-linux"}, nil, "")
+	return script(installerPackages, nil, "")
 }
 
 func TargetScript(plan model.RealmPlan, node model.NodeSpec) string {
@@ -156,7 +158,7 @@ func EnsureInstaller(ctx context.Context) (string, error) {
 func EnsureInstallerWithRepair(ctx context.Context, enabled bool) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "sh", "-c", dependencyScript([]string{"ca-certificates", "openssh-client", "python3", "sshpass", "util-linux"}, nil, "", enabled, false)).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "sh", "-c", dependencyScript(installerPackages, nil, "", enabled, false)).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("installer-host dependency installation failed: %w", err)
 	}

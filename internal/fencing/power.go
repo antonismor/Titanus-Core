@@ -31,6 +31,7 @@ type Target struct {
 }
 type Power struct {
 	Targets map[string]Target
+	ctx     context.Context
 	run     func(string, ...string) (string, error)
 	request func(Target, string, string) (json.RawMessage, error)
 }
@@ -179,7 +180,11 @@ func (p *Power) proxmoxRequest(target Target, method, suffix string) (json.RawMe
 			return http.ErrUseLastResponse
 		},
 	}
-	req, err := http.NewRequest(method, strings.TrimRight(target.Address, "/")+suffix, nil)
+	ctx := p.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(target.Address, "/")+suffix, nil)
 	if err != nil {
 		return nil, err
 	}

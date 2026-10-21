@@ -10,7 +10,7 @@ const {spawn}=require('node:child_process');
 const {setTimeout:delay}=require('node:timers/promises');
 (async()=>{
  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'titanus-web-browser-'));
- const stateDir=path.join(directory,'state');const logFile=path.join(directory,'installer.log');
+ const stateDir=process.env.TITANUS_INSTALLER_STATE_DIR||path.join(directory,'state');const logFile=path.join(directory,'installer.log');
  const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));
  const port=listener.address().port;await new Promise(r=>listener.close(r));
  const origin=`https://127.0.0.1:${port}`;
@@ -23,8 +23,6 @@ const {setTimeout:delay}=require('node:timers/promises');
   for(let i=0;i<100;i++){
    if(processHandle.exitCode!==null) throw Error(`installer exited: ${diagnostics}`);
    try{const probe=await fetch(origin,{signal:AbortSignal.timeout(200)});if(probe.ok)return;}catch(_){}
-   // Probe TLS with the context below, rather than trusting the self-signed identity globally.
-   if(fs.existsSync(path.join(stateDir,'access.token'))){await delay(150);return;}
    await delay(50);
   }
   throw Error(`installer did not start: ${diagnostics}`);
@@ -33,7 +31,7 @@ const {setTimeout:delay}=require('node:timers/promises');
  try{
   await start();
   browser=await chromium.launch({headless:true,...(process.env.TITANUS_UI_CHROME?{executablePath:process.env.TITANUS_UI_CHROME}:{}),args:['--no-sandbox']});
-  const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:1672,height:1000}});
+  const context=await browser.newContext({viewport:{width:1672,height:1000}});
   const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(String(error)));
   await page.goto(origin);await page.locator('#accessGate').waitFor({state:'visible'});
   const credit='Design And Development by : antonios.mortos@outlook.com';

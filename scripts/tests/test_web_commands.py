@@ -20,7 +20,7 @@ class WebCommandTests(unittest.TestCase):
             target=binaries/name;target.write_text('#!/bin/sh\n'+text);target.chmod(0o755)
         executable('systemctl', 'echo "$*" >> "'+str(root/'systemctl.log')+'"\n' + ('exit 0\n' if active else '[ "$1" != is-active ]\n'))
         executable('titanus', 'if [ "$1" = version ]; then\ncat <<\'JSON\'\n'+IDENTITY+'\nJSON\nelse\nprintf "%s\\n" "$@"\nfi\n')
-        executable('titanus-installer-web', 'cat <<\'JSON\'\n'+IDENTITY+'\nJSON\n')
+        executable('titanus-installer-web', 'if [ \"$1\" = --prepare-tls ]; then echo \'{\"ca_file\":\"/tmp/test-ca.crt\",\"ca_sha256\":\"test-fingerprint\"}\'; else cat <<\'JSON\'\n'+IDENTITY+'\nJSON\nfi\n')
         executable('ip', 'if [ "$3" = route ]; then exit 2; fi\ncat <<\'JSON\'\n'+json.dumps([{'addr_info':[{'local':'2001:db8::1','scope':'global'},{'local':'127.0.0.1','scope':'host'},{'local':'192.0.2.44','scope':'global'}]}])+'\nJSON\n')
         env=dict(os.environ, PATH=str(binaries)+os.pathsep+os.environ['PATH'])
         return script,env,root/'systemctl.log'
@@ -50,3 +50,35 @@ class WebCommandTests(unittest.TestCase):
             self.assertNotEqual(result.returncode,0)
             self.assertIn('No service was stopped',result.stderr)
             self.assertNotIn('stop ',log.read_text())
+
+    def test_prepare_failure_never_starts_or_stops_service(self):
+        for name in ('tuigui','tuicli'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                script,env,log=self.fixture(directory,name)
+                titanus=Path(directory)/'bin/titanus'
+                titanus.write_text('#!/bin/sh\nif [ "$1" = installer ]; then echo PREPARE_FAILED >&2; exit 31; fi\nexit 0\n')
+                result=subprocess.run([str(script)],env=env,capture_output=True,text=True,timeout=5)
+                self.assertEqual(result.returncode,31)
+                self.assertIn('PREPARE_FAILED',result.stderr)
+                self.assertFalse(log.exists(), 'service touched after dependency preparation failed')
+
+    def test_gui_reports_ca_trust_and_never_recommends_bypassing_tls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script,env,_=self.fixture(directory,'tuigui')
+            result=subprocess.run([str(script)],env=env,capture_output=True,text=True,timeout=20)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('Issuer CA SHA256 fingerprint: test-fingerprint',result.stdout)
+            self.assertIn('localhost',result.stdout)
+            self.assertIn('trusted roots',result.stdout)
+            self.assertNotIn('confirm it',result.stdout)
+
+    def test_gui_refuses_unverified_upgrade_before_changing_tls_or_stopping_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script,env,log=self.fixture(directory,'tuigui')
+            ctl=Path(directory)/'bin/systemctl'
+            ctl.write_text('#!/bin/sh\necho "$*" >> "'+str(log)+'"\nif [ "$1" = show ]; then echo 42; fi\nexit 0\n')
+            result=subprocess.run([str(script)],env=env,capture_output=True,text=True,timeout=5)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('No service was stopped and no TLS identity was changed',result.stderr)
+            self.assertNotIn('stop ',log.read_text())
+            self.assertNotIn('start ',log.read_text())

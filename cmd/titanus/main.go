@@ -26,6 +26,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/preflight"
 	"github.com/antonismor/Titanus-Core/internal/prerequisites"
 	"github.com/antonismor/Titanus-Core/internal/realm"
+	"github.com/antonismor/Titanus-Core/internal/releasecache"
 	"github.com/antonismor/Titanus-Core/internal/remote"
 	"github.com/antonismor/Titanus-Core/internal/security"
 	"github.com/antonismor/Titanus-Core/internal/setup"
@@ -79,6 +80,11 @@ func dispatch(args []string) error {
 		return runBackup(args[1:])
 	case "task", "schedule", "autoscale", "secret":
 		return runOrchestration(args[0], args[1:])
+	case "installer":
+		if len(args) < 2 || args[1] != "prepare" || len(args) > 3 || (len(args) == 3 && args[2] != "--host-only") {
+			return fmt.Errorf("usage: titanus installer prepare [--host-only]")
+		}
+		return prepareInstaller(len(args) == 3)
 	case "setup":
 		return runSetup()
 	case "trust":
@@ -2027,7 +2033,34 @@ func discoverBinDir() (string, error) {
 	return "", fmt.Errorf("cannot locate all Titanus binaries; build with 'make build' or use 'titanus deploy realm PLAN --bin-dir DIR'")
 }
 
+func prepareInstaller(hostOnly bool) error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("installer preparation requires root")
+	}
+	ansi.Info("Preparing installer-host dependencies; no Realm hosts or data disks are changed")
+	output, err := prerequisites.EnsureInstaller(context.Background())
+	fmt.Print(output)
+	if err != nil {
+		return err
+	}
+	if hostOnly {
+		return nil
+	}
+	if buildversion.Revision == "unknown" {
+		ansi.Warn("Development build: choose verified release archives explicitly in the wizard")
+		return nil
+	}
+	ansi.Info("Caching and verifying official AMD64/ARM64 release archives")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	_, err = (releasecache.Fetcher{}).Ensure(ctx, buildversion.Version, buildversion.Revision)
+	return err
+}
+
 func runSetup() error {
+	if err := prepareInstaller(false); err != nil {
+		return err
+	}
 	result, err := setup.RunDefault()
 	if err != nil {
 		return err
@@ -2183,6 +2216,7 @@ func printHelp() {
 
 Usage:
   titanus                                      Interactive ANSI menu
+  titanus installer prepare [--host-only]       Prepare local dependencies and verified release cache
   titanus setup                                Guided Realm setup
   titanus ha                                   Verified existing-Realm HA transition menu
   titanus ha <prepare|stage|readiness|activate|rollback-staging> [flags]

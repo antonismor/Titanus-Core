@@ -1,11 +1,11 @@
 # Versioned native release and recovery
 
-The current versioned line is **0.4.0-rc.18**, an explicit release candidate. It
+The current versioned line is **0.4.0-rc.19**, an explicit release candidate. It
 contains the implemented native subsystems and their documented limits; passing
 CI does not establish maturity equivalent to established orchestration platforms
 or install anything on user servers.
 
-The rc.18 candidate integrates Universal Installer Phases A–C and the verified Web Installer/Complete-report work: Community's
+The rc.19 candidate integrates Universal Installer Phases A–C and the verified Web Installer/Complete-report work: Community's
 nine-host ceiling, secure directed SSH bootstrap, opt-in Native HA Worker
 fencing/recovery, explicit Ceph HA policy and backup-bound transition of supported
 existing 3/5-voter Realms. It also includes the protected `tuigui` HTTPS workflow, Step 3 infrastructure auto-fill, bounded optional automatic repair, reconnect-safe progress/refresh, automatic Complete transition, read-only cluster acceptance, and persistent Success/Failed JSON reports. See [Phase C](universal-installer-phase-c.md) for the
@@ -53,9 +53,10 @@ modes. A valid payload checksum alone never overrides these metadata gates.
 
 ## Guided preparation and fresh install
 
-On a dedicated supported Linux host, install prerequisites: cgroups v2, OverlayFS,
-user/PID/mount/net namespaces, nftables/iproute2/nsenter, Landlock ABI >=3,
-Python 3, Bash, tar and SHA-256 tools. Native Ceph clients and access credentials
+Use a dedicated supported Debian-family Linux host with cgroups v2,
+user/PID/mount/net namespaces and Landlock ABI >=3. The installer prepares missing
+OS packages and loads the required runtime modules automatically; Bash, tar and
+SHA-256 tools are used for the initial download/extraction. Native Ceph clients and access credentials
 are needed only for configured Ceph Disks. Reserve the mapped UID/GID range as
 in ISOLATION.md. Kernel enforcement failures prevent workload exec.
 
@@ -63,9 +64,11 @@ Download the matching native package and its checksum from the same authenticate
 release, verify the checksum against the release metadata, then extract:
 
 ```sh
-sha256sum -c titanus-0.4.0-rc.18-linux-amd64.tar.gz.sha256
-tar -xzf titanus-0.4.0-rc.18-linux-amd64.tar.gz
-./titanus-0.4.0-rc.18-linux-amd64/bin/titanus setup
+sha256sum -c titanus-0.4.0-rc.19-linux-amd64.tar.gz.sha256
+tar -xzf titanus-0.4.0-rc.19-linux-amd64.tar.gz
+cd titanus-0.4.0-rc.19-linux-amd64
+sudo ./scripts/install-release.sh --bundle "$PWD"
+sudo tuigui  # or sudo tuicli
 ```
 
 The installer pins and verifies the complete checksum inventory, architecture,
@@ -79,9 +82,10 @@ an existing installation. `--root /absolute/staging-root` exercises file activat
 without controlling the host's services.
 
 The wizard introduced in rc.4 writes a versioned plan and prepares verified per-node installation
-files locally. Supply both AMD64/ARM64 archives, their independently obtained
-SHA-256 values and the exact published revision, even for a single-architecture
-Realm. Review the adjacent private `.deployment` directory before application.
+files locally. Both native archives and their published checksums are cached and
+verified automatically by the launchers for the exact published revision. The TUI
+and GUI reuse the cache, including on a single-architecture Realm. Offline custom
+workflows can still supply both explicit archive paths and checksum values. Review the adjacent private `.deployment` directory before application.
 For a saved plan, `titanus deploy release plan.json --output ./reviewed-deployment`
 also prepares files without contacting hosts. Application requires a new output
 directory and explicit `--apply`, or an explicit affirmative wizard answer.
@@ -283,3 +287,17 @@ The lab's controlled worker reboot found the missing CPU delegation; it must
 not be worked around by dropping CPU limits. Maintenance resume retries update
 Fleets only when counts or minimum_available actually differ, avoiding repeated
 rollouts while readiness is still converging.
+
+
+### 0.4.0-rc.19 installer preparation
+
+Launchers prepare missing local tools and verified official release archives
+before discovery. Native HA includes guided, identity-bound Proxmox fencing
+configuration in TUI/TUIGUI and read-only checks of effective VM power privileges.
+Installer HTTPS uses dynamic interface/hostname SANs, a stable local CA and
+renewable server certificates, with optional existing corporate trust. Clients
+must trust the issuer; see WEB_INSTALLER.md for enrollment and CA fingerprints.
+CI verifies preparation twice inside a clean Debian 13 container, TLS across
+unrelated subnets/localhost, renewal without trust rotation, archive corruption
+and fencing identity/privilege failures. No cluster provisioning is implied by
+successful preparation.

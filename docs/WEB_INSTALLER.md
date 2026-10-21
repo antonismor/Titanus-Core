@@ -19,9 +19,42 @@ browser keeps an HttpOnly, Secure, SameSite=Strict installer session cookie, so
 reopening the same `https://IP:8088/` address in that browser restores the
 current status.
 
-The service listens on port `8088` by default. It creates a local self-signed
-HTTPS identity under `/var/lib/titanus/installer-web`; therefore a browser may
-require explicit certificate confirmation on first use. The root SSH bootstrap
+The service listens on port `8088` by default. Before starting HTTPS, it queries
+active interfaces and the hostname. Its certificate contains the detected IPv4
+and IPv6 addresses, hostname, `localhost`, `127.0.0.1` and `::1`; no customer
+subnet is hard-coded. A persistent, private installer CA signs 90-day server
+certificates. Certificates renew seven days before expiry and when a new address
+needs coverage; the running server rechecks active addresses before each TLS handshake without
+interrupting installation state. IP/subnet changes do not rotate the CA.
+
+A certificate for a private IP or localhost cannot be made universally trusted
+by issuing it locally. Enroll the public `https-ca.crt` in the clients' trusted
+root stores using a trusted channel (SSH or managed certificate policy) **before**
+the first browser connection. `tuigui` prints the CA path and SHA-256 certificate
+fingerprint for verification. The launcher enrolls the issuer in the installer host trust store, so local
+HTTPS clients can validate localhost and the detected addresses. Remote browser
+clients still need the organization/client enrollment described above.
+The CA private key stays on the installer, mode
+0600; it is never distributed to clients. TLS validation remains enabled.
+
+An organization may instead supply an already trusted issuer via a root-owned,
+mode-0600 `/etc/titanus/installer-tls.json` containing `certificate`, `key` and
+`ca` absolute file paths. The certificate chain must cover all detected addresses
+and local names. The equivalent service flags are `--tls-cert`, `--tls-key`,
+`--tls-ca` (or `TITANUS_INSTALLER_TLS_CERT`, `_KEY`, `_CA` environment settings).
+Invalid chains, dates, missing SANs and unsafe key files fail before HTTPS starts.
+
+Both launch commands automatically install missing installer-host packages and
+cache the official AMD64/ARM64 archives for the exact release/revision. Downloads
+use HTTPS, published SHA-256 records, full bundle inventory/ELF checks and a
+private cache; verified cache entries work offline. The GUI and TUI select these
+archives automatically. An unpublished/development target or an offline manual
+workflow can supply explicit verified archives. `titanus installer prepare
+--host-only` prepares local tools without downloading release archives. Target
+packages and kernel modules are installed automatically during Apply, after the
+fresh-install guards and before mandatory runtime pre-flight checks.
+
+The root SSH bootstrap
 password is never written to the Plan, URL, environment, state file or verbose
 log. It is held only in process memory long enough to establish the existing
 Realm-scoped SSH trust and is then zeroed.
@@ -311,3 +344,29 @@ checkpoint is a fixture; it does not perform a live installation or contact
 the documentation-only node addresses. Browser evidence is kept in the
 `web-installer-browser` workflow artifact. Full live deployment and HA
 acceptance remain a separate step on explicitly selected hosts.
+
+## Guided Proxmox power fencing
+
+Native HA requires management authorization supplied by the operator. Customer
+tokens and CA keys are never embedded in a distributable release. In Step 3,
+expand **Configure Proxmox fencing** and enter the HTTPS origin, hypervisor node,
+API token identity/secret, public issuer CA PEM and each Worker's VM ID. Titanus
+queries each guest UUID independently over SSH, verifies management TLS and the
+VM's SMBIOS UUID, and checks effective `VM.Audit` and `VM.PowerMgmt` permissions.
+Only GET requests are sent during this preparation. Credentials are saved in
+root-only files and are never returned in Plan/API responses or written to logs.
+The saved profile is reusable by subsequent Auto-fill queries.
+
+The TUI accepts `PROXMOX` at the fencing inventory prompt and asks for the same
+settings, with hidden token/password entry. Advanced IPMI/libvirt/custom inventory
+files remain supported. Setup never assigns broader management privileges or
+powers off a Worker; a missing privilege or UUID mismatch blocks readiness.
+Repeated Auto-fill queries re-verify selected clean data disks without treating
+an unchanged safe selection as a warning. Busy, signed or mismatched devices
+remain blocked. A single physical host may use the same interface address for
+management, Fabric and Ceph, while duplicate addresses across hosts are rejected.
+
+When a newer launcher finds an older installer service, it verifies the existing
+HTTPS identity and confirms an idle state before restarting that service. A busy
+or unverifiable older service is left running, and no certificate is replaced.
+An already matching service preserves its active session when tuigui is reopened.

@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-
 // CommunityNodeLimit counts Realm hosts (VMs or physical servers), not Units,
 // Fleets, containers or applications. Enterprise licensing is not yet implemented.
 const CommunityNodeLimit = 9
@@ -159,7 +158,7 @@ func (p RealmPlan) Validate() error {
 			if net.ParseIP(ip) == nil {
 				return fmt.Errorf("node %s has invalid %s IP %q", n.Name, label, ip)
 			}
-			if owner, exists := seenIPs[ip]; exists {
+			if owner, exists := seenIPs[ip]; exists && owner != n.Name {
 				return fmt.Errorf("IP %s is used by both %s and %s", ip, owner, n.Name)
 			}
 			seenIPs[ip] = n.Name
@@ -225,8 +224,10 @@ func (p RealmPlan) Validate() error {
 		}
 	}
 
-	if err := p.validateNativeHA(); err != nil { return err }
- return nil
+	if err := p.validateNativeHA(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p RealmPlan) ControlNodes() []NodeSpec {

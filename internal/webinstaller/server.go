@@ -3,22 +3,16 @@ package webinstaller
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +25,7 @@ import (
 	"github.com/antonismor/Titanus-Core/internal/deploy"
 	"github.com/antonismor/Titanus-Core/internal/model"
 	"github.com/antonismor/Titanus-Core/internal/prerequisites"
+	"github.com/antonismor/Titanus-Core/internal/releasecache"
 	"github.com/antonismor/Titanus-Core/internal/remote"
 	"github.com/antonismor/Titanus-Core/internal/sshtrust"
 	buildversion "github.com/antonismor/Titanus-Core/internal/version"
@@ -50,6 +45,9 @@ type Config struct {
 	Listen   string
 	StateDir string
 	LogFile  string
+	TLSCert  string
+	TLSKey   string
+	TLSCA    string
 }
 
 type Fingerprint struct {
@@ -80,18 +78,19 @@ type InstallerState struct {
 }
 
 type bootstrapResponse struct {
-	Product      string           `json:"product"`
-	Edition      string           `json:"edition"`
-	Enterprise   string           `json:"enterprise"`
-	NodeLimit    int              `json:"community_node_limit"`
-	Version      string           `json:"version"`
-	Revision     string           `json:"revision"`
-	StateProfile string           `json:"state_profile"`
-	Listen       string           `json:"listen"`
-	LocalIPs     []string         `json:"local_ips"`
-	Capabilities []string         `json:"capabilities"`
-	State        InstallerState   `json:"state"`
-	Plan         *model.RealmPlan `json:"plan,omitempty"`
+	Product      string                   `json:"product"`
+	Edition      string                   `json:"edition"`
+	Enterprise   string                   `json:"enterprise"`
+	NodeLimit    int                      `json:"community_node_limit"`
+	Version      string                   `json:"version"`
+	Revision     string                   `json:"revision"`
+	StateProfile string                   `json:"state_profile"`
+	Listen       string                   `json:"listen"`
+	LocalIPs     []string                 `json:"local_ips"`
+	Capabilities []string                 `json:"capabilities"`
+	State        InstallerState           `json:"state"`
+	Plan         *model.RealmPlan         `json:"plan,omitempty"`
+	Archives     map[string]model.Archive `json:"archives,omitempty"`
 }
 
 type sessionRequest struct {
@@ -153,6 +152,9 @@ func DefaultConfig() Config {
 		Listen:   defaultListen,
 		StateDir: "/var/lib/titanus/installer-web",
 		LogFile:  "/var/log/titanus/installer-web.log",
+		TLSCert:  os.Getenv("TITANUS_INSTALLER_TLS_CERT"),
+		TLSKey:   os.Getenv("TITANUS_INSTALLER_TLS_KEY"),
+		TLSCA:    os.Getenv("TITANUS_INSTALLER_TLS_CA"),
 	}
 }
 
@@ -176,7 +178,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := ensureTLSIdentity(cfg.StateDir); err != nil {
+	if _, _, _, err := tlsIdentity(cfg); err != nil {
 		return nil, err
 	}
 	s := &Server{cfg: cfg, accessToken: token}
@@ -213,6 +215,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/v1/acceptance", s.requireToken(http.HandlerFunc(s.handleAcceptance)))
 	mux.Handle("/api/v1/logs", s.requireToken(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("/api/v1/validate", s.requireToken(http.HandlerFunc(s.handleValidate)))
+	mux.Handle("/api/v1/fencing/proxmox", s.requireToken(http.HandlerFunc(s.handleProxmoxSetup)))
 	mux.Handle("/api/v1/autofill", s.requireToken(http.HandlerFunc(s.handleAutoQuery)))
 	mux.Handle("/api/v1/plan", s.requireToken(http.HandlerFunc(s.handlePlan)))
 	mux.Handle("/api/v1/discover", s.requireToken(http.HandlerFunc(s.handleDiscover)))
@@ -239,12 +242,13 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdown)
 	}()
-	certFile, keyFile, err := ensureTLSIdentity(s.cfg.StateDir)
+	_, _, _, err := tlsIdentity(s.cfg)
 	if err != nil {
 		return err
 	}
 	s.logf("INFO", "Titanus Core mini HTTPS server listening on %s", s.cfg.Listen)
-	err = httpServer.ListenAndServeTLS(certFile, keyFile)
+	httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: tlsCertificateLoader(s.cfg)}
+	err = httpServer.ListenAndServeTLS("", "")
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -315,7 +319,14 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		plan = &copy
 	}
 	s.mu.RUnlock()
+	archives := map[string]model.Archive{}
+	for _, arch := range []string{"amd64", "arm64"} {
+		if a, err := releasecache.Lookup(releasecache.Directory(buildversion.Version, buildversion.Revision), buildversion.Version, buildversion.Revision, arch); err == nil {
+			archives[arch] = a
+		}
+	}
 	writeJSON(w, http.StatusOK, bootstrapResponse{
+		Archives:     archives,
 		Product:      "Titanus Core Universal Installer",
 		Edition:      "Community",
 		Enterprise:   "Soon Available",
@@ -1127,73 +1138,6 @@ func compactLog(value string, max int) string {
 		value = value[:max] + "…"
 	}
 	return value
-}
-
-func ensureTLSIdentity(stateDir string) (string, string, error) {
-	certPath := filepath.Join(stateDir, "https.crt")
-	keyPath := filepath.Join(stateDir, "https.key")
-	if certInfo, certErr := os.Lstat(certPath); certErr == nil {
-		keyInfo, keyErr := os.Lstat(keyPath)
-		if keyErr == nil && certInfo.Mode().IsRegular() && keyInfo.Mode().IsRegular() && keyInfo.Mode().Perm()&0077 == 0 {
-			if _, err := tlsKeyPairFiles(certPath, keyPath); err == nil {
-				return certPath, keyPath, nil
-			}
-		}
-	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return "", "", err
-	}
-	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serial, err := rand.Int(rand.Reader, serialLimit)
-	if err != nil {
-		return "", "", err
-	}
-	now := time.Now().UTC()
-	template := &x509.Certificate{
-		SerialNumber: serial, Subject: pkix.Name{CommonName: "Titanus Core Web Installer"},
-		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(397 * 24 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true, DNSNames: []string{"localhost", "titanus-installer.local"},
-	}
-	template.IPAddresses = append(template.IPAddresses, net.ParseIP("127.0.0.1"))
-	for _, value := range localIPv4s() {
-		if ip := net.ParseIP(value); ip != nil {
-			template.IPAddresses = append(template.IPAddresses, ip)
-		}
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		return "", "", err
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return "", "", err
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	if err := atomicWrite(certPath, certPEM, 0644); err != nil {
-		return "", "", err
-	}
-	if err := atomicWrite(keyPath, keyPEM, 0600); err != nil {
-		return "", "", err
-	}
-	if _, err := tlsKeyPairFiles(certPath, keyPath); err != nil {
-		return "", "", err
-	}
-	return certPath, keyPath, nil
-}
-
-func tlsKeyPairFiles(certPath, keyPath string) (*x509.Certificate, error) {
-	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil || len(pair.Certificate) == 0 {
-		return nil, fmt.Errorf("invalid Web Installer TLS identity")
-	}
-	cert, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil || time.Now().After(cert.NotAfter) {
-		return nil, fmt.Errorf("invalid or expired Web Installer certificate")
-	}
-	return cert, nil
 }
 
 func newSessionID() string {
