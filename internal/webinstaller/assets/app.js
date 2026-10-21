@@ -242,7 +242,11 @@
     }
     if (!p.ceph.enabled) {
       p.ceph = {enabled:false, replication:1, enable_rbd:true, enable_cephfs:true, enable_rgw:false, provision:false};
-      p.nodes.forEach(n => { delete n.ceph_public_ip; delete n.ceph_cluster_ip; delete n.ceph_devices; n.capabilities = n.capabilities.filter(c => c !== "STORAGE"); });
+      p.nodes.forEach(n => {
+        delete n.ceph_public_ip; delete n.ceph_cluster_ip; delete n.ceph_devices;
+        n.capabilities = n.capabilities.filter(c => c !== "STORAGE");
+        if(!n.capabilities.length) n.capabilities=["EXECUTION"];
+      });
     }
     if (install.operation === "rollback") { delete install.archives; install.auto_repair=false; }
     else if (!install.archives) install.archives = {amd64:{path:"",sha256:""},arm64:{path:"",sha256:""}};
