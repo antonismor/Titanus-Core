@@ -491,13 +491,14 @@ const realmAgentService = "[Unit]\n" +
 	"[Service]\n" +
 	"Type=simple\n" +
 	"EnvironmentFile=/etc/titanus/agent.env\n" +
+	"ExecStartPre=+/bin/sh -c 'umask 077; : >>/run/titanus-offline.lock'\n" +
 	"ExecStart=/usr/local/sbin/titanus-agent --node=$" + "{TITANUS_NODE_ID} --address=$" + "{TITANUS_NODE_ADDRESS} --fabric-address=$" + "{TITANUS_NODE_FABRIC_ADDRESS} --controller=$" + "{TITANUS_CONTROLLER} --ca=$" + "{TITANUS_CA} --cert=$" + "{TITANUS_CERT} --key=$" + "{TITANUS_KEY} --capabilities=$" + "{TITANUS_CAPABILITIES}\n" +
 	"Restart=always\n" +
 	"RestartSec=5\n" +
 	"NoNewPrivileges=true\n" +
 	"ProtectSystem=strict\n" +
 	"ProtectHome=true\n" +
-	"ReadWritePaths=/var/lib/titanus /var/log/titanus /etc/titanus/pki /run/titanus-offline.lock\n" +
+	"ReadWritePaths=/var/lib/titanus /var/log/titanus /etc/titanus/pki -/run/titanus-offline.lock\n" +
 	"PrivateTmp=true\n\n" +
 	"[Install]\n" +
 	"WantedBy=multi-user.target\n"
