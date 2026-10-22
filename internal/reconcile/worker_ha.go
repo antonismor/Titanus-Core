@@ -50,7 +50,7 @@ func (c *Controller) maintainWorkerFailovers(ctx context.Context) error {
 	candidates := map[string]bool{}
 	for _, a := range state.Assignments {
 		n := state.Nodes[a.NodeID]
-		if n.State == realm.NodeUnreachable {
+		if n.State == realm.NodeUnreachable || n.PowerQuarantined {
 			for _, cap := range n.Capabilities {
 				if cap == model.CapabilityExecution {
 					candidates[n.ID] = true
