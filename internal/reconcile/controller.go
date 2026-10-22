@@ -34,6 +34,8 @@ type Controller struct {
 	Interval                time.Duration
 	samples                 map[string]unitruntime.Usage
 	Now                     func() time.Time
+	leaseKeepers            map[string]*assignmentLeaseKeeper
+	leaseRefreshInterval    time.Duration
 }
 
 func (c *Controller) Run(ctx context.Context) {
@@ -62,6 +64,11 @@ func (c *Controller) Once() error {
 	if err := c.Store.CheckLeader(); err != nil {
 		return err
 	}
+	c.leaseKeepers = map[string]*assignmentLeaseKeeper{}
+	for id := range c.Store.Snapshot().Assignments {
+		c.keepAssignmentLease(id)
+	}
+	defer c.stopAssignmentLeases()
 	if err := c.maintainStorageFences(); err != nil {
 		return err
 	}
@@ -131,7 +138,7 @@ func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assign
 			return
 		}
 	}
-	const leaseTTL = 20 * time.Second
+	const leaseTTL = assignmentLeaseTTL
 	record, err := c.Nodes.RenewLease(node.Address, assignment.ID, token, leaseTTL)
 	if err != nil {
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
@@ -147,6 +154,7 @@ func (c *Controller) syncAssignment(state realm.State, fleet realm.Fleet, assign
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
 		return
 	}
+	c.keepAssignmentLease(assignment.ID)
 	spec := unitSpec(revision, assignment)
 	if err := c.prepareStorage(state, assignment, &spec); err != nil {
 		_ = c.Store.UpdateAssignmentState(assignment.ID, realm.AssignmentImpaired)
@@ -207,6 +215,7 @@ func (c *Controller) cleanupDeletedFleets(state realm.State) error {
 }
 
 func (c *Controller) cleanupAssignment(state realm.State, assignment realm.Assignment) error {
+	c.stopAssignmentLease(assignment.ID)
 	if err := c.Store.CheckLeader(); err != nil {
 		return err
 	}
